@@ -1,0 +1,285 @@
+---
+title: "Nodes and images"
+description: "Docker and QEMU, bringing your own images, and the two settings that stop a guest booting."
+---
+
+Labtris runs two kinds of node. Which one you want depends on how the software
+you are labbing is shipped, not on preference.
+
+| | Docker | QEMU |
+|---|---|---|
+| Starts in | about a second | as long as that OS takes to boot |
+| Costs | tens of MB | whatever the image asks for |
+| Good for | Linux hosts, FRR, containerised NOSes — SR Linux, XRd, cEOS | anything shipped as a disk: vendor appliances, Windows, BSD |
+| Console | a real shell | the guest's serial port, or VNC for graphical guests |
+| Snapshots | no — `pause` only | yes, real `savevm`/`loadvm` |
+
+If the thing you want exists as a container, use the container. It starts in a
+second and costs nothing, and you can run twenty.
+
+## Bringing your own images
+
+Labtris redistributes no vendor software. That is not a limitation to work
+around — it is the licence wall every network emulator sits behind. What
+differs is only how much help you get finding the file.
+
+**Docker images** come from whatever registry you point at. If you can
+`docker pull` it, you can run it.
+
+**QEMU images** are files you provide. The catalogue records, per image, where
+it came from and what it needs.
+
+### Importing the GNS3 registry
+
+The GNS3 project maintains 228 appliance definitions — how to run a device, not
+the device itself. Labtris can read them, which turns an empty palette into a
+usable one.
+
+<CodeGroup>
+
+```bash curl
+git clone https://github.com/GNS3/gns3-registry
+curl -X POST http://<host>:8081/api/v1/system/registry/import \
+  -H 'content-type: application/json' \
+  -d '{"path": "/path/to/gns3-registry/appliances"}'
+```
+
+```python Python
+import httpx, subprocess
+subprocess.run(["git", "clone", "https://github.com/GNS3/gns3-registry"], check=True)
+r = httpx.post(
+    "http://<host>:8081/api/v1/system/registry/import",
+    json={"path": "/path/to/gns3-registry/appliances"},
+)
+r.raise_for_status()
+print(r.json())
+```
+
+</CodeGroup>
+
+It previews by default and tells you the honest numbers:
+
+```
+228 definitions
+217 on runtimes Labtris has (QEMU or Docker)
+144 obtainable without a vendor account
+ 71 send you to a vendor login
+```
+
+The 71 are the ones people usually want — Cisco CSR1000v, Juniper vMX, PA-VM,
+Arista vEOS. Importing them still helps: you get the correct RAM, NIC model,
+disk bus and console type, plus the exact page to download from.
+
+> The registry is GPL-3.0 and Labtris is Apache-2.0. Labtris reads the format
+> but does not ship the files, which is why you clone them yourself. A file
+> format cannot be copyrighted; bundling the files would carry their licence.
+
+## The two settings that stop a guest booting
+
+Both are recorded per image, and both fail in ways that do not look like what
+they are.
+
+### NIC model
+
+`virtio-net-pci` is fast and needs a driver the guest may not have. A guest
+without it boots fine and has **no network at all** — the interface simply is
+not there. `e1000` is emulated hardware from 2002 that everything can drive.
+
+Symptom: the node runs, the console works, and `ip link` shows only loopback.
+
+Anything old, minimal, or shipped as an appliance usually wants `e1000`. The
+image catalogue records which, and you can override it per node.
+
+### Disk bus
+
+Same problem, one layer down. A guest handed a `virtio` disk when its kernel has
+no virtio-blk driver **does not boot** — and it does not say so. QEMU starts, the
+console shows a bootloader or nothing at all, and it hangs.
+
+Symptom: the node says running, the console is blank or stuck at a BIOS screen,
+and it looks like the host is broken.
+
+Of the 182 QEMU appliances in the GNS3 registry, **67 need IDE rather than
+virtio** — better than one in three. If a guest will not boot and you have
+checked everything else, this is the thing.
+
+Set it per node under **Disk controller** in the QEMU options. Leave it blank
+and the image's own setting is used, which is what you want almost always; the
+override is there for a bring-your-own image whose needs nothing has recorded.
+
+> The names do not agree between tools. QEMU's `-drive if=` takes `virtio`,
+> `ide`, `scsi` and `sd`, and **refuses `sata`, `nvme` and `usb`** — while the
+> GNS3 registry uses `sata` freely. Labtris translates rather than passing the
+> name through, so an imported appliance starts instead of dying at launch with
+> a complaint about a bus you never chose. `sata` becomes `ide` and `nvme`
+> becomes `virtio`: approximations, but ones that boot.
+
+## Installing an OS from an ISO
+
+Labtris does not (yet) boot an ISO with a scratch disk attached from the UI —
+booting a bootable CD-ROM plus a blank install target is a different QEMU
+command shape from booting an existing disk image, and the surface for it in
+Labtris is not built. Do the install once at the shell, then upload the
+resulting `.qcow2` — the "Upload image" dialog and `labtris-image add`
+described below both take that file straight in.
+
+**1. Create the empty disk.** Pick a size the installer will accept:
+
+```
+qemu-img create -f qcow2 myvm.qcow2 20G
+```
+
+qcow2 is thin-provisioned, so a 20 GB file uses only the bytes actually
+written — an OS install ends up 3–8 GB whatever number you picked.
+
+**2. Boot QEMU with the ISO as CD-ROM.** For a graphical install you can drive
+over the network by VNC:
+
+```
+qemu-system-x86_64 \
+  -m 2048 -cpu qemu64 -smp 2 -accel kvm \
+  -drive file=myvm.qcow2,if=virtio,format=qcow2 \
+  -cdrom installer.iso -boot d \
+  -netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+  -vnc :10 -display none
+```
+
+Attach a VNC viewer to `<host>:5910` and complete the install. `-boot d`
+says "boot from CD-ROM this once"; on a normal reboot the machine will fall
+back to the disk. If your installer supports a serial console (Ubuntu's
+autoinstall does, most vendor installers do not), swap `-vnc :10 -display
+none` for `-nographic -serial mon:stdio` and drive it from the terminal.
+
+**3. Reboot without the ISO** to verify the disk boots on its own, and take the
+one-time opportunity to do things you cannot easily do per node later: apply
+initial updates, install an SSH key, remove the installer packages,
+`cloud-init clean` if you want the next boot to re-run cloud-init.
+
+```
+qemu-system-x86_64 \
+  -m 2048 -cpu qemu64 -smp 2 -accel kvm \
+  -drive file=myvm.qcow2,if=virtio,format=qcow2 \
+  -netdev user,id=n1 -device virtio-net-pci,netdev=n1 \
+  -vnc :10 -display none
+```
+
+**4. Sparsify.** After the install, a `qemu-img convert -O qcow2 -c` produces a
+smaller file that unpacks to the same content — commonly 5–10× smaller than
+the raw install. Labtris does this on flatten too, but the smaller file
+uploads faster.
+
+```
+qemu-img convert -O qcow2 -c myvm.qcow2 myvm-shrunk.qcow2
+```
+
+### Bake once, boot many
+
+The point of doing the install once and uploading the result — rather than
+running the ISO every time — is that every node using the image starts from
+the same bytes. So keep the base image **generic**: don't bake in the
+hostname, don't fix an IP, don't keep the SSH host keys. If the guest has
+`cloud-init`, leave it enabled and let it re-personalise per boot. If it
+does not, the first-boot experience is going to include running whatever
+setup wizard the vendor ships.
+
+### Upload it to Labtris
+
+Two ways in, same shape out:
+
+- **UI.** In the palette, next to *Your templates*, click **Upload image…**.
+  Pick the file, name it, set the RAM/CPU/NIC/disk-bus/iface-scheme the
+  guest actually wants — the defaults are for a modern Linux on virtio and
+  are wrong for many vendor appliances (see [The two settings that stop a
+  guest booting](#the-two-settings-that-stop-a-guest-booting) above).
+- **CLI**, on the labtris server as the service user:
+
+  ```
+  sudo -u labtris /opt/labtris/.venv/bin/labtris-image add \
+    /path/to/myvm.qcow2 \
+    --name "my custom vm" \
+    --ram-mb 2048 --nic-model virtio-net-pci --disk-bus virtio \
+    --iface-scheme ens
+  ```
+
+  `--help` lists every knob. The CLI writes into the same image cache the
+  service uses, so it has to run as the `labtris` user (or root) — a
+  permissions error prints the `sudo -u labtris` line to re-run.
+
+Either path stores the disk under its content hash and drops a **Your
+templates** entry pointing at it. Uploading the same file twice under
+different names stores it once and gives you two entries — content-addressed
+storage means dedup is free.
+
+Only `.qcow2` and other disk formats (`.img`, `.vmdk`, `.vdi`, `.vhd`,
+`.raw`) upload directly. `.iso` is refused with a pointer at this page —
+the "boot the CD-ROM with a scratch qcow2" flow lives outside Labtris for
+now, which is what this whole section is about.
+
+### Recipes
+
+Ready-made install-and-register scripts for the ISOs people ask for most
+often live in `packaging/recipes/`. Each one is the four-step flow above
+with the right flags baked in, and calls `labtris-image add` for you at
+the end. The interactive part (VNC into the installer, click through its
+wizard, set a password) is still yours — everything around it isn't.
+
+| | |
+|---|---|
+| **VyOS** (installer ISO from `community-downloads.vyos.dev`) | `sudo packaging/recipes/vyos.sh` |
+
+Add more by copying `vyos.sh`; the shape is the same for any appliance
+whose vendor ships a bootable installer instead of a ready qcow2.
+
+## Saving a configured guest as a template
+
+Booting a vendor appliance, accepting its licence and configuring it is an
+afternoon's work. You should do it once.
+
+Stop the node, select it, and **Export as template**. For a QEMU node that
+flattens the node's disk — its overlay and everything under it — into a new
+standalone image, and records it in the palette under **Your templates**. Drag
+it out again and you get the machine as you left it.
+
+The node has to be stopped. A disk that a running guest is still writing has no
+consistent moment to copy, and the damage shows up days later on a template
+people had started to trust.
+
+A few things worth knowing:
+
+- **It copies, it does not overwrite.** `qemu-img commit` would merge a node's
+  changes down into the base image it came from, but Labtris will not do that:
+  one base file backs every node using that image across every lab and user,
+  and committing would rewrite disks under other people's running guests.
+- **The template remembers its sizing.** A saved image has no catalogue entry
+  behind it, so the memory, vCPU count and NIC model are stored with the
+  template. Without that a saved 8 GB appliance would come back on 256 MB.
+- **Identical saves share one file.** Saving the same untouched appliance twice
+  stores it once, because images are addressed by content.
+- **A template in use cannot be deleted.** You will be told which nodes still
+  boot from it. Once nothing does, deleting the template deletes the disk too.
+
+For a Docker node this is metadata only — an image reference already names
+immutable content, so there is nothing to copy.
+
+## Sizing
+
+Each node can override the image's defaults for RAM, vCPU and NIC model. None of
+it can change on a running guest; it is what the node boots with next time.
+
+The image's numbers are a floor that someone actually booted, not a guess. Going
+below them usually produces a guest that starts and then fails in a way that
+takes an hour to attribute to memory.
+
+## Where images live
+
+QEMU disks are cached under the image cache directory and shared between nodes
+using the same image, so ten Ubuntu nodes are one download. A node's own writes
+go to its own overlay, which is what makes wiping a node cheap.
+
+See [Running the server](/operations) for moving that directory somewhere
+larger.
+
+## Next
+
+[Networking](/networking) — how nodes are joined, and what each kind of
+segment does.

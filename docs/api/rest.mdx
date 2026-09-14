@@ -1,0 +1,199 @@
+---
+title: "API"
+description: "REST endpoints, WebSocket streams, authentication, and how to script the lab."
+---
+
+Everything the interface does, it does over the same HTTP API you can use. There
+is no private back channel.
+
+## REST
+
+Every URL is under `/api/v1/`. The interactive OpenAPI browser is at
+`/docs`.
+
+<CodeGroup>
+
+```bash curl
+# list labs, get one, create one
+curl http://<host>:8081/api/v1/labs
+curl http://<host>:8081/api/v1/labs/<id>
+curl -X POST http://<host>:8081/api/v1/labs \
+  -H 'content-type: application/json' \
+  -d '{"name": "spine-leaf"}'
+```
+
+```python Python
+import httpx
+base = "http://<host>:8081/api/v1"
+
+httpx.get(f"{base}/labs").json()
+httpx.get(f"{base}/labs/<id>").json()
+httpx.post(f"{base}/labs", json={"name": "spine-leaf"}).json()
+```
+
+</CodeGroup>
+
+### Signing in
+
+The API takes a session cookie or a bearer token. Signing in sets the
+cookie, so a jar is the shortest path from a script:
+
+<CodeGroup>
+
+```bash curl
+curl -c jar -X POST http://<host>:8081/api/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username": "you", "password": "..."}'
+curl -b jar http://<host>:8081/api/v1/labs
+```
+
+```python Python
+import httpx
+with httpx.Client(base_url="http://<host>:8081/api/v1") as c:
+    c.post("/auth/login", json={"username": "you", "password": "..."})
+    labs = c.get("/labs").json()
+```
+
+</CodeGroup>
+
+The same signed value is accepted as `Authorization: Bearer <token>`, which is
+what the MCP server uses. The cookie is what the browser sends, because it rides
+along on the WebSocket handshake that a header cannot.
+
+A handful of legacy-shaped routes exist alongside the native ones, so scripts
+written against older emulator APIs can be pointed here with less rewriting.
+
+## MCP
+
+Labtris ships an MCP server, so a model can drive it directly — build a
+topology, start nodes, wire them, impair a link, take a capture, read it back.
+
+```
+$ LABTRIS_API_URL=http://<host>:8081 \
+  LABTRIS_API_USER=you LABTRIS_API_PASSWORD=... \
+  python -m labtris_mcp
+```
+
+It speaks JSON-RPC over stdin and stdout, which is what MCP clients expect.
+Point Claude Code, Claude Desktop, or anything else that speaks MCP at that
+command.
+
+Twenty-two tools:
+
+| | |
+|---|---|
+| **Looking** | `health`, `list_catalog`, `list_labs`, `get_lab`, `host_interfaces`, `host_capabilities`, `list_hosts` |
+| **Building** | `create_lab`, `add_node`, `connect_nodes`, `create_network`, `join_network`, `set_node_resources` |
+| **Running** | `start_node`, `stop_node`, `node_logs`, `console_exec` |
+| **Investigating** | `impair_link`, `capture_start`, `capture_read`, `capture_stop` |
+| **Removing** | `delete_lab` |
+
+`console_exec` runs one shell command inside a running node — real
+stdout/stderr/exit-code for Docker nodes (via `docker exec sh -c`),
+best-effort serial output for QEMU (writes the line and drains the
+console for a timeout, no shell-prompt detection). The natural answer
+to "what address did DHCP give this VM?" is `console_exec` `ip -br
+addr`, not a packet capture — but the packet capture is still there
+for the cases where the guest is not cooperative.
+
+The tool descriptions carry the things a model gets wrong on its own — that a
+QEMU image not already cached costs a multi-GB download on first start, so it
+should poll rather than call `start_node` again; that one host NIC can back only
+one cloud network; that the NIC carrying the default route is refused unless you
+explicitly override, because binding it takes the host off the network.
+
+## The built-in assistant
+
+There is a chat window in the interface — click **✦ Assistant** in the top
+bar and a floating panel opens on the right — that does the same thing
+without an MCP client.
+
+**Your key stays in your browser.** Put an OpenAI-compatible base URL, key and
+model into **Settings → Assistant** and the conversation runs client-side
+against your provider. Labtris serves the tool schemas, the browser runs the
+loop, and it comes back here only to execute what the model decided to call.
+
+Labtris never sees the key. An operator cannot leak one, and the strongest
+version of that promise is not holding it in the first place.
+
+If you would rather the server hold the key — one shared instance, one bill —
+set it there instead:
+
+```
+LABTRIS_LLM_BASE_URL=https://api.openai.com/v1
+LABTRIS_LLM_API_KEY=...
+LABTRIS_LLM_MODEL=gpt-4o
+```
+
+The browser prefers its own key and falls back to the server's. With neither,
+the panel says so rather than failing silently.
+
+### What you see while it's working
+
+When the server-side path is used, the browser opens a WebSocket for each
+turn. Text arrives **token-by-token** into a growing bubble at the end of
+the chat; you watch the assistant think rather than staring at a blank
+panel and then getting everything at once. A pulsing "**Assistant is
+working**" strip at the top of the pane names the tool call currently in
+flight and counts how many the model has made so far, so the time
+between visible bubbles never looks like nothing is happening.
+
+If the model exposes reasoning tokens (Claude 3.7+ thinking blocks,
+o1/o3 reasoning content) they render in a folded **"thinking"** section
+above the reply, so a model that shows its work does not have to
+compete with its answer for space. Fold it open when you want the
+detail.
+
+The Send button turns into a red **Stop** while a turn is in flight —
+click it and the model bails at its next boundary. Cancelled turns
+show `(stopped)` in the chat rather than being lost silently.
+
+If the LLM's stream drops mid-turn (a proxy hiccup, a rate-limit
+blink) the client automatically re-issues the request one time and
+the growing bubble restarts. Only the second failure surfaces as an
+error.
+
+### Consent for the tools that hurt
+
+Five tools — `delete_lab`, `delete_node`, `stop_node`, `create_network`,
+`join_network` — pause the loop and ask before firing. A red modal
+appears with the tool name and the exact arguments the model wants to
+use; **Allow** proceeds, **Deny** reflects a 403 back to the model so
+it can explain what it wanted rather than trying again. The MCP surface
+(external clients, `curl` against `POST /ai`) does not gate — the
+consent modal is a UI-only affordance because a browser user can be
+asked, and a script cannot.
+
+### Attaching images and PDFs
+
+The paperclip 📎 next to the input opens a file picker. Pick images
+(png/jpg/webp/gif) or PDFs up to 20 MB each; they appear as chips
+above the input and go with the next Send. Images reach the model
+directly; PDFs are rendered server-side to per-page PNGs via
+`pdftoppm` (first five pages) so the vision model always sees the
+same shape.
+
+Requires a vision-capable model on the provider side. Non-vision
+models will simply ignore the image parts.
+
+### What it can and cannot do
+
+**Tools run as you.** The assistant uses the calling person's own credentials,
+so nothing it can do exceeds what you could do by hand. An agent that could
+would be a privilege-escalation feature with a chat box on it.
+
+That means it is bounded by [ownership](/users#what-ownership-protects): it
+can build in anyone's lab and it cannot delete someone else's.
+
+Each tool call is one request rather than a batch, so a refusal comes back as
+information the model can act on — and a partial batch never leaves it guessing
+which half ran.
+
+There is also a small local planner for a handful of shapes it recognises
+without a model at all. When it does not recognise what you asked, it says so
+rather than guessing.
+
+## Next
+
+[Running the server](/operations) — upgrades, reboots, density, and what to
+do when something is wrong.

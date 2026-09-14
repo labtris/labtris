@@ -1,0 +1,188 @@
+---
+title: "Feature list"
+description: "What Labtris does, in categories, without prose framing."
+---
+
+The seven explicit product asks that shaped the roadmap:
+**AI tab · Docker Wireshark capture · movable icons · wiring · tc on
+links · simple containers · scale big**.
+
+The list below is grouped by tier. Tier 0 is what the product was for
+in the first place. Tier 1 is the parity gaps you notice within an
+hour of using anything else. Tier 2 is the platform work — RBAC,
+quotas, snapshots, versioning — that turns the product from a tool
+into infrastructure.
+
+---
+
+## Tier 0 — The seven explicit asks
+
+### F1. Canvas: movable icons + wiring
+
+- Drag nodes; persist via `PUT /labs/{path}/layout`
+- Links as first-class objects (`POST/PATCH/DELETE /links`)
+- **Separate rendering state from topology state.** Keep geometry
+  in its own store so a lab diffs cleanly in git and two users can
+  move icons without producing topology conflicts. Anything that
+  embeds `labelpos`/`curviness`/`midpoint`/`srcpos`/`dstpos` inside
+  the topology definition is worse for both of those.
+- Drag-to-wire: pull from an interface stub to a target, auto-pick
+  lowest free interface index, reject if either side is exhausted
+- Snap-to-grid, multi-select, box-select, group move, alignment guides
+- Waypoints / bendpoints on links (a single bezier curviness scalar
+  is not enough)
+- Auto-layout (dagre/elk) for imported labs
+- Canvas virtualization — see F7; do not render 500 DOM nodes
+- Per-node style/icon → `PUT .../nodes/{id}/style`
+
+### F2. tc on links
+
+- netem: delay, jitter, loss, reorder, duplicate, corrupt; tbf: rate
+- **Per-link, not per-tap.** Applying `tc` to the tap makes
+  impairment really per-node-interface with a fake-symmetry pass that
+  writes both ends. With first-class links we model one link → two
+  directional qdisc specs.
+- Asymmetric impairment (A→B ≠ B→A) — falls out free from the above
+- Live edit while running, no flap
+- Impairment profiles ("satellite", "3G", "lossy-wan") as reusable presets
+- Link admin up/down (fast failure injection without deleting the link)
+- Cross-check against containerlab `tools netem` for flag parity
+
+### F3. Docker Wireshark capture
+
+- Start/stop capture on an interface
+- **Simple transport.** The typical prior-art shape (a per-node
+  capture container on `127.0.0.1:4243` with nftables NAT chains
+  hung off it and a watchdog reaping on zero ESTABLISHED conns)
+  works, but the NAT hop is the fragile part. Prefer a capture
+  sidecar writing to a **WebSocket pcap stream**, no NAT.
+- Browser-native packet view — stream to a JS dissector so the common
+  case needs no local Wireshark at all
+- "Open in Wireshark" — `wireshark -k -i <(ssh ... tcpdump)` one-liner
+  for power users
+- Capture on a **link** (both directions) as well as an interface
+- Ring buffer + size/duration cap so a forgotten capture can't fill
+  the disk
+- BPF filter at capture time (don't ship gigabytes to filter
+  client-side)
+- Persist pcaps per lab; list/download/delete
+
+### F4. Simple containers
+
+- Docker images: `pull`, `mark`, `unmark`, list
+- **Zero-template containers** — run any image (`alpine`, `nginx`,
+  `frr`) with no `.yml` template authoring. Requiring a template per
+  image is the friction to remove.
+- Sensible auto-defaults: detect exposed ports, guess console type,
+  default 1 iface
+- Inline `docker exec` console in the browser
+- Env vars / cmd / volume overrides per node in the UI
+- `sysbox-runc` as an option for systemd-in-container
+- Adopt **containerlab kinds** as the container catalog (~70 kinds)
+  — see F8
+
+### F5. AI tab
+
+- Chat panel docked beside the canvas, with the current topology as
+  context
+- **Topology-aware tools** (function-calling against our own API):
+  `create_node`, `wire`, `set_impairment`, `start/stop`, `capture`,
+  `read_config`
+- Natural-language topology generation ("3-tier clos, 4 spines, 8
+  leaves") → emit lab JSON → **preview diff → user approves → apply.**
+  Never auto-apply.
+- Explain-this-capture: feed a pcap slice to the model
+- Config generation + push to a node's startup-config
+- Troubleshooting: read logs + interface state + captures, propose a
+  cause
+- Guardrails: dry-run by default, explicit confirm for destructive
+  ops, per-lab scope
+- Pluggable backend (Anthropic / OpenAI / local) — **no hardcoded
+  keys**, server-side proxy only, never expose a key to the browser
+
+### F6. Scale big — see [Scaling](/design/scaling)
+
+Reference host is 32 threads / 314 GiB and runs 15 VMs, 40 bridges,
+249 taps comfortably. The ceilings are *not* CPU/RAM — they are
+these:
+
+- `ulimit -n` is **1024** and `limits.conf` is **empty** → raise to
+  1048576
+- ARP `gc_thresh1/2/3` at stock **128/512/1024** → silent L2
+  blackholing on big labs
+- `vm.swappiness=60` → set 1; swapping guest RAM destroys density
+- KSM yields **8.5:1** (62 GiB saved) on a mixed workload — make it
+  explicit + tunable, don't inherit it by accident
+- Multi-host: scheduler + VXLAN overlay between hosts (containerlab
+  `tools vxlan`)
+- Lazy/on-demand node start; "cold" nodes cost nothing
+- Interface naming scheme without a 15-char `IFNAMSIZ` hex-packed
+  entity ceiling
+
+### F7. Big-topology UI
+
+- Canvas virtualization (render only viewport + margin)
+- LOD: simplify icons past a zoom threshold; collapse link bundles
+- Hierarchical grouping / sub-topologies with collapse
+- Minimap + fast search-and-jump
+- Bulk ops on selection (start/stop/impair N nodes at once)
+- Server-side topology paging for very large labs
+
+---
+
+## Tier 1 — Parity gaps that will bite immediately
+
+| # | Feature |
+|---|---|
+| F8  | **Multi-runtime abstraction**: QEMU · Docker · containerlab · IOL · Dynamips behind one interface |
+| F9  | Lab import/export (incl. **legacy `.unl` importer** — schema captured) |
+| F10 | Config sets + per-node startup-configs (`configsets`, `configs/{nodeId}`) |
+| F11 | Async task queue with progress (`/task`, `/tasks`, `/task/{id}`) |
+| F12 | Lab lock/unlock |
+| F13 | Suspend / resume |
+| F14 | Export node → reusable template |
+| F15 | Log tail with filter (`/logs/{path}/{lines}/{pattern}`) |
+| F16 | Move lab / folder reorganization |
+| F17 | `runtime/reconcile` — desired-state vs actual-host reconciliation |
+| F18 | WebSocket push for all state (never poll) |
+| F19 | Console brokering: html5 / rdp / telnet / serial |
+| F20 | Cloud + bridge-cloud management |
+
+## Tier 2 — Platform
+
+| # | Feature |
+|---|---|
+| F21 | RBAC: users, roles, per-lab ACLs, tenancy |
+| F22 | Resource quotas per user/tenant (vCPU, RAM, node count) |
+| F23 | Scheduling / reservations / auto-expiry |
+| F24 | Lab templates + a shareable catalog |
+| F25 | Snapshots (QEMU qcow2 overlay + container commit) |
+| F26 | Git-backed lab versioning (needs F1's geometry split to diff cleanly) |
+| F27 | Audit log |
+| F28 | Prometheus metrics + per-node resource graphs |
+| F29 | REST + WS API with an OpenAPI spec, token auth |
+| F30 | Terraform / Ansible provider |
+
+## Explicitly out of scope
+
+- A licence server — the product is Apache-2.0 and stays that way
+- SourceGuardian-encoded PHP, MySQL with a default password, polling
+  loops instead of push
+- A separate cluster protocol — F6's multi-host scheduler covers it
+
+---
+
+## Suggested build order
+
+1. **F8 runtime abstraction** first — everything else hangs off it,
+   and getting it wrong means rewriting F2/F3/F4 later
+2. **F1 canvas + wiring** with the geometry/topology split baked in
+   from commit one
+3. **F4 simple containers** — fastest path to a demoable product
+4. **F2 tc** and **F3 capture** — the two highest-value parity gaps,
+   both fully reverse-engineered in [Findings](/design/findings)
+5. **F6 host tuning** — mostly a sysctl/limits file; cheap, and
+   prevents mystery failures
+6. **F5 AI tab** — needs a stable API surface (steps 1-4) to call
+   into
+7. Tier 1 parity, then Tier 2

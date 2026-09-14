@@ -1,0 +1,93 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "name": "Labtris",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "/"
+  },
+  "favicon": "/logo/favicon.svg",
+  "colors": {
+    "primary": "#00c0ef",
+    "light":   "#26c4ff",
+    "dark":    "#008fb3",
+    "background": {
+      "light": "#ffffff",
+      "dark":  "#1a2226"
+    }
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url":  "https://github.com/rajeshgangam/my-own-pnetlab"
+    }
+  ],
+  "topbarCtaButton": {
+    "name": "Install",
+    "url":  "/install"
+  },
+  "font": {
+    "family": "Inter"
+  },
+  "codeBlock": {
+    "mode": "auto"
+  },
+  "search": {
+    "prompt": "Search the handbook"
+  },
+  "feedback": {
+    "thumbsRating": true,
+    "suggestEdit": true,
+    "raiseIssue":  true
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/rajeshgangam/my-own-pnetlab"
+    }
+  },
+  "navigation": [
+    {
+      "group": "Getting started",
+      "pages": ["introduction", "install", "first-lab"]
+    },
+    {
+      "group": "Building labs",
+      "pages": [
+        "nodes-and-images",
+        "networking",
+        "consoles",
+        "observing",
+        "labs",
+        "users"
+      ]
+    },
+    {
+      "group": "API",
+      "pages": [
+        "api/rest",
+        "api/assistant"
+      ]
+    },
+    {
+      "group": "Reference",
+      "pages": [
+        "reference/install-from-source",
+        "reference/building-the-iso"
+      ]
+    },
+    {
+      "group": "Operations",
+      "pages": ["operations"]
+    },
+    {
+      "group": "Design notes",
+      "pages": [
+        "design/findings",
+        "design/features",
+        "design/architecture",
+        "design/scaling",
+        "design/phase1-spec"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+---
+title: "Driving a lab from an MCP client"
+description: "Point Claude Code, Cursor, or your own MCP client at a Labtris instance."
+---
+
+`labtris-mcp` exposes this instance to any Model Context Protocol client — Claude
+Code, Cursor, or something you wrote — so an agent can build and inspect labs
+with the same operations the browser uses.
+
+## Run it
+
+```bash
+LABTRIS_API_URL=http://127.0.0.1:8080 .venv/bin/labtris-mcp
+```
+
+It speaks MCP's stdio transport, so it is normally launched by the client
+rather than by you.
+
+| variable | meaning |
+|---|---|
+| `LABTRIS_API_URL` | the instance to drive; defaults to `http://127.0.0.1:8080` |
+| `LABTRIS_API_USER` / `LABTRIS_API_PASSWORD` | HTTP basic auth, if you put the API behind a proxy |
+
+Because the target is a URL, the agent does not have to run on the lab host —
+point it at a remote instance and drive it from your laptop.
+
+## Claude Code
+
+```bash
+claude mcp add pnetlab -e LABTRIS_API_URL=http://labhost:8080 -- /path/to/.venv/bin/labtris-mcp
+```
+
+## Cursor / anything reading `mcpServers`
+
+```json
+{
+  "mcpServers": {
+    "pnetlab": {
+      "command": "/path/to/.venv/bin/labtris-mcp",
+      "env": { "LABTRIS_API_URL": "http://labhost:8080" }
+    }
+  }
+}
+```
+
+## Tools
+
+| | |
+|---|---|
+| `health`, `list_catalog` | what is up, and what can be placed |
+| `list_labs`, `get_lab`, `create_lab`, `delete_lab` | labs |
+| `add_node`, `start_node`, `stop_node`, `node_logs`, `set_node_resources` | nodes |
+| `connect_nodes` | point-to-point wiring, reusing free interfaces |
+| `create_network`, `join_network`, `host_interfaces` | bridges and clouds |
+| `impair_link` | netem per direction |
+| `capture_start`, `capture_read`, `capture_stop` | tcpdump on an interface or link |
+| `list_hosts`, `host_capabilities` | the multi-host control plane |
+
+## Notes for whoever is writing the agent prompt
+
+- A QEMU image that is not already cached costs a **multi-GB download** on its
+  first `start_node`, which can take many minutes. `list_catalog` reports
+  `cached` and a live `percent`. Do not retry the start; it is refused anyway.
+- Refusals come back as tool errors with the reason as text — "that NIC already
+  backs another cloud", "this kernel has no vxlan device type" — rather than as
+  protocol errors, so the model can read them and pick something else.
+- `impair_link` applies to `a->b` by default; pass `reverse` or `both`.
+
+## Why there is no MCP SDK dependency
+
+The official Python SDK requires `pydantic >= 2.12` and a newer `starlette`
+than the API pins; installing it downgrades nothing and breaks FastAPI
+0.115.6 outright — it was tried, and it did. MCP's stdio transport is
+newline-delimited JSON-RPC 2.0 and the surface this server needs is
+`initialize`, `tools/list`, `tools/call` and `ping`. That is a small amount of
+standard library code against a published wire format, and it is a much better
+trade than dragging the API's whole dependency set forward to gain a message
+loop.
+
+If you would rather use the SDK, nothing here stops you: `labtris_mcp/tools.py`
+holds the tool table as plain data, so a second front end over `MCPServer` in
+its own virtualenv is a short file. The tools do not import anything from the
+transport.
+
+## The built-in assistant uses the same tools
+
+The AI panel in the UI is the same tool table driven by an OpenAI-compatible
+endpoint — LiteLLM by default, so whichever provider you route there is your
+business and no key leaves your network.
+
+```bash
+export LABTRIS_LLM_BASE_URL=http://127.0.0.1:4000   # your LiteLLM
+export LABTRIS_LLM_API_KEY=sk-...                   # often empty locally
+export LABTRIS_LLM_MODEL=gpt-4o-mini                # whatever you routed
+```
+
+`GET /api/v1/ai/status` reports what it is pointed at, whether that endpoint
+answers, and the tools it has. With nothing configured the panel says so and
+falls back to a handful of built-in patterns rather than pretending.
+
+The point of sharing the table is that there is one implementation of "create
+a node". The assistant drives this instance through its own public API, so
+anything it can do, an external agent can do, and neither can drift from the
+other.

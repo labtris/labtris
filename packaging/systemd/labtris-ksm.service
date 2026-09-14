@@ -1,0 +1,28 @@
+[Unit]
+Description=Enable and tune Kernel Samepage Merging for lab density
+Documentation=file:///opt/labtris/docs/04-scaling.md
+# Before the API, so the first node started on a fresh boot is already
+# benefiting rather than waiting for the next scan cycle.
+Before=labtris-api.service
+# ksmtuned (installed by qemu-kvm on Ubuntu) is a long-running daemon that
+# turns KSM off whenever the host has free memory — which on a lab host is
+# most of the time, and exactly wrong: KSM's whole value comes from running
+# during the seconds after a lab boots, before the pages have been dirtied.
+# Racing against it also means whichever unit writes /sys/kernel/mm/ksm/run
+# last wins, and on some boots that was ksmtuned. Mask it here so labtris-ksm's
+# tuning is the only voice on this file.
+Conflicts=ksmtuned.service
+ConditionPathIsDirectory=/sys/kernel/mm/ksm
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Belt-and-braces: mask ksmtuned before running the tuning script, so a
+# fresh install can't have ksmtuned come back up and flip run=0 after us.
+ExecStartPre=-/usr/bin/systemctl mask ksmtuned.service
+ExecStartPre=-/usr/bin/systemctl stop ksmtuned.service
+ExecStart=/opt/labtris/packaging/labtris-ksm.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

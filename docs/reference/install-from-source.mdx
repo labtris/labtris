@@ -1,0 +1,274 @@
+---
+title: "Install from source"
+description: "The from-source path: what every service is, how it fits together, and every knob the install exposes."
+---
+
+Written against Ubuntu 24.04 LTS. Every step below was run on a clean 24.04
+host; where something bites, the reason is given rather than a workaround you
+have to trust.
+
+## 0. What you are installing
+
+Four processes, and they are separable on purpose:
+
+| process | runs as | why |
+|---|---|---|
+| `labtris-netd` | **root** | the only thing that touches netlink: bridges, taps, veths, vxlan, tc, tcpdump |
+| `labtris-api` | your user | REST + WebSockets; owns Postgres and the Docker socket, never netlink |
+| `guacd` | its own user | VNC/RDP for QEMU consoles |
+| Postgres | container | schema and lab state |
+
+The split is the point: the API is the part exposed to a browser, and it
+cannot reconfigure the host's network. Everything privileged goes through
+netd's fixed verb list.
+
+## 1. Packages
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  python3.12-venv python3-pip git \
+  qemu-system-x86 qemu-utils \
+  guacd libguac-client-vnc0 libguac-client-rdp0 \
+  p7zip-full tcpdump iproute2 \
+  docker.io docker-compose-v2
+sudo usermod -aG docker "$USER"   # log out and back in for this to take effect
+```
+
+`p7zip-full` is not optional if you want the osboxes images: they ship as
+`.7z` and the QEMU backend extracts them before converting to qcow2.
+
+`libguac-client-rdp0` is separate from `guacd` — without it the RDP console
+tunnels fine and then fails at connect time, because guacd only advertises the
+protocols whose plugins are installed.
+
+## 2. The code
+
+The repository is currently private and still under its working name, so the
+clone URL needs credentials and will change when it moves to the `labtris`
+org:
+
+```bash
+git clone https://github.com/rajeshgangam/my-own-pnetlab.git labtris
+cd labtris
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+```
+
+Python 3.12 specifically — `pyproject.toml` pins `>=3.12,<3.13`, and the
+dependency set is pinned with it.
+
+## 3. Database
+
+```bash
+make dev-db
+```
+
+If something already listens on 5432 — another project's Postgres is the usual
+culprit — pick another port rather than fighting it:
+
+```bash
+LABTRIS_PG_PORT=55432 make dev-db
+export LABTRIS_DATABASE_URL=postgresql+asyncpg://pnl:pnl@localhost:55432/pnl
+```
+
+That variable has to be set for every process below, or they will each talk to
+a different database and disagree about what exists.
+
+## 4. netd
+
+```bash
+sudo .venv/bin/python -m labtris_netd \
+    --socket /run/labtris/netd.sock \
+    --socket-group "$USER"
+```
+
+netd runs as root and creates its socket `0660`, so the API — which does not —
+cannot reach it unless the group is one the API's user belongs to. Passing
+`--socket-group` sets that at startup. Doing it by hand afterwards works too,
+but the socket is recreated on every restart, and the failure it causes
+(`netd unavailable: [Errno 13] Permission denied`) points at the API rather
+than at the socket that actually changed.
+
+## 5. API and UI
+
+```bash
+make web-build          # web/dist is gitignored; the API only mounts it if present
+make api                # http://localhost:8080
+```
+
+`make web` instead runs the vite dev server on :5173 if you are editing the UI.
+
+## 6. Check it
+
+```bash
+curl -s localhost:8080/api/v1/health
+# {"status":"ok","netd":true,"db":true,"docker":true}
+```
+
+All four must be true. `netd: false` is almost always the socket group in
+step 4.
+
+## 7. Optional: QEMU acceleration
+
+`LABTRIS_QEMU_ACCEL` defaults to `tcg` — software emulation, no hardware
+requirement, and slow. If `/dev/kvm` exists **and** you have verified a guest
+actually executes:
+
+```bash
+export LABTRIS_QEMU_ACCEL=kvm
+```
+
+On AWS this only exists on `.metal` instance types; ordinary instances have no
+`/dev/kvm` and must stay on `tcg`. Nested virtualisation that reports success
+and then hangs on the first vcpu is why this is opt-in rather than detected.
+
+## 8. Optional: exposing the UI
+
+The API authenticates: the first visit asks you to create an administrator,
+and everything past that needs a session. That is not the same as being safe
+on a public interface. It holds the Docker socket, accepts arbitrary images
+and commands, and an administrator can place a privileged container — so
+anyone who gets an account, or gets past the login, can run code on the host.
+Treat the login as a door, not a wall.
+
+An SSH tunnel costs nothing and exposes nothing:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 you@labhost
+```
+
+If you need it reachable, terminate it behind a reverse proxy that
+authenticates, and remember the consoles are WebSockets:
+
+```nginx
+server {
+    listen 8081;
+    auth_basic "pnetlab";
+    auth_basic_user_file /etc/nginx/.labtris-htpasswd;
+
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;   # needs a map{} block
+    proxy_read_timeout 3600s;                          # an idle desktop sends nothing
+    proxy_buffering off;
+
+    location / { proxy_pass http://127.0.0.1:8080; }
+}
+```
+
+## 9. Optional: a second host
+
+See `docs/04-scaling.md`. `make netd-hostb` fakes one in a network namespace
+so you can exercise stretched networks on a single machine.
+
+## Troubleshooting
+
+**A QEMU node sits at "starting" for a long time.** It is downloading. A first
+use of an osboxes image is 0.4–3.3 GB, extracted and converted before boot; the
+palette shows the percentage. Do not click Start again — that used to race a
+second `qemu-img create` against the first.
+
+**`vxlan` fails with ENOTSUP.** The kernel has no vxlan device type. Check with
+`GET /hosts/{id}/capabilities`; `modprobe vxlan` if the module simply is not
+loaded.
+
+**A cloud network refuses your NIC.** Either it already backs another cloud, or
+it carries the host's default route — binding that one takes the machine off
+the network, including your SSH session.
+
+## Optional: Wireshark windows
+
+The Wireshark button runs the real binary on the lab host and shows it in the
+browser, so it needs a GUI Wireshark, a headless X server, and a VNC exporter:
+
+```bash
+sudo apt-get install -y wireshark xvfb x11vnc
+sudo dpkg-reconfigure wireshark-common   # answer yes: lets dumpcap capture without root
+sudo usermod -aG wireshark "$USER"
+```
+
+The `dpkg-reconfigure` step is the one that matters. It puts
+`cap_net_admin,cap_net_raw` on `dumpcap` and restricts it to the `wireshark`
+group; without it Wireshark starts and then shows no interfaces at all. The
+API launches Wireshark through `sg wireshark` so the group applies without
+needing a fresh login and without running any of it as root.
+
+Each session is a whole X server plus a Wireshark process — on the order of
+200-300 MB — so there is a cap of four at a time. x11vnc binds to loopback
+only; the browser reaches it through the same guacd tunnel the QEMU consoles
+use, never directly.
+
+## Optional: Google Drive backup
+
+Backups are configuration only — every lab's topology plus this instance's
+settings, tens of KB. QEMU images are deliberately excluded: each is 0.7–6 GB
+and is a verbatim copy of something with a known download URL, so backing up
+the catalog id is useful and backing up the bytes is not. Images re-download
+on first start.
+
+Drive needs your own OAuth client, because an OAuth client identifies the
+application to *your* Google account:
+
+1. Google Cloud Console → APIs & Services → enable the **Google Drive API**
+2. Credentials → Create credentials → **OAuth client ID** → **Desktop app**
+3. Paste the client id and secret into Settings → Google Drive
+
+Then link the instance. It uses the OAuth **device flow**: it prints a code,
+you type it into `google.com/device` on whatever machine you are sitting at.
+A lab host is usually headless and often reached over SSH, so the redirect
+flow is the wrong shape — it wants a callback URL this instance may not have.
+
+The scope requested is `drive.file`, which is access to files this app
+created, not your Drive. The refresh token is stored in the database and is
+never sent back to the browser.
+
+## Migrating an existing topology
+
+The **Import** button takes a containerlab `.clab.yml`, a legacy `.unl`
+topology, or one of this app's own exports. The format is detected from the
+content rather than the filename, because a topology mailed around loses its
+extension long before it loses its contents.
+
+Neither importer refuses a file it cannot fully translate. Anything that
+cannot be carried over becomes a labelled placeholder — an Alpine container
+with the original kind and image recorded in its env — plus a warning saying
+exactly what was lost. A topology arriving with 14 of its 17 nodes is worth
+more than an error message, as long as it is explicit about the difference.
+
+**containerlab.** Node kind and image inheritance works the way containerlab
+does it: from `topology.defaults`, then `topology.kinds`, then the node's own
+overrides. A `bridge` or `ovs-bridge` node becomes a segment rather than a
+node. Endpoints naming `host`, `mgmt-net` or `macvlan` are reported, since the
+equivalent here is a cloud network bound to a host NIC and which NIC that
+should be is not something the file can tell us. Vendor kinds — SR Linux,
+cEOS, cRPD, vrnetlab, IOL — are placeholders: those images are licensed,
+registry-gated, or built locally, so no importer can conjure them.
+
+**Legacy `.unl` (XML) topologies.** Templates map onto the QEMU catalog, so an
+`ubuntu` or `debian` node arrives as a real VM rather than a container
+pretending to be one. Appliance templates (`csr1000v`, `vios`, `asav`, `vmx`,
+…) are placeholders with a warning naming the template. Canvas positions are
+preserved.
+
+## Reporting something that is not working
+
+The **⚑** button in the toolbar turns the cursor into a crosshair: click the
+thing that is wrong and type what should have happened.
+
+What makes this worth using rather than sending a sentence is what goes with
+it. The report records which element you clicked and its text, the theme,
+viewport and zoom, which lab and what was selected, which windows were open,
+and a rolling buffer of console errors and failed API calls captured since the
+page loaded — including ones that happened before you decided to report
+anything.
+
+Whoever is fixing it reads them with:
+
+```bash
+curl -s localhost:8080/api/v1/feedback/report
+```
+
+which prints every open report as plain text, deliberately not as a UI, since
+the UI may be the thing that is broken. `PATCH /api/v1/feedback/{id}` with
+`{"status": "done"}` closes one; the toolbar badge counts what is still open.

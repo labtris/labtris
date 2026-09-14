@@ -1,0 +1,238 @@
+---
+title: "Architecture"
+description: "How the components fit together: netd, API, database, guacd, and the trust boundaries between them."
+---
+
+## Guiding decisions
+
+1. **Links are first-class.** The incumbent products imply links from
+   interface pairs, which is why `tc` on those systems is per-tap and
+   the wiring UX is awkward. Everything in F1/F2/F3 gets easier with
+   a real `Link` entity.
+2. **Geometry is not topology.** Where the incumbents mix
+   `left/top/curviness/labelpos` into the lab XML, we split them:
+   topology diffs cleanly in git, and moving an icon never conflicts
+   with a topology edit.
+3. **One runtime interface, many backends.** QEMU, Docker,
+   containerlab, IOL, Dynamips all implement the same trait. Decided
+   first because F2/F3/F4 all depend on it.
+4. **Push, never poll.** WebSocket for all state. A `GET /api/poll`
+   loop is a scaling tax.
+5. **Desired state vs observed state.** The DB holds intent; a
+   reconciler drives the host toward it.
+6. **The AI is a client, not a component.** It calls the same public
+   API a human does. No privileged backdoor, no separate code path
+   to audit.
+7. **Privilege is isolated in one small daemon.** Every root
+   operation (netlink, `tc`, `tcpdump`, systemd units, KSM sysfs)
+   lives in `labtris-netd`, a stateless root process reached over a
+   unix socket. The API runs unprivileged and never shells out.
+   Running a whole web tier as root — the common shape in this space —
+   is the single largest thing we are not copying.
+8. **Clean-room.** Prior art informed the design; no prior art
+   contributes code.
+
+---
+
+## Component layout
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Browser                                                     │
+│  ┌────────────┬──────────────┬───────────┬────────────────┐  │
+│  │  Canvas    │  AI Tab      │  Console  │  Packet View   │  │
+│  │ (virtual-  │ (tool-call-  │ (guac/    │ (pcap over WS) │  │
+│  │  ized)     │  ing chat)   │  xterm)   │                │  │
+│  └────────────┴──────────────┴───────────┴────────────────┘  │
+└───────────────┬──────────────────────────────────────────────┘
+                │ REST + WebSocket
+┌───────────────▼──────────────────────────────────────────────┐
+│  API  (FastAPI)                                              │
+│   auth · labs · nodes · links · networks · capture ·         │
+│   impairment · tasks · templates · ai · system               │
+├──────────────────────────────────────────────────────────────┤
+│  Core                                                        │
+│   Reconciler   desired(DB) → observed(host) → actions        │
+│   Scheduler    node → host placement, quotas                 │
+│   TaskQueue    async jobs w/ progress over WS                │
+│   Naming       deterministic, collision-free iface names     │
+│   AI Broker    tool dispatch, dry-run, approval gate         │
+├──────────────────────────────────────────────────────────────┤
+│  Runtime backends   (one interface)                          │
+│   QEMU  │  Docker  │  containerlab  │  IOL  │  Dynamips      │
+├──────────────────────────────────────────────────────────────┤
+│  labtris-netd   ROOT · unix socket · stateless · verb allowlist  │
+│   netlink (bridge/veth/tap) · tc (netem/tbf) ·               │
+│   capture sidecar · systemd transient units · KSM control    │
+└──────────────────────────────────────────────────────────────┘
+   Postgres (state)  ·  lab JSON files (portable)  ·  NATS/Redis (events)
+```
+
+Everything above `labtris-netd` runs as an unprivileged user. The
+boundary is a hard one: the API decides *what* should exist, `netd`
+executes it and knows nothing about labs, nodes, or intent. See
+[Phase 1 spec §1](/design/phase1-spec) for the wire protocol.
+
+---
+
+## Data model
+
+```
+Tenant ──< User ──< Lab
+                     ├──< Node ──< Interface
+                     ├──< Link  ──> (Interface a, Interface b)
+                     │       └──< Impairment (directional, a→b and b→a)
+                     ├──< Network  (bridge | cloud | vxlan)
+                     ├──< Capture  (iface | link, filter, ring config)
+                     └──< Geometry (node xy, link waypoints, groups, zoom)  ← separate table
+```
+
+`Link` carries **two** directional impairment specs. That is the
+whole fix for F2: writing `tc` onto taps can only express symmetric
+impairment.
+
+### Interface naming
+
+The common prior-art scheme packs hex into 15 chars (`IFNAMSIZ`-1):
+`vun` + `%03x`lab + `%07x`node + `%02x`idx. Deterministic and
+reversible, but it hard-caps labs/nodes and silently truncates.
+
+Ours: a short base36 hash of `(lab_uuid, node_id, idx)` with a collision check against a
+`mac_registry`-style table, plus the human-readable name kept in the DB rather than
+smuggled into the kernel interface name.
+
+```
+tap    t<base36:8>      e.g. t3f9k2m1
+bridge b<base36:8>
+```
+
+No entity ceiling; identity resolves via a DB lookup instead of string parsing.
+
+---
+
+## Runtime backend interface
+
+```python
+class NodeRuntime(Protocol):
+    async def create(self, node: Node) -> RuntimeHandle: ...
+    async def start(self, h: RuntimeHandle) -> None: ...
+    async def stop(self, h: RuntimeHandle, mode: StopMode) -> None: ...
+    async def wipe(self, h: RuntimeHandle) -> None: ...
+    async def attach_iface(self, h, iface: Interface, net: Network) -> None: ...
+    async def detach_iface(self, h, iface: Interface) -> None: ...
+    async def console(self, h) -> ConsoleEndpoint: ...
+    async def observe(self, h) -> RuntimeState: ...
+    capabilities: set[Capability]   # SNAPSHOT, SUSPEND, HOTPLUG_NIC, EXEC, ...
+```
+
+Backends: `QemuRuntime` (systemd transient units, for cgroups +
+reaping without extra plumbing), `DockerRuntime` (+ `sysbox-runc`
+option), `ContainerlabRuntime`, `IolRuntime`, `DynamipsRuntime`.
+
+**containerlab integration:** `clab-api-server` embeds containerlab as a **Go library**,
+so we run a thin Go sidecar exposing gRPC rather than shelling out to the CLI and parsing
+stdout. Gets us ~70 node kinds as a catalog for free.
+
+Capability flags matter — the UI must grey out "suspend" for Docker rather than failing
+at call time.
+
+---
+
+## Impairment (F2)
+
+Model per direction, apply at the egress side of each tap:
+
+```
+Link(a=ifA, b=ifB)
+  a→b: netem delay 50ms jitter 5ms loss 0.1%  +  tbf rate 10mbit
+  b→a: netem delay 20ms
+```
+
+`a→b` is enforced on ifB's egress (equivalently ifA ingress via ifb). Live edits use
+`tc qdisc change` — no link flap. Presets ("satellite", "3G", "lossy-wan") are stored
+rows, not hardcoded.
+
+---
+
+## Capture (F3)
+
+Same shape as the incumbents', minus the fragile part. Drop the
+nftables NAT chains (`CAP_PREROUTING_$ID`/`CAP_POSTROUTING_$ID`) and
+the `127.0.0.1:4243` hop:
+
+```
+capture sidecar (tcpdump -i <tap> -w - <bpf>)
+        │ stdout
+        ▼
+   API relay ──WebSocket──> browser dissector  (common case: no local Wireshark)
+        │
+        └─> ring-buffered file on disk ──> download / "open in Wireshark"
+```
+
+- BPF filter applied **at capture time** — never ship gigabytes to filter client-side
+- Ring buffer + size/duration cap so a forgotten capture can't fill 4.5 TB
+- Capture on a **link** = both taps, merged with direction tags
+- Reap on zero WS subscribers (same idea as prior-art watchdogs,
+  better trigger than an ESTABLISHED-connection count)
+
+---
+
+## AI tab (F5)
+
+```
+User ──> AI Broker ──> LLM (tool-calling)
+             │
+             ├─ tools = the public REST API, nothing privileged
+             ├─ dry-run by default → returns a diff
+             ├─ user approves → apply
+             └─ scoped to one lab; destructive ops need explicit confirm
+```
+
+Tools: `list_nodes`, `create_node`, `wire`, `set_impairment`, `start`/`stop`, `capture`,
+`read_config`, `write_config`, `read_logs`, `explain_pcap`.
+
+Non-negotiable: **API keys live server-side only.** The browser never sees one. Pluggable
+provider (Anthropic / OpenAI / local). Every AI-initiated mutation lands in the audit log
+tagged as such.
+
+---
+
+## Stack
+
+Contemporary choices — the same shape modern developer platforms
+land on when they build this from scratch today:
+
+| Layer | Choice | Note |
+|---|---|---|
+| Frontend | Svelte 5 + SvelteKit | typed, small, fast |
+| Canvas | Svelte Flow **+ virtualization** | stock Svelte Flow will not do 500 nodes |
+| Backend | FastAPI + Pydantic + async SQLAlchemy | typed request/response, async I/O |
+| DB | Postgres | JSONB for topology, SQL for state |
+| Lab file | **JSON** (portable, git-diffable) | XML mixes rendering into topology |
+| Events | NATS or Redis Streams | multi-host ready |
+| Console | Guacamole (RDP/VNC) + xterm.js (serial) | HTML5, no plugin |
+| clab bridge | Go sidecar, gRPC | embeds clab as a library |
+| Node supervision | systemd transient units | cgroups + reaping for free |
+
+---
+
+## Phasing
+
+| Phase | Content | Gate |
+|---|---|---|
+| 0 | Host tuning ([Scaling](/design/scaling)), repo skeleton, CI | sysctls applied + verified |
+| 1 | Schema, `netd`, runtime interface, **Docker backend only** — spec: [Phase 1](/design/phase1-spec) | two containers ping over a drawn link; teardown leaves no host ifaces |
+| 1b | QEMU backend behind the same interface | a vIOS boots, serial console works |
+| 2 | Canvas, wiring, geometry split, WS push | drag, wire, and see it live in a second browser |
+| 3 | tc impairment (F2), capture (F3) | asymmetric delay verified; pcap in browser |
+| 4 | Simple containers (F4), containerlab backend (F8) | any image runs, no template |
+| 5 | AI tab (F5) | NL → topology, diff → approve → apply |
+| 6 | Parity: import/export, configsets, tasks, lock, suspend | legacy `.unl` imports cleanly |
+| 7 | Scale: multi-host, VXLAN, scheduler, quotas | 500-node lab across 2 hosts |
+
+Phase 3 is the first point where the product does something the
+incumbents cannot — per-link, asymmetric, live-editable impairment.
+
+QEMU is split into its own phase deliberately. Building Docker and QEMU together produces
+two half-finished backends and an interface tuned to neither; Docker first forces the
+abstraction to be honest before the harder backend lands on top of it.

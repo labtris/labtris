@@ -1,0 +1,34 @@
+#!/bin/sh
+# The first thing anyone sees after installing from the ISO is a black console.
+# This tells them where to point a browser, with the address resolved now
+# rather than printed as a placeholder they have to go and look up.
+
+BLUE='\033[38;5;25m'; ORANGE='\033[38;5;208m'; TEAL='\033[38;5;37m'
+BOLD='\033[1m'; DIM='\033[2m'; OFF='\033[0m'
+
+IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+[ -n "$IP" ] || IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$IP" ] || IP="<no address yet>"
+
+VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' /opt/labtris/pyproject.toml 2>/dev/null | head -1)
+[ -n "$VERSION" ] || VERSION="dev"
+
+printf "\n"
+printf "  ${BLUE}██${ORANGE}██${TEAL}██${OFF}   ${BOLD}Labtris${OFF} %s\n" "$VERSION"
+printf "  ${BLUE}██${ORANGE}██${TEAL}██${OFF}   ${DIM}network emulation${OFF}\n"
+printf "\n"
+printf "    Web UI    ${BOLD}http://%s:8081${OFF}\n" "$IP"
+
+if [ ! -e /dev/kvm ]; then
+  printf "\n    ${DIM}No /dev/kvm: QEMU guests run under software emulation and\n"
+  printf "    will be slow. Enable virtualisation in firmware, or nested\n"
+  printf "    virtualisation on this hypervisor, to change that.${OFF}\n"
+fi
+
+printf "\n    ${DIM}labtris-doctor${OFF}   check this install\n"
+printf "    ${DIM}systemctl status labtris-api labtris-netd${OFF}\n"
+# The handbook is on the disc, so someone on a machine with no route out still
+# has the answer to "how do I make two nodes ping each other".
+[ -d /opt/labtris/docs/handbook ] && \
+  printf "    ${DIM}/opt/labtris/docs/handbook${OFF}   the handbook, offline\n"
+printf "\n    ${DIM}Built on Ubuntu. Not affiliated with Canonical.${OFF}\n\n"

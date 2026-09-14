@@ -1,0 +1,149 @@
+---
+title: "Networking"
+description: "Bridges, NAT with DHCP, cloud, VLANs, impairment, and spanning hosts."
+---
+
+Everything here is real kernel networking on the server: veth pairs, Linux
+bridges, netlink, nftables. Nothing is simulated, which is why what you learn in
+a lab transfers.
+
+## Links between two nodes
+
+Drag from one port to another. That creates a veth pair, puts one end in each
+node's network namespace, and joins them through a bridge on the host.
+
+Two nodes, one wire. No addressing, no configuration — see [Your first
+lab](/first-lab#address-them-by-hand).
+
+## Segments
+
+Drag a segment from the palette when more than two things share a wire, or when
+you need the lab to reach something outside itself.
+
+### Internal bridge
+
+A plain L2 segment, lab-only. No host address, no uplink, no way out. This is
+the private network — nothing reaches it that is not attached to it.
+
+Use it for a switch fabric, a shared LAN, anything where "three nodes on one
+wire" is the point.
+
+### NAT
+
+A bridge with a gateway address on it and masquerading behind it. Guests reach
+the outside; nothing outside can reach in.
+
+Drop one on the canvas and it picks a free `/24` from `10.200.0.0/16`, puts the
+gateway on `.1`, and runs a DHCP server over `.50`–`.254`. A node connected to
+it and running a DHCP client simply works:
+
+```
+n1:~# udhcpc -i eth1          # Alpine
+n1:~# dhclient eth1           # most others
+```
+
+This is what you want when a node needs `apt-get`. The alternative — a cloud
+network — puts the lab on a real wire, which is a much larger action.
+
+**Reservations.** Pin a node's port to an address so it gets the same one every
+boot. Right-click the segment → **Show leases** → **Reserved**. Labtris already
+knows the port's MAC, which is what the DHCP server keys on.
+
+A reservation must be inside the subnet, must not be the gateway, and must be
+**outside the DHCP pool**. That last rule matters: an address the server also
+hands out dynamically gives you a guest that sometimes has it and sometimes does
+not, which is among the hardest faults to see.
+
+With the defaults that leaves `.2`–`.49` free for reservations, which is the gap
+the pool starts at `.50` to make. Reservations apply to NAT networks only —
+a plain bridge has no server to reserve from.
+
+**Which interface does it leave by?** Whichever the host's routing table
+chooses — usually the default route. Traffic between two lab segments is *not*
+translated, so a capture inside the lab shows real source addresses.
+
+### Cloud
+
+A wire from the lab to a physical network on the host. The lab and everything
+else on that wire become one broadcast domain.
+
+Two shapes:
+
+- **Pick a bare NIC** (e.g. `ens192`) and Labtris creates a fresh bridge
+  and enslaves that NIC into it. This is the classic "cloud" shape and
+  is powerful and consequential — binding the interface the host is
+  managed over takes the machine off the network, including the
+  session you are using. Labtris refuses the management NIC unless you
+  explicitly override.
+- **Pick a host-owned bridge** (typically `br0`, set up in netplan with
+  the management NIC already inside it) and Labtris just attaches lab
+  veths to that bridge. Nothing is enslaved; the host's own address
+  stays exactly where it was. This is the safer default when a machine
+  only has one NIC, and it is what **Settings → Management network** and
+  **Settings → Uplink bridges** set up so the picker has bridges to offer.
+
+Multiple cloud networks can point at the **same** host bridge — they
+end up as separate icons on the canvas but share one L2 segment on the
+wire. Useful when you want to group lab links visually or apply
+impairment to a subset without touching the others. The one-cloud-per
+rule still holds for a bare NIC: enslaving the same NIC twice would
+break the first cloud, so Labtris refuses.
+
+### VXLAN
+
+One segment spanning several hosts, so a topology bigger than one machine is
+still one topology. Register the other hosts first; see [Running the
+server](/operations).
+
+## VLANs
+
+A plain Linux bridge forwards tagged frames without reading the tags. That means
+a "trunk" appears to work by accident and an access port does not exist — you
+cannot teach VLANs on it, because nothing is enforcing them.
+
+Turn on **VLAN filtering** on a bridge or NAT segment and it becomes a switch.
+
+| | |
+|---|---|
+| **802.1Q** | one tag. What almost everything means by "VLAN" |
+| **802.1ad** | QinQ — an outer tag, for provider-style labs |
+
+Then set each port from the inspector:
+
+- **Access** — one VLAN, untagged. What a host plugs into.
+- **Trunk** — several VLANs, tagged. What goes between two switches.
+
+The control only appears on a segment where filtering is on. On a plain bridge
+the kernel would accept the setting and ignore it, which teaches exactly the
+wrong thing to someone using a lab to learn.
+
+Port membership is re-applied whenever a node starts, because a port is a fresh
+veth every time. Without that, the access port you set up yesterday would be a
+plain untagged port today.
+
+## Impairment
+
+Right-click a link to add delay, jitter, loss, reordering or a rate limit. It is
+`netem`, applied to each direction's own tap — so one-way latency is a different
+experiment from symmetric latency, and you can have 200 ms in one direction and
+5 ms in the other.
+
+## Seeing what is there
+
+Turn on **Addressing** in the canvas controls and Labtris asks every running
+guest what addresses it actually has, and shows them on the ports. A linked port
+with no address is called out, because that is the usual reason a ping fails.
+
+It distinguishes three things that look alike:
+
+| | |
+|---|---|
+| **stopped** | we never asked |
+| **no agent to ask** | a QEMU guest, which has no exec channel |
+| **no address** | a running container that answered, with nothing |
+
+Conflating those sends people to debug a node that is fine.
+
+## Next
+
+[Consoles](/consoles) — getting inside the things you just wired together.

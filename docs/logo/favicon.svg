@@ -1,0 +1,27 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Labtris">
+  <!-- The small variant, for the header chip and the favicon. The full mark
+       has eight nodes and nine edges, which at 20px is a grey smudge; this
+       keeps three blocks and three nodes, at weights that survive being drawn
+       16 pixels wide.
+
+       It sits on its own dark tile rather than on the page. That is not
+       decoration: the graph is white because the blocks are saturated, and on
+       the twenty light themes a white node over a pale background is invisible.
+       The tile is the logo's own darkest blue, so the mark carries its
+       contrast with it onto any of the thirty. -->
+  <rect width="64" height="64" rx="15" fill="#0b2f57"/>
+  <g>
+    <path d="M9 14 h12 v20 h11 v9 H9 Z" fill="#0a5ca8"/>
+    <path d="M27 11 h28 v12 H45 v10 H34 V23 h-7 Z" fill="#fd820b"/>
+    <path d="M23 39 h15 v-7 h13 v14 H36 v7 H23 Z" fill="#00b4b9" opacity="0.9"/>
+  </g>
+  <g fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" opacity="0.96">
+    <path d="M17 21 L30 32 M30 32 L47 19 M30 32 L33 46"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="17" cy="21" r="5"/>
+    <circle cx="47" cy="19" r="5"/>
+    <circle cx="33" cy="46" r="5"/>
+    <circle cx="30" cy="32" r="5.6"/>
+  </g>
+</svg>

@@ -1,0 +1,141 @@
+---
+title: "Install"
+description: "One line on Ubuntu 24.04, or the ISO for bare metal."
+---
+
+Labtris is server software. It runs on a Linux machine, boots your containers
+and virtual machines there, and everyone else reaches it with a browser. Nothing
+is installed on the machines people use it from.
+
+## What it needs
+
+| | |
+|---|---|
+| **CPU** | x86-64. Virtualisation extensions if you want QEMU nodes to run at useful speed |
+| **RAM** | 8 GB is a comfortable floor. Each QEMU guest wants what its image wants; containers want almost nothing |
+| **Disk** | 40 GB plus whatever your images take. A desktop OS image is 2–6 GB |
+| **OS** | Ubuntu 24.04, which is what the installer produces |
+
+Labtris will run without hardware virtualisation — QEMU falls back to software
+emulation — but a guest that boots in twelve seconds with KVM can take four
+minutes without it.
+
+## One line, on a fresh Ubuntu 24.04 machine
+
+```
+$ curl -fsSL https://labtris.com/install | sudo bash
+```
+
+The script installs every dependency, clones the repo to `/opt/labtris`,
+sets up Postgres, the service user, the systemd units, and the reverse
+proxy, and finishes with a summary block naming the URL to open, the
+config file, and where the generated database password lives. It is
+idempotent — re-run it to upgrade, or after a failed install; nothing
+gets rotated that does not need to.
+
+The whole thing takes about five minutes on a machine with a route out.
+Nothing about the install is secret to the script — it is
+`packaging/install-labtris.sh` in this repo, invoked by
+`get.sh`, and you can read both before running either.
+
+## From the ISO
+
+For a machine with no route out, or when the whole point is bare-metal
+provisioning. One image carries every Debian package, every Python wheel
+and the built interface. Nothing is fetched while it installs.
+
+Grab it from the [latest release](https://github.com/rajeshgangam/my-own-pnetlab/releases/latest).
+The image is ~3.2 GB, over GitHub's 2 GiB per-asset cap, so it is attached
+in two parts (`labtris-<version>-amd64.iso.part-00` and `part-01`) with a
+`sha256` checksum of the finished ISO alongside. Join and verify in one
+step, then write it to a USB stick:
+
+```
+$ cat labtris-0.4.0-amd64.iso.part-* > labtris-0.4.0-amd64.iso
+$ sha256sum -c labtris-0.4.0-amd64.sha256
+$ sudo dd if=labtris-0.4.0-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+```
+
+The checksum is of the *finished* image, so it verifies the join as well
+as the download — do not skip it, a truncated part produces an ISO that
+boots and then fails partway through the install.
+
+Boot the machine from it. The install is unattended and takes six to ten
+minutes; most of that is the package set being unpacked from the disc.
+
+When it finishes, the console shows the address it is serving on. Open
+`http://<that address>:8081`.
+
+> **The machine's own login** is `labtris-admin` / `labtris`, and it forces a
+> change on first use. That is the *operating system* account, for shell access.
+> It is not the Labtris account — see [Users and access](/users).
+
+### Trying it without a machine
+
+The same ISO boots under QEMU, and touches no disk of yours:
+
+```
+$ ./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+```
+
+It prints a serial console address, a VNC address, and forwards the web
+interface to a port on the host.
+
+### Installing with no network attached
+
+This is supported and tested — the installer has been run on a VM with no
+network interface at all. The installed system writes a DHCP configuration for
+any ethernet it may later be given, so you can install offline and connect the
+machine afterwards.
+
+## From source
+
+For development, or to run it somewhere the ISO does not suit.
+
+```
+$ python3 -m venv .venv && . .venv/bin/activate
+$ pip install -e '.[dev]'
+
+$ make dev-db        # Postgres in Docker
+$ sudo make netd     # the privileged network daemon — needs root
+$ make api           # http://localhost:8080
+$ make web           # the interface, on http://localhost:5173
+$ make guacd         # optional, for VNC and RDP consoles
+```
+
+Two of those deserve explanation.
+
+**`sudo make netd`** runs the only component that needs root. Every operation
+that touches netlink or nftables — creating a bridge, moving an interface into a
+container, setting up NAT — goes through it over a Unix socket. The API itself
+runs unprivileged and cannot reach the kernel directly. That split is why the
+web-facing process being compromised is not the same as the host being
+compromised.
+
+**`make web`** runs a dev server with hot reload. To serve the interface from
+the API instead — which is what a real install does — run `make web-build`
+first. `web/dist` is gitignored, so it needs rebuilding after any UI change.
+
+### If a port is taken
+
+Postgres is the usual collision. Set a different one before `make dev-db`:
+
+```
+$ export LABTRIS_PG_PORT=55432
+$ export LABTRIS_DATABASE_URL=postgresql+asyncpg://pnl:pnl@localhost:55432/pnl
+```
+
+## Building the ISO yourself
+
+```
+$ ./packaging/iso/build.sh
+```
+
+It resolves the package closure with debootstrap, downloads the wheels, builds
+the interface, and writes `dist/labtris-<version>-amd64.iso`. It takes 20–30
+minutes and needs about 12 GB free. See [Running the
+server](/operations#building-the-installer) for what goes on the disc.
+
+## Next
+
+[Your first lab](/first-lab) — two nodes and a ping, in about five minutes.

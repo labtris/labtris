@@ -1,0 +1,228 @@
+---
+title: "Findings"
+description: "Prior-art comparison: what the incumbent network emulators do well and where they fall short."
+---
+
+Notes taken while auditing a production lab host and a modern
+containerlab checkout, to work out what a well-tuned installation
+actually looks like, which API decisions were correct, and where the
+ceilings sit. What follows is measurements, not opinions.
+
+Sources: a production PRO-tier install of the leading proprietary
+network emulator (running against a live workload), and a
+containerlab checkout at a recent tag.
+
+---
+
+## 1. What a well-tuned host looks like
+
+**Correction to a common assumption: there is no UKSM on the box.**
+
+```
+kernel   6.7.5-*-ksm+                custom build, upstream KSM (not the UKSM patchset)
+/sys/kernel/mm/uksm/                 ABSENT
+/sys/kernel/mm/ksm/                  present, incl. 6.7-era smart_scan + advisor_mode
+```
+
+Older versions of this class of appliance (Ubuntu 16.04/18.04 era)
+shipped UKSM. This build moved to mainline KSM, which since 6.7 has
+`smart_scan` (skips pages that repeatedly fail to merge) and an
+auto-tuning `advisor_mode`. That closes most of the gap UKSM used to
+fill.
+
+### KSM is doing real work
+
+```
+pages_sharing   16,330,113      ≈ 62 GiB deduplicated
+pages_shared     1,914,989      ≈ 7.3 GiB of unique backing pages
+run                      0      currently paused
+sleep_millisecs         10      aggressive (default 20)
+pages_to_scan         1250      aggressive (default 100)
+ksmtuned            active      KSM_THRES_COEF=80
+```
+
+`run=0` with 16.3M pages still shared is not a contradiction —
+`ksmtuned` flips `run` between 1 and 0 based on free memory, and
+pausing does not unmerge (only `run=2` does). At 80% threshold with
+250 GiB available it has simply backed off. **~8.5:1 dedup ratio**
+across 15 running VMs. This is the single biggest density lever and
+it must be in our design.
+
+### The rest of the tuning
+
+| Setting | Value | Why |
+|---|---|---|
+| `GRUB_CMDLINE_LINUX` | `mitigations=off` | ~20–30% back on VM-exit-heavy workloads |
+| | `apparmor=0` | avoids LSM overhead + QEMU profile fights |
+| | `net.ifnames=0` | guarantees `eth0..eth9` → `pnet0..9` cloud mapping |
+| THP | `[madvise]` | correct — QEMU madvise()s; `always` would bloat non-VM procs |
+| AnonHugePages | 16.5 GiB | THP actively backing guest RAM |
+| HugePages_Total | 0 | no static hugetlb reservation; THP only |
+| nested virt | `Y` | required for nested hypervisor labs |
+| `rp_filter` | `2` (loose) | required — multi-homed cloud bridges break on strict |
+| `bridge-nf-call-iptables` | `0` | **critical** — keeps L2 lab traffic out of netfilter |
+| `nf_tables` | loaded, 88 refs | nftables, not iptables-legacy |
+| OVS | **not loaded** | plain Linux bridges + veth only |
+| Docker | 25.0.3, overlay2 | runtimes: `runc`, **`sysbox-runc`** |
+| I/O sched | `mq-deadline` | on spinning/SATA; would want `none` for NVMe |
+
+### Hardware / live load
+
+```
+Xeon Gold 6338N ×32 threads, 314 GiB RAM, 4.5 TB (10% used)
+40 bridges (vnet*) · 249 taps (vun*) · 15 qemu-system processes
+```
+
+### Scaling ceilings the appliance did NOT raise — we must
+
+These are stock Ubuntu defaults and they are the actual walls when
+you go big:
+
+| Knob | Current | Problem at scale |
+|---|---|---|
+| `ulimit -n` | **1024** | each tap+monitor+console eats FDs; dies around a few hundred nodes |
+| `/etc/security/limits.conf` | **empty** | nothing raised for any user |
+| `net.ipv4.neigh.default.gc_thresh1/2/3` | **128 / 512 / 1024** | ARP table overflow — silent, intermittent L2 blackholing on big topologies |
+| `vm.swappiness` | **60** | swapping guest RAM is catastrophic for KVM density |
+| `vm.overcommit_memory` / `ratio` | **0 / 50** | heuristic overcommit fights KSM's whole purpose |
+| `nf_conntrack_max` | 262144 | fine now (260 in use) but capture NAT chains will push it |
+| cpufreq governor | **none** | no `performance` governor set |
+
+`fs.inotify.*` is already at 1048576 and `pid_max`/`threads-max` are
+generous — those are fine.
+
+---
+
+## 2. API surface — what the incumbent got right, what it missed
+
+Comparing route inventories at length is dull; the headline is what
+matters: **the incumbent's API is strong in the operational surface
+and weak in the data model.**
+
+### What the incumbent has (and we need)
+
+| Capability | Incumbent's route |
+|---|---|
+| **Packet capture** | `POST /api/capture/{path}` |
+| **Link quality (tc)** | `PUT /api/labs{path}/quality` |
+| Lab import / export | `POST /api/import`, `POST /api/export` |
+| Config sets | `GET/POST/PUT/DELETE /api/labs{path}/configsets[/{id}]` |
+| Per-node saved configs | `POST /api/labs{path}/configs`, `PUT .../configs/{nodeId}` |
+| Async task queue | `POST/GET/PUT/DELETE /api/labs{path}/task[s][/{id}]` |
+| Lab lock | `PUT /api/labs{path}/Lock\|Unlock` |
+| Suspend / resume | `PUT /api/labs{path}/suspend\|resume` |
+| Export node → template | `PUT /api/labs{path}/nodes/{id}/export` |
+| Log tail w/ filter | `GET /api/logs/{path}/{lines}/{pattern}` |
+| Move lab | `PUT /api/labs{labpath}/move` |
+| Per-node style | `PUT /api/labs{path}/nodes/{nodeId}/style` |
+| Licensing | `GET /api/licrequest`, `POST /api/uploadlic` |
+| Cluster reset | `GET /api/resetcluster/{id}` |
+| Close lab session | `DELETE /api/labs/close` |
+
+The top two are exactly what was asked for and neither is present in
+the current codebase.
+
+### What we should keep from the modern design
+
+- **Links as first-class objects** — `POST/PATCH/DELETE /links`. The
+  incumbent has *no link API at all*; links are implicit in interface
+  pairs. First-class links are what makes clean drag-wiring and
+  per-link `tc` possible.
+- **Networks CRUD** as first-class resources
+- **WebSocket** `/ws/labs/{lab}` — the incumbent polls `GET /api/poll`
+- Per-node console brokering: `/console`, `/html5`, `/rdp`, `/telnet`
+- Docker image lifecycle: `pull`, `mark`, `unmark`
+- Node creation ergonomics: `batch`, `from-template`,
+  `from-paired-template`, `node-catalog`
+- `runtime/reconcile` — reconciles DB desired-state against actual
+  host state
+- `live_mac`, `qemu-preview`, `interfaces/v2`
+- System introspection: `bridge-clouds`, `clouds`, `iourc`, `settings`
+- Proper `POST /api/auth/login` + `register` (the incumbent uses a
+  `GET /api/auth`)
+
+---
+
+## 3. Mechanisms worth copying (or deliberately not)
+
+### Interface naming — DB-verified
+
+```
+tap     vun  + %03x(lab.id) + %07x(node_id) + %02x(iface_idx)
+bridge  vnet + %03x(lab.id) + %08x(network_id)
+cloud   pnet0..9  (Linux bridges over eth0..9)
+```
+
+Deterministic and reversible — you can recover identity from the
+interface name alone. Worth keeping the *idea*, but the hex-width
+packing caps labs/nodes and is fragile. Linux caps interface names
+at 15 chars (`IFNAMSIZ`-1), which is what forced the packing.
+
+### Node lifecycle
+
+Transient systemd units, one per node instance. Good — systemd gets
+you cgroups, restart policy, and reaping for free.
+
+### Capture
+
+A per-node Docker container reached at `127.0.0.1:4243`, plus
+**nftables** NAT chains (`CAP_PREROUTING_$ID` / `CAP_POSTROUTING_$ID`).
+A watchdog reaps the container when ESTABLISHED connections hit
+zero, then deletes the corresponding row from a MySQL table. The
+pattern is sound; the nftables NAT hop is the fragile part.
+
+### Link quality
+
+`tc` `netem` (delay/jitter/loss/reorder/corrupt) + `tbf` (rate) is
+applied **on the tap**. Because it's on the tap, it is inherently
+*per-node-interface*, not per-link — the incumbent fakes per-link
+by writing both ends. With first-class links we can do this
+properly.
+
+### Lab format (XML)
+
+`<lab uuid version scripttimeout countdown lock sat>` → `<topology>`
+→ `<nodes>`/`<networks>`. Node attrs: `template image console cpu
+cpulimit ram ethernet uuid firstmac qemu_options/version/arch delay
+sat icon config left/top`. Interfaces carry pure rendering state
+(`labelpos curviness beziercurviness midpoint srcpos dstpos`) mixed
+into topology — a design flaw worth avoiding. 190 templates in the
+appliance's `templates/intel/*.yml`.
+
+### Wrappers
+
+`iol_wrapper` / `qemu_wrapper` / `docker_wrapper`, common flags
+`-T -D -d -t -F -C`; IOL takes `-l 0:0:tap:<name> -L <lab-id> -c
+config`.
+
+### Deliberately NOT copying
+
+- SourceGuardian-encoded PHP (opaque, unmaintainable)
+- MySQL with a hardcoded root password
+- Polling instead of push
+- Rendering state embedded in topology XML
+- Hex-packed name fields with hard entity ceilings
+
+---
+
+## 4. containerlab
+
+Go 1.26, **~70 node kinds** (`srl ceos crpd iol sros xrd sonic ovs
+bridge host ext_container k8s_kind generic_vm linux` + the whole
+`vr_*` family).
+
+CLI: `deploy destroy redeploy save graph inspect exec events generate
+validate`, plus `tools`: **`netem`** (per-link impairment),
+**`vxlan`**, `veth`, `api`, `sshx`, `gotty`, `snapshot`, `cert`.
+
+Two findings that change the build/buy calculus:
+
+1. **`clab-api-server`** embeds containerlab as a **Go library** with
+   JWT auth — so containerlab can be a runtime *backend* behind our
+   API rather than a shelled-out CLI.
+2. **TopoViewer** — an official GUI already exists (VS Code ext /
+   Electron / web on `:3001`). Worth studying before writing our own
+   canvas; not worth adopting (it's containerlab-only).
+
+Not yet examined in depth: topology YAML schema, Edgeshark
+integration, clabernetes.

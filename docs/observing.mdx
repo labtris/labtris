@@ -1,0 +1,104 @@
+---
+title: "Observing"
+description: "Capture, Wireshark, addressing, NAT sessions, diagnostics."
+---
+
+Building a topology is the easy half. This page is the other one.
+
+## Packet capture
+
+Right-click a link or a segment → **Capture**. Packets appear as they arrive,
+with a BPF filter box:
+
+```
+icmp
+tcp port 179
+host 10.0.1.2 and not arp
+```
+
+It is `tcpdump` on the host side of that veth, so you see exactly what crossed
+the wire — including what a misconfigured guest failed to send.
+
+## Wireshark, without installing Wireshark
+
+**Wireshark** on the same menu starts the real GUI on the server and streams it
+to your browser. Dissectors, filters, follow-stream, the lot.
+
+Nothing is installed on your machine and nothing is downloaded. It is useful
+when a `tcpdump` line is not enough and you want to click through a handshake.
+
+## Addressing
+
+The canvas **Addressing** toggle asks every running guest what it actually has
+and puts it on the ports. **Table** opens the same thing as a list: every port,
+what it is wired to, its address, and whether we could ask.
+
+This answers "why can I not reach X" without opening six consoles. The usual
+answer is a port with no address, which the view marks.
+
+It is behind a toggle rather than always on because each refresh is a command
+run inside every running container. That is cheap once and rude every second.
+
+## NAT sessions
+
+Right-click a NAT segment → **Show leases** → **NAT sessions**.
+
+Live flows through that network's translation: protocol, source, destination,
+state, and — the column that makes it worth having — **seen as**, the address
+the outside thinks the flow came from.
+
+That last one is the thing a capture taken inside the lab cannot show you, which
+is exactly when you need it.
+
+> Sessions come from the kernel's connection tracker via the `conntrack` tool.
+> Ubuntu builds its kernel without the `/proc` interface, so the tool is the only
+> way to read a table the kernel is keeping regardless.
+
+## Is the lab wired the way you drew it?
+
+Starting a topology and having a working topology are different claims.
+**Validate** compares the two: the lab in the database against the dataplane on
+the host — every tap that should exist, the bridge each should be on, and the
+impairment each should be carrying.
+
+It is deliberately host-side. Asking a guest whether it can reach its neighbour
+needs the guest's cooperation, a login and a shell; asking the kernel whether
+two taps are up on the same bridge needs none of that, and is true even for a
+guest that has not finished booting.
+
+So it will not tell you OSPF has not converged. It will tell you that the link
+you think you drew has one end missing, which is the failure that wastes the
+afternoon.
+
+```
+$ curl 'http://<host>:8081/api/v1/labs/<id>/validate?fmt=text'
+```
+
+## Is the host healthy?
+
+**Settings → Host & diagnostics** reports what the machine is doing: CPU,
+memory, whether KVM is available and writable, QEMU and Docker versions, disk
+headroom, KSM, the database migration in effect.
+
+The badge counts real problems rather than listing checks — acceleration set to
+`kvm` on a host with no `/dev/kvm`, netd or Docker unreachable, KSM available
+but switched off, a disk under 2 GB.
+
+There is a CLI too:
+
+```
+$ labtris-doctor
+```
+
+which prints the same information, for when the interface is the thing that is
+not working.
+
+## Logs
+
+Per node, the **Logs** tab shows that guest's output — `docker logs` for a
+container, the QEMU log for a VM. A node that failed to start usually explains
+itself there, and the inspector shows its last error directly.
+
+## Next
+
+[Organising labs](/labs) — folders, cloning, locking, and config sets.

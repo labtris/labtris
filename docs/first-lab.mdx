@@ -1,0 +1,124 @@
+---
+title: "Your first lab"
+description: "Two nodes, a wire, a console, a ping — in about five minutes."
+---
+
+Two containers, a wire between them, and a ping. About five minutes, and it
+assumes nothing except that you have Labtris open.
+
+## Sign in
+
+The first time anyone opens Labtris, there are no accounts, and it asks you to
+create one. That account is an administrator, and creating it closes the door
+behind you — every request after that needs a session.
+
+> Before the first account exists the API is open. That is deliberate: an
+> instance nobody can sign into is not more secure, it is bricked. But it does
+> mean you should create the account before putting the machine somewhere
+> interesting.
+
+## Make a lab
+
+`New ▾` → **Blank lab**. Type a name, press Enter.
+
+The canvas is now empty and says so, with the two ways to put something on it.
+
+## Put two nodes on the canvas
+
+The palette on the left lists what you can run. On a fresh install it has the
+container images Labtris knows about and any QEMU images you have fetched.
+
+Drag **Alpine** onto the canvas. Drop it. That is a node — a real container,
+created but not yet started.
+
+Drag a second one. You now have `n1` and `n2`.
+
+## Wire them together
+
+Each node card shows its ports as small chips — `eth1`, `eth2`. Press on `eth1`
+of `n1` and drag toward `n2`.
+
+As you drag, every port you may legally drop on lights up, and the ones you may
+not dim. Release over `n2`'s `eth1`.
+
+There is now a link. Under the hood that is a veth pair with one end in each
+container's network namespace, joined by a bridge on the host — the same
+mechanism a real Linux host would use.
+
+## Start them
+
+Select nothing, and the inspector (bottom dock, first tab) shows the whole
+lab. Press **Start 2 stopped**.
+
+Both nodes go from grey to lit. Starting a container takes about a second;
+a QEMU guest takes as long as that operating system takes to boot.
+
+## Get inside one
+
+Double-click `n1`. Its console opens in the drawer at the bottom.
+
+You are in a real shell in that container — `cd` works, Ctrl-C works, and
+anything that repaints the screen repaints properly.
+
+```
+n1:~# ip -br addr
+lo     UNKNOWN  127.0.0.1/8
+eth1   UP
+```
+
+`eth1` is up, and has no address. That is expected, and it is the one thing that
+surprises people.
+
+## Address them by hand
+
+**Labtris does not configure your guests.** It builds the topology and starts
+them; what runs inside is yours. So the link exists and nothing can use it yet.
+
+In `n1`:
+
+```
+n1:~# ip addr add 10.0.1.1/24 dev eth1
+```
+
+Open `n2`'s console — double-click it, and both terminals are now tabs in the
+drawer. Press `⊞ Split` to see them side by side.
+
+```
+n2:~# ip addr add 10.0.1.2/24 dev eth1
+```
+
+Back in `n1`:
+
+```
+n1:~# ping -c 3 10.0.1.2
+64 bytes from 10.0.1.2: seq=0 ttl=64 time=0.312 ms
+```
+
+That is a working lab.
+
+> Addressing guests for you is planned, not built. When it lands, the moment you
+> draw a link Labtris will offer a subnet and fill in both ends. Until then this
+> step is yours — which is also how every other emulator works today.
+
+## Make it survive a restart
+
+Those addresses live in the running container. Stop it and they are gone.
+
+Open the **Config** tab in the drawer, and save a startup config for the node
+with the commands you want run when it starts. A lab can hold several named
+sets — "working", "broken-ospf", "day-two" — and switching between them is how
+you reset a class to a known state.
+
+## What to try next
+
+- Put a **NAT** segment on the canvas and connect a node to it; that node can
+  then reach the internet, and gets an address automatically.
+  See [Networking](/networking).
+- Right-click the link and choose **Capture here** to watch packets crossing it.
+- Turn on **Addressing** in the canvas controls to see what every guest actually
+  has, without opening a console.
+
+## Next
+
+[Nodes and images](/nodes-and-images) — what you can run, and the two
+settings that decide whether a guest boots at all.

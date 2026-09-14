@@ -1,0 +1,41 @@
+# Logo centred on the brand's own darkest blue, with a progress bar under it.
+# Deliberately still: an animation here is a sequence of PNGs in the initramfs,
+# which costs megabytes on every boot to be looked at for four seconds.
+
+Window.SetBackgroundTopColor(0.043, 0.184, 0.341);      # #0b2f57
+Window.SetBackgroundBottomColor(0.031, 0.129, 0.239);
+
+logo.image = Image("logo.png");
+logo.sprite = Sprite(logo.image);
+logo.x = Window.GetWidth() / 2 - logo.image.GetWidth() / 2;
+logo.y = Window.GetHeight() / 2 - logo.image.GetHeight() / 2 - 20;
+logo.sprite.SetPosition(logo.x, logo.y, 0);
+
+bar.w = 220; bar.h = 3;
+bar.x = Window.GetWidth() / 2 - bar.w / 2;
+bar.y = logo.y + logo.image.GetHeight() + 40;
+
+track.image = Image.Text("", 1, 1, 1);
+progress = 0;
+
+fun draw_bar(fraction) {
+    # Drawn as a solid orange rectangle scaled to the fraction, because a
+    # themed image per step is more assets for no visible difference.
+    filled = Image("bar.png").Scale(bar.w * fraction, bar.h);
+    bar.sprite = Sprite(filled);
+    bar.sprite.SetPosition(bar.x, bar.y, 1);
+}
+
+fun refresh_callback() {
+    progress = progress + 0.005;
+    if (progress > 1) progress = 0;
+    draw_bar(progress);
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun message_callback(text) {
+    msg.image = Image.Text(text, 0.8, 0.85, 0.9);
+    msg.sprite = Sprite(msg.image);
+    msg.sprite.SetPosition(Window.GetWidth() / 2 - msg.image.GetWidth() / 2, bar.y + 24, 2);
+}
+Plymouth.SetMessageFunction(message_callback);

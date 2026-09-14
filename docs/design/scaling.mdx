@@ -1,0 +1,337 @@
+---
+title: "Scaling"
+description: "KSM, hugepages, sysctls, sockets — every knob that moves the ceiling on how many nodes fit on one host."
+---
+
+Everything here is measured on a real production lab host, not copied from a blog post.
+The stock Ubuntu defaults break in specific ways once you're past a dozen VMs; each
+section below names the wall and the fix.
+
+Reference hardware: **Xeon Gold 6338N, 32 threads, 314 GiB RAM, 4.5 TB**.
+Observed live load: 15 QEMU VMs, 40 bridges, 249 taps.
+
+---
+
+## 1. KSM — the density lever
+
+Kernel Samepage Merging is what turns "20 VMs on this host" into "150 VMs on this host"
+for a lab where every guest is the same OS image. Ubuntu ships KSM present but
+effectively idle — it scans a hundred pages a second, which is nowhere near the rate
+identical VMs allocate. Labtris tunes it aggressively at boot; the numbers below are
+what a healthy tuned box looks like.
+
+Measured on the reference host:
+
+```
+pages_sharing  16,330,113   ≈ 62 GiB deduplicated
+pages_shared    1,914,989   ≈ 7.3 GiB unique backing
+                            → ~8.5:1 dedup across 15 VMs
+```
+
+That ratio is the whole point of KSM. It must be explicit configuration, not left to
+the base image's stock defaults.
+
+Sysctls to set:
+
+```
+/sys/kernel/mm/ksm/sleep_millisecs   10     # default 20 — scan harder
+/sys/kernel/mm/ksm/pages_to_scan     1250   # default 100 — much harder
+ksmtuned                             active
+KSM_THRES_COEF                       80
+```
+
+`ksmtuned` flips `run` 1↔0 by free memory, which is why `run=0` while 16.3M pages remain
+shared — pausing does not unmerge (only `run=2` does). Correct behaviour; don't "fix" it.
+
+Add on 6.7+:
+
+```
+/sys/kernel/mm/ksm/smart_scan        1      # skip pages that repeatedly fail to merge
+/sys/kernel/mm/ksm/use_zero_pages    1
+/sys/kernel/mm/ksm/merge_across_nodes 0     # set 0 on multi-socket to avoid cross-NUMA merges
+```
+
+QEMU must `madvise(MADV_MERGEABLE)` — that's `mem-merge=on` (default on). Verify per node.
+
+---
+
+## 2. Hugepages
+
+The right setting is **THP in `madvise` mode**, with no static hugetlb reservation:
+
+```
+transparent_hugepage/enabled   always [madvise] never
+AnonHugePages                  16.5 GiB in use
+HugePages_Total                0
+```
+
+`madvise` means QEMU opts in and other processes don't get bloated. Static hugetlb
+would give marginally better TLB behaviour but **breaks KSM** — hugetlb pages are not
+mergeable, and at 8.5:1 dedup that trade is nowhere near worth it.
+
+> Rule: **KSM and static hugepages are mutually exclusive.** Pick KSM for lab density.
+
+---
+
+## 3. Kernel command line
+
+Three boot flags worth setting:
+
+```
+mitigations=off     # ~20-30% back on VM-exit-heavy workloads
+apparmor=0          # avoids LSM overhead and QEMU profile fights
+net.ifnames=0       # guarantees eth0..eth9 rather than ens/enp naming
+```
+
+`mitigations=off` is a deliberate security trade. Defensible on an isolated lab host,
+**not** on anything multi-tenant or internet-reachable. Make it a documented install-time
+choice, not a silent default.
+
+Add:
+
+```
+intel_iommu=on iommu=pt     # only if PCI passthrough is wanted; pt avoids the DMA cost
+transparent_hugepage=madvise
+```
+
+Nested virt is already on (`kvm_intel.nested = Y`) — required for nested-hypervisor labs.
+
+---
+
+## 4. Stock-Ubuntu ceilings
+
+Ubuntu's defaults are fine for a laptop. These are the specific ones that break at lab
+scale, in the order you'll hit them.
+
+### 4.1 File descriptors — currently **1024**
+
+`/etc/security/limits.conf` is completely empty. Every node burns FDs on taps, monitor
+sockets, and consoles. This breaks somewhere in the low hundreds of nodes, and the failure
+is ugly and non-obvious.
+
+```
+# /etc/security/limits.d/99-lab.conf
+*  soft  nofile  1048576
+*  hard  nofile  1048576
+*  soft  nproc   unlimited
+*  hard  nproc   unlimited
+```
+
+```ini
+# /etc/systemd/system.conf.d/99-lab.conf
+[Manager]
+DefaultLimitNOFILE=1048576
+DefaultLimitNPROC=infinity
+```
+
+Both are needed — systemd services don't read `limits.conf`.
+
+### 4.2 ARP table — currently **128 / 512 / 1024**
+
+The nastiest one. Stock thresholds against a large L2 topology cause neighbour-table
+overflow, which presents as **intermittent, silent packet loss** — it does not log
+usefully and it will burn days of debugging.
+
+```
+net.ipv4.neigh.default.gc_thresh1 = 8192
+net.ipv4.neigh.default.gc_thresh2 = 32768
+net.ipv4.neigh.default.gc_thresh3 = 65536
+net.ipv6.neigh.default.gc_thresh1 = 8192
+net.ipv6.neigh.default.gc_thresh2 = 32768
+net.ipv6.neigh.default.gc_thresh3 = 65536
+```
+
+### 4.3 Swappiness — currently **60**
+
+Swapping guest RAM is catastrophic for VM density and interacts badly with KSM.
+
+```
+vm.swappiness = 1
+vm.vfs_cache_pressure = 50
+vm.min_free_kbytes = 1048576    # 1 GiB headroom; avoids allocation stalls under burst
+```
+
+### 4.4 Overcommit — currently heuristic (`0`), ratio 50
+
+Heuristic overcommit fights KSM: KSM's entire value is letting you *allocate* more than
+you have. Move to explicit accounting with a ratio above 100.
+
+```
+vm.overcommit_memory = 1     # or 2 with overcommit_ratio ~150 if you want a hard ceiling
+```
+
+Start with `1` (always overcommit) and let KSM + monitoring handle it.
+
+### 4.5 Bridge / netfilter
+
+`bridge-nf-call-iptables = 0` is **critical** — keeps L2 lab traffic out of netfilter
+entirely, otherwise every guest-to-guest frame gets iptables-inspected and CPU dies
+around 40 nodes. Set it explicitly so a Docker restart can't flip it back:
+
+```
+net.bridge.bridge-nf-call-iptables  = 0
+net.bridge.bridge-nf-call-ip6tables = 0
+net.bridge.bridge-nf-call-arptables = 0
+net.ipv4.conf.default.rp_filter = 2      # loose — required for multi-homed cloud bridges
+net.ipv4.conf.all.rp_filter     = 2
+net.ipv4.ip_forward = 1
+```
+
+Docker rewrites `bridge-nf-call-iptables` on start. Enforce with a systemd unit ordered
+`After=docker.service`, or accept the drift and re-apply in the reconciler.
+
+### 4.6 Conntrack
+
+Currently 262144 with only 260 in use — fine today, but capture NAT and any cloud NAT will
+push it:
+
+```
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+```
+
+Better still: keep lab traffic out of conntrack entirely (`NOTRACK` in raw) — the 4.5
+setting mostly achieves this already.
+
+### 4.7 Sockets, backlog, ephemeral ports
+
+For hundreds of consoles + WS streams:
+
+```
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 250000
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.ip_local_port_range = 10240 65535
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+fs.file-max = 2097152
+```
+
+### 4.8 Bridges and interface count
+
+Live: 40 bridges / 249 taps and healthy. Watch as you grow:
+
+- `net.core.dev_weight`, and per-bridge FDB size (default 8192 entries)
+- Linux caps interface names at **15 chars** (`IFNAMSIZ`-1). Our base36 scheme
+  (`docs/03-architecture.md`) sidesteps the entity ceiling.
+- Bridge STP off by default — leave it off, labs run their own STP
+
+### 4.9 CPU governor — currently unset
+
+```
+cpupower frequency-set -g performance
+```
+
+On this Xeon the governor reports `none` (likely `intel_pstate` in passive/HWP mode); set
+`performance` via `cpupower` or the HWP hint. Worth a few percent on latency-sensitive
+control planes.
+
+### 4.10 I/O scheduler
+
+`mq-deadline` on the SATA devices. For NVMe use `none`:
+
+```
+# /etc/udev/rules.d/60-scheduler.rules
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+```
+
+---
+
+## 5. Consolidated sysctl
+
+```ini
+# /etc/sysctl.d/99-lab-scale.conf
+
+# --- memory / KSM ---
+vm.swappiness = 1
+vm.vfs_cache_pressure = 50
+vm.min_free_kbytes = 1048576
+vm.overcommit_memory = 1
+vm.max_map_count = 1048576
+
+# --- neighbour tables (the silent killer) ---
+net.ipv4.neigh.default.gc_thresh1 = 8192
+net.ipv4.neigh.default.gc_thresh2 = 32768
+net.ipv4.neigh.default.gc_thresh3 = 65536
+net.ipv6.neigh.default.gc_thresh1 = 8192
+net.ipv6.neigh.default.gc_thresh2 = 32768
+net.ipv6.neigh.default.gc_thresh3 = 65536
+
+# --- bridging: keep L2 out of netfilter ---
+net.bridge.bridge-nf-call-iptables = 0
+net.bridge.bridge-nf-call-ip6tables = 0
+net.bridge.bridge-nf-call-arptables = 0
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.ip_forward = 1
+
+# --- conntrack ---
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+
+# --- sockets ---
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 250000
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.ip_local_port_range = 10240 65535
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+
+# --- files ---
+fs.file-max = 2097152
+fs.inotify.max_user_instances = 1048576
+fs.inotify.max_user_watches   = 1048576
+```
+
+---
+
+## 6. Capacity model
+
+With KSM at ~8.5:1 on a 314 GiB host:
+
+| Node type | Nominal RAM | Effective after KSM | Practical ceiling |
+|---|---|---|---|
+| Alpine/FRR container | 64 MiB | ~20 MiB | thousands |
+| IOL | 256 MiB | ~50 MiB | ~1000 |
+| Small qcow2 VM | 1 GiB | ~150 MiB | ~500 |
+| vMX / large VM | 4 GiB | ~1.5 GiB | ~100 |
+
+Dedup ratio scales with *image homogeneity* — 100 identical vEOS instances dedup far
+better than 100 different images. Reflect that in the scheduler: **prefer packing
+same-image nodes onto the same host.**
+
+CPU is usually the real limit before RAM. Use `cpulimit`/cgroup quotas per template
+and don't oversubscribe control-plane-heavy images past ~4:1.
+
+---
+
+## 7. Multi-host
+
+Single-host ceiling on this class of hardware is roughly 300-500 mixed nodes. Beyond that:
+
+- Scheduler places nodes by (free RAM after predicted KSM, free vCPU, **image affinity**)
+- Inter-host links via **VXLAN** (containerlab `tools vxlan` does exactly this)
+- Shared image store (NFS/Ceph) or per-host pre-seed
+- Per-host reconciler; central API owns desired state only
+
+VXLAN handles the L2 stretch; a scheduler on top decides where a node lands based on
+the factors above.
+
+---
+
+## 8. Verification
+
+Phase 0 isn't done until these pass:
+
+```bash
+ulimit -n                                    # 1048576
+sysctl net.ipv4.neigh.default.gc_thresh3     # 65536
+cat /sys/kernel/mm/ksm/pages_sharing         # grows as identical nodes start
+cat /sys/kernel/mm/transparent_hugepage/enabled   # [madvise]
+cat /proc/sys/net/bridge/bridge-nf-call-iptables  # 0, and still 0 after docker restart
+systemctl show -p DefaultLimitNOFILE
+```
+
+Then a load test: start N identical nodes, chart `pages_sharing` and available memory,
+and confirm the dedup ratio holds as N grows.

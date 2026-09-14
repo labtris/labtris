@@ -1,0 +1,23 @@
+[Unit]
+Description=Labtris API and web UI
+Documentation=https://github.com/labtris
+After=network.target labtris-netd.service postgresql.service docker.service
+Wants=labtris-netd.service
+
+[Service]
+Type=simple
+User=labtris
+Group=labtris
+WorkingDirectory=/opt/labtris
+EnvironmentFile=/etc/labtris/labtris.env
+ExecStart=/opt/labtris/.venv/bin/uvicorn labtris_api.main:app \
+    --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=2
+# QEMU guests are started detached and outlive a restart of this process on
+# purpose — bouncing the API must not reboot everyone's labs. The API
+# reconciles what it finds when it comes back up.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

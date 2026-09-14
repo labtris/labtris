@@ -1,0 +1,294 @@
+---
+title: "Running the server"
+description: "Upgrades, backup, density, reboots, and what to do when something is wrong."
+---
+
+What an administrator needs after the install works.
+
+## What is actually running
+
+| Unit | What it is |
+|---|---|
+| `labtris-api` | The API and the web interface, unprivileged, on `127.0.0.1:8080` |
+| `labtris-netd` | The privileged network daemon, as root, on a Unix socket |
+| `labtris-ksm` | A one-shot that turns on memory deduplication at boot |
+| `nginx` | Fronts the API on port **8081**, which is the port people use |
+| `postgresql` | The database |
+| `docker` | Container nodes |
+
+```
+$ systemctl status labtris-api labtris-netd
+$ journalctl -u labtris-api -f
+```
+
+**The split between the first two is the security model.** Every operation that
+touches netlink or nftables — creating a bridge, moving an interface into a
+container, setting up NAT — goes through `netd` over a socket. The web-facing
+process runs unprivileged and cannot reach the kernel directly, so compromising
+it is not the same as compromising the host.
+
+## Setting a static management IP
+
+The installer's default is DHCP. Fine for a first boot; not fine for a
+server that people bookmark by URL and that has to answer at the same
+address across reboots and lease expiries.
+
+Settings → Management network. Pick **Manual**, fill address / gateway /
+DNS, hit **Apply**, confirm. Labtris rewrites
+`/etc/netplan/60-labtris-management.yaml`, neutralises the installer's
+default netplan so it does not compete for the same interface, and runs
+`netplan apply`. The change takes effect immediately.
+
+Two things to know before you click:
+
+- **If the address changes, the browser session ends** the moment the
+  interface renumbers. Reconnect at the new URL. Nothing was lost; the API
+  survived the config change, only the address it answers at moved.
+- **A wrong config takes the box off the network.** A gateway outside the
+  address's subnet, a subnet the physical LAN does not carry, DNS servers
+  the box cannot reach — any of these leave you needing the physical or
+  vSphere console to recover. The form catches the obvious errors (gateway
+  not in subnet, malformed inputs), but a syntactically valid config that
+  points at a nonexistent gateway is caught only by the box being
+  unreachable afterwards. Labtris **does not auto-revert**.
+
+Recovering from a bad apply: on the physical / vSphere console, log in as
+`labtris-admin`, `sudo rm /etc/netplan/60-labtris-management.yaml`, `sudo
+netplan apply` — the installer's default netplan takes over again and DHCP
+returns.
+
+## Adding extra uplink bridges
+
+A host with more than one NIC can expose each extra NIC as its own Cloud
+in the network picker. Settings → Uplink bridges lists the NICs a bridge
+could be built from (bare, not enslaved, not the management NIC)
+alongside any bridges already configured. Tick the ones you want, hit
+**Apply**.
+
+Labtris writes `/etc/netplan/60-labtris-cloud.yaml`, allocates bridge
+names as `br1`, `br2`, `br3` in the order you picked, and runs
+`netplan apply`. Each new bridge shows up in the "New network → Cloud"
+picker the next time you open it.
+
+Two things to know:
+
+- **The management NIC is not offered here.** Making its uplink an
+  ordinary bridge would strand the box; if the management NIC is the
+  only one you have, use the management pane's bridge mode instead.
+- **Removing a bridge that's still in use is refused.** If a lab
+  network holds a Cloud on `br2`, the pane names the network and asks
+  you to delete it first.
+
+Recovering from a bad apply: same as the management pane — physical /
+vSphere console, `sudo rm /etc/netplan/60-labtris-cloud.yaml`, `sudo
+netplan apply`, and every uplink bridge is gone. Cloud networks in
+existing labs will fail to resolve their bridges the next time a node
+starts; delete or recreate them.
+
+## Restarts and reboots
+
+Bouncing the API **does not** reboot anyone's labs. QEMU guests are started
+detached and outlive the process on purpose; the unit uses `KillMode=process`
+so systemd does not take them with it.
+
+When the API comes back it **reconciles**: it looks at what the machine is
+actually doing and corrects the database against it.
+
+- Nodes the database thinks are running but which are not get marked stopped.
+- Leaked interface-name and MAC reservations are released.
+- NAT networks are rebuilt — the address, the masquerade rule and the DHCP
+  process live in the kernel and in a process, not in the database, so none of
+  it survives a reboot on its own. Restoring it is not a surprise: the network
+  object exists and you expect it to route, and nothing boots as a side effect.
+
+Nodes are *not* restarted for you. A reboot leaves stopped nodes, correctly
+labelled.
+
+## Upgrading
+
+The installer is idempotent — it is both the ISO's install path and the upgrade
+path:
+
+```
+$ sudo ./packaging/install-labtris.sh
+```
+
+It pulls the source, rebuilds the virtualenv and the interface, runs migrations,
+and restarts the services. Running it over an existing install is expected.
+
+Back up first (**Settings → Backup**). It is one file and it takes a second.
+
+## Density
+
+Kernel Samepage Merging is the single biggest capacity lever here, and it is off
+on every stock Ubuntu. Twenty students running the same Ubuntu image share
+almost every page of it.
+
+Measured on a production host running fifteen VMs:
+
+```
+pages_sharing  16,330,113   ~62 GiB deduplicated
+pages_shared    1,914,989   ~7.3 GiB actually backing it
+                            ~8.5:1
+```
+
+That is the difference between roughly twenty VMs on a box and roughly a hundred
+and fifty. `labtris-ksm` turns it on and tunes it at boot — the stock defaults
+scan far too gently to find duplicates at the rate VMs start. **Settings → Host
+& diagnostics** flags a host where KSM is available but off.
+
+**ksmtuned is deliberately masked.** Ubuntu ships `ksmtuned` (pulled in
+by `qemu-kvm`) which toggles KSM on and off based on host memory
+pressure — off when memory is plentiful, on when it's tight. That is
+exactly the wrong shape for a lab host: KSM's whole value is deduping
+the identical pages a booting guest allocates, and by the time the
+box gets memory-pressed enough for ksmtuned to notice, those pages are
+already dirtied and can't be merged. `labtris-ksm.service` masks
+`ksmtuned` in an `ExecStartPre` so the tuning `labtris-ksm.sh`
+installs is the only voice on `/sys/kernel/mm/ksm/run`.
+
+QEMU disks are also shared: ten nodes on one image are one download and one
+backing file, each with its own overlay.
+
+## Configuration
+
+`/etc/labtris/labtris.env`, read by the units. Everything is `LABTRIS_`-prefixed.
+
+| | |
+|---|---|
+| `LABTRIS_QEMU_ACCEL` | `kvm` or `tcg`. The default is `tcg` because nested KVM is unreliable on generic cloud VMs — some hang on first vcpu run despite `/dev/kvm` and `kvm-ok` both reporting success. Set `kvm` on a host where you have verified it executes |
+| `LABTRIS_QEMU_IMAGE_CACHE_DIR` | Where downloaded images live. Point it at the big disk |
+| `LABTRIS_QEMU_VM_DIR` | Per-node overlays and state |
+| `LABTRIS_DATABASE_URL` | Postgres |
+| `LABTRIS_QEMU_ALLOW_EXTRA_ARGS` | Off. Turning it on lets a node pass unrestricted arguments to a process on this host, which is equivalent to shell access |
+
+`systemctl restart labtris-api` after editing.
+
+## More than one host
+
+Register other machines and a lab can span them, with VXLAN carrying a segment
+between hosts:
+
+On the second machine, start `netd` listening on TCP. A token is mandatory —
+the argument parser refuses `--tcp-listen` without one, because that socket is
+network-reachable and it drives netlink as root:
+
+```
+$ sudo labtris-netd --tcp-listen 10.0.0.12:9601 --token <a long random string>
+```
+
+Then register it on the first:
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://<host>:8081/api/v1/hosts \
+  -H 'content-type: application/json' \
+  -d '{"name": "lab-2", "endpoint": "tcp://10.0.0.12:9601",
+       "token": "<the same token>", "underlay_ip": "10.0.0.12"}'
+```
+
+```python Python
+import httpx
+httpx.post(
+    "http://<host>:8081/api/v1/hosts",
+    json={
+        "name":       "lab-2",
+        "endpoint":   "tcp://10.0.0.12:9601",
+        "token":      "<the same token>",
+        "underlay_ip":"10.0.0.12",
+    },
+).raise_for_status()
+```
+
+</CodeGroup>
+
+`underlay_ip` is the address VXLAN builds the tunnel over. Keep that network
+private; the token is the only thing in front of a root daemon.
+
+`make netd-hostb` runs the same thing in a network namespace on one machine,
+which is how the multi-host path is tested without a second box.
+
+`GET /hosts/<id>/capabilities` asks a host what it can do — KVM, versions, what
+is reachable — which is the thing to check before blaming a topology.
+
+Deleting a lab tears down its stretched network's endpoints on every host it
+spans.
+
+## When something is wrong
+
+**Start here:**
+
+```
+$ labtris-doctor
+```
+
+The same facts as **Settings → Host & diagnostics**, from the shell — for when
+the interface is the thing that is not working. CPU and memory, whether KVM is
+usable and what `LABTRIS_QEMU_ACCEL` is actually set to, KSM's dedup ratio,
+QEMU, Docker, netd and the database, disk headroom, and the migration in effect.
+
+It also compares the database against the process table. A disagreement there is
+the first thing worth knowing: it means a start or a stop did not finish, and
+every console and capture built on that state will behave oddly.
+
+Output is plain text, because that is what gets pasted into an issue.
+
+**Common ones:**
+
+| Symptom | Usually |
+|---|---|
+| Everything is glacial | `LABTRIS_QEMU_ACCEL=tcg`, or no `/dev/kvm`. Software emulation is 10–20× slower |
+| A node runs, console works, no interfaces | NIC model — the guest has no virtio driver. Try `e1000`. See [Nodes and images](/nodes-and-images#nic-model) |
+| A node says running, console blank or stuck at BIOS | Disk bus — try IDE. One in three QEMU appliances needs it |
+| Nodes will not start, no clear error | `journalctl -u labtris-netd`. Nothing networked works if netd is down |
+| Web interface serves stale assets | `web/dist` is gitignored. Rebuild with `make web-build` |
+| Disk full | Image cache. Move `LABTRIS_QEMU_IMAGE_CACHE_DIR` and restart |
+
+Per-node output is in the **Logs** tab, and the inspector shows a node's last
+error directly.
+
+**Reaching for the shell.** The ISO carries the tools you would want the
+first time a lab does not do what you expect and you don't want to
+`apt-get` on an air-gapped install: `net-tools` (`ifconfig`,
+`netstat`), `iputils-arping`, `arp-scan`, `nmap`, `mtr-tiny`,
+`traceroute`, `dnsutils` (`dig`, `nslookup`), `ethtool`, and `tshark`
+(text `wireshark`). None of these are installed for the sake of
+Labtris itself — they are there because when the interface is the
+thing that is broken, whichever ones you reach for should already be
+there.
+
+## Exposure
+
+**Do not put the Labtris port on the internet.** It reaches the Docker socket
+and a root daemon. Put it on a VPN, a tailnet, or a network you control, and
+sign in the first account before the machine goes anywhere.
+
+Cloud networks deserve the same care: binding the interface the host is managed
+over takes the machine off the network, including your own session. Labtris
+refuses that interface unless you override it.
+
+## Building the installer
+
+```
+$ ./packaging/iso/build.sh
+```
+
+Resolves the Debian package closure with debootstrap, downloads the Python
+wheels, builds the interface and writes `dist/labtris-<version>-amd64.iso`.
+About 20–30 minutes and 12 GB free.
+
+Everything is on the disc, so the install fetches nothing. It has been tested
+end to end on a VM with **no network interface at all** — the installed system
+writes a DHCP configuration for any ethernet it may later be given, so you can
+install offline and connect the machine afterwards.
+
+To boot the result without hardware:
+
+```
+$ ./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+```
+
+---
+
+That is the handbook. Back to the [index](/introduction).

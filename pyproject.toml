@@ -1,0 +1,76 @@
+[project]
+name = "labtris"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+version = "0.4.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.4",
+  "pydantic-settings==2.7.0",
+  "sqlalchemy[asyncio]==2.0.36",
+  "asyncpg==0.30.0",
+  "alembic==1.14.0",
+  "aiodocker==0.24.0",
+  "pyroute2==0.8.1",
+  "structlog==24.4.0",
+  "ulid-py==1.1.0",
+  "websockets==14.1",
+  "pyyaml==6.0.2",
+  # auth.py has imported this since #33; it was never declared. It reached the
+  # development box incidentally, so everything worked there and a clean
+  # install could not start at all — the first fresh install crashed on
+  # `import jwt` while running migrations.
+  "pyjwt==2.10.1",
+  # FastAPI needs this to parse form data and file uploads. Nothing imports it
+  # directly — FastAPI reaches for it at request time — so an import scan
+  # cannot find it and neither could the tests, which ran where it happened to
+  # be installed. It surfaced only on a clean machine, as a 502.
+  "python-multipart==0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.0",
+  "httpx==0.28.1",
+  "ruff==0.8.4",
+  "mypy==1.14.0",
+  "types-PyYAML==6.0.12.20240917",
+]
+
+[project.scripts]
+labtris-api = "labtris_api.main:run"
+labtris-netd = "labtris_netd.__main__:main"
+labtris-mcp = "labtris_mcp.server:main"
+labtris-doctor = "labtris_api.diagnose:main"
+labtris-image = "labtris_api.cli.image:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["labtris_api*", "labtris_netd*", "labtris_mcp*"]
+
+[tool.pytest.ini_options]
+markers = [
+  "anonymous: run without the automatic test sign-in",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["labtris_api", "labtris_netd"]
+ignore_missing_imports = true

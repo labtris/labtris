@@ -1,0 +1,31 @@
+from labtris_api.routers import (
+    ai,
+    capture,
+    events,
+    health,
+    hosts,
+    impair,
+    labs,
+    links,
+    networks,
+    nodes,
+    system,
+    tasks,
+    templates,
+)
+
+__all__ = [
+    "ai",
+    "capture",
+    "events",
+    "health",
+    "hosts",
+    "impair",
+    "labs",
+    "links",
+    "networks",
+    "nodes",
+    "system",
+    "tasks",
+    "templates",
+]

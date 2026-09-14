@@ -1,0 +1,79 @@
+---
+title: "Consoles"
+description: "Serial, VNC and RDP, the terminal, and driving several nodes at once."
+---
+
+The console is where you actually spend your time, so it is worth knowing what
+each kind is and what it can do.
+
+## What you get, per node
+
+| | |
+|---|---|
+| **Container** | A real shell, with a PTY behind it. `cd` persists, Ctrl-C interrupts, `vi` and `top` render properly |
+| **QEMU, serial** | The guest's actual serial port, from the moment the kernel starts printing. You see the boot |
+| **QEMU, graphical** | VNC through Guacamole, for anything whose real console is a framebuffer |
+| **RDP** | For Windows guests, once the guest is up and you have told Labtris where to dial |
+
+Double-clicking a node opens whichever of those is its default.
+
+## The drawer
+
+Consoles open as tabs along the bottom. Each tab carries the node's state, so a
+node that has stopped says so rather than looking like a dead terminal.
+
+**`⊞ Split`** shows two side by side. That is the useful maximum — the point is
+watching one node while driving another, and a third column makes both too
+narrow to read.
+
+**`↗`** pops the terminal into its own window, for a second screen.
+
+## The command bar
+
+Underneath the panes is one command line, with **Run on** naming which node it
+will go to. Typing into a split without that named is how a command lands on the
+wrong router.
+
+- **↑** recalls that node's history.
+- The chips beside it are built from the node's own ports and its wired
+  neighbour — `ip -br a`, `ip route`, `ping -c 3 <neighbour>`, `tcpdump -ni
+  eth1`. They are not decoration; they are the four things everyone types first.
+
+## Typing goes to the guest
+
+Keystrokes are sent straight down, unechoed. What appears on screen is the
+guest's decision — which is why a password prompt behaves properly and shows
+nothing as you type.
+
+That also means Ctrl-C, Ctrl-D, Tab completion and arrow-key history all belong
+to the shell in the guest, not to the page.
+
+## When a console will not attach
+
+The pane tells you which of these it is, because they need different things:
+
+| It says | It means |
+|---|---|
+| **Connecting…** | Waiting for the guest's first byte. A booting VM can take a while |
+| **… is not running** | There is nothing to attach to. The pane offers **Start and attach** |
+| **Connection lost** | You were attached and the stream broke. It reconnects on a backoff, or press any key |
+| **Gave up after 5 attempts** | It kept closing. Something is wrong with the node, not the browser |
+
+A console that only ever said "connecting…" would leave you guessing which of
+those you had.
+
+## Copy and paste
+
+Selecting copies. Paste goes to the guest as if typed — which for a
+multi-line paste means each newline is a carriage return, as a terminal would
+send.
+
+## A container console is not the machine
+
+It is a shell inside the container's namespaces. `ps` shows the container's
+processes, `ip addr` shows its interfaces. To get at the *server*, use SSH.
+
+## Next
+
+[Seeing what is happening](/observing) — capture, addressing, and the
+views that answer "why can I not reach X".

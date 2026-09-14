@@ -1,0 +1,81 @@
+# Every apt package Labtris needs, one per line, comments and blanks ignored.
+#
+# Single-sourced because it is read twice: install-labtris.sh installs from it,
+# and the ISO build downloads it so the packages ride on the disc instead of
+# being fetched during the install. Two copies of this list would drift, and
+# the drift would show up as a missing binary on a machine with no network.
+python3.12
+python3.12-venv
+python3-pip
+git
+curl
+ca-certificates
+postgresql
+postgresql-client
+qemu-system-x86
+qemu-utils
+ovmf
+guacd
+libguac-client-vnc0
+libguac-client-rdp0
+p7zip-full
+tcpdump
+iproute2
+bridge-utils
+docker.io
+nginx
+# The Wireshark session feature: the GUI binary, a headless X server for it to
+# render into, and a VNC exporter for the browser to reach it through guacd.
+wireshark
+xvfb
+x11vnc
+# Kernel Samepage Merging: the density lever. See docs/04-scaling.md —
+# measured 8.5:1. ksmtuned ships in this list because qemu-kvm pulls it in
+# anyway and having it on the disc keeps offline installs whole. It is
+# masked by labtris-ksm.service — the two disagree about when KSM should
+# run (ksmtuned turns it off when memory is plentiful; a lab host wants it
+# on then, so the pages a booting guest allocates get deduped from moment
+# zero) and labtris-ksm's tuning is the one measured against real EVE-NG
+# hosts.
+ksmtuned
+# NAT networks: nftables carries the masquerade rule and the forward accepts,
+# dnsmasq is the DHCP server that makes a node dropped on the segment just work.
+# Both must be on the disc — a NAT network is exactly the thing someone reaches
+# for on a machine that has no other way out, so fetching them is not an option.
+nftables
+dnsmasq-base
+# Live NAT sessions. Ubuntu builds its kernel without CONFIG_NF_CONNTRACK_PROCFS,
+# so /proc/net/nf_conntrack does not exist and the tool is the only way to read
+# the table — which the kernel is keeping either way.
+conntrack
+# Network diagnostics. Labtris is an appliance that lives on a network the
+# operator does not own — a bad DHCP handoff, an IP collision, or a routing
+# rule that only affects this box are all things the operator has to diagnose
+# with what is on the disc, because "install these tools first" assumes the
+# very network path that is broken. Kept on the ISO for that reason.
+#
+# poppler-utils: pdftoppm, for the assistant's PDF-attachment flow.
+# Vision-capable LLMs accept images, not PDFs; the assistant renders each
+# page to PNG at request time so the model always sees the same shape.
+poppler-utils
+# net-tools: ifconfig, arp, netstat — old muscle memory that is easier to
+#   type than the ip-suite equivalents when everything is on fire.
+# iputils-arping: probe one IP for a MAC without pinging (used by the
+#   management-network apply's pre-flight check for IP collisions).
+# arp-scan: sweep the /24, learn every MAC on the segment in one command.
+# nmap: fingerprint whoever answered — OS, open ports, service banners.
+# mtr-tiny: continuous traceroute; the one you reach for when a path flaps.
+# traceroute: classic hop-by-hop for the more traditional stack.
+# dnsutils: dig and nslookup — DNS is the thing everyone forgets to check.
+# ethtool: link speed, negotiated duplex, driver name — the layer-1 answers.
+# tshark: wireshark's CLI, for the times a display-less capture is what
+#   fits the situation.
+net-tools
+iputils-arping
+arp-scan
+nmap
+mtr-tiny
+traceroute
+dnsutils
+ethtool
+tshark

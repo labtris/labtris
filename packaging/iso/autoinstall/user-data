@@ -1,0 +1,93 @@
+#cloud-config
+# Subiquity autoinstall. Everything here is what the installer would otherwise
+# stop and ask, so the ISO can run start to finish without a keyboard.
+autoinstall:
+  version: 1
+
+  # Interactive-sections is deliberately empty: any question left un-answered
+  # turns the whole install back into a manual one, silently, on the machine
+  # you were not watching.
+  interactive-sections: []
+
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  # DHCP on any ethernet, written whether or not one is present at install
+  # time. Subiquity otherwise configures only the interfaces it can see, and an
+  # install run with no NIC attached — exactly the offline-from-USB case this
+  # ISO exists for — produces a machine with an empty /etc/netplan. Plug it
+  # into a network afterwards and it comes up with no address and no web
+  # interface, which looks like the install failed when it did not.
+  #
+  # optional: true so a host with an unplugged port does not spend two minutes
+  # at boot waiting for a carrier that is never coming.
+  network:
+    version: 2
+    ethernets:
+      any-ethernet:
+        match:
+          name: "en*"
+        dhcp4: true
+        optional: true
+      any-legacy:
+        match:
+          name: "eth*"
+        dhcp4: true
+        optional: true
+
+  identity:
+    hostname: labtris
+    realname: Labtris
+    username: labtris-admin
+    # "labtris", as a real SHA-512 crypt hash — method 6, 16-char salt,
+    # 86-char digest, verified to reproduce from the password.
+    #
+    # The first version of this file carried a hash I made up. Subiquity
+    # silently declined to create the account, every other late-command
+    # succeeded, and the install then died on the last line trying to expire a
+    # password for a user that did not exist. An invalid hash here does not
+    # fail loudly; it fails at the far end.
+    password: "$6$ipWYO.oc1g8wfvR6$f3J72RJ9TEtB4UUOk3uX69/rvCUWSoTsFFPO34V2xviLgq.JTPO2Bo/9dlCqomkJHUQxNGoLYRw98hfuJ96Wo0"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+
+  storage:
+    layout:
+      name: lvm
+
+  # The base install stays minimal; install-labtris.sh pulls what it needs.
+  # Listing packages in both places is how they drift.
+  packages:
+    - git
+    - curl
+
+  # No NodeSource, no nodejs, no npm. The web UI is built on the build host and
+  # shipped as static files in web/dist, so the target never needs a JavaScript
+  # toolchain or a route to the npm registry.
+  late-commands:
+    # The repository is baked onto the ISO at /cdrom/labtris so the install
+    # works without network access to GitHub — which is the common case on a
+    # training-room network.
+    - cp -a /cdrom/labtris /target/opt/labtris-src
+    # The packages ride on the disc; copied in so the install needs no network.
+    - cp -a /cdrom/labtris-debs /target/opt/labtris-debs
+    - cp -a /cdrom/labtris-wheels /target/opt/labtris-wheels
+    - curtin in-target --target=/target -- /opt/labtris-src/packaging/install-labtris.sh --source /opt/labtris-src --staged --debs /opt/labtris-debs --wheels /opt/labtris-wheels
+    - curtin in-target --target=/target -- rm -rf /opt/labtris-src /opt/labtris-debs /opt/labtris-wheels
+    # Branding, copied wholesale so a new file needs no change here.
+    - cp -a /cdrom/labtris-overlay/. /target/
+    - curtin in-target --target=/target -- chmod +x /etc/update-motd.d/00-labtris
+    # Both guarded: the splash is decoration, and an install that aborts
+    # because a theme did not apply is a far worse outcome than a plain boot.
+    # This is not hypothetical — a missing logo.png took down a whole install.
+    - curtin in-target --target=/target -- sh -c 'test -f /usr/share/plymouth/themes/labtris/labtris.plymouth && update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/labtris/labtris.plymouth 200 || true'
+    - curtin in-target --target=/target -- sh -c 'update-initramfs -u || true'
+    # Password expiry is NOT done here. The account does not exist yet:
+    # subiquity hands it to cloud-init, which creates it on the first boot.
+    # `passwd --expire` at this point fails on a missing user and aborts the
+    # install after everything else has succeeded. The overlay ships a unit
+    # that does it once cloud-init has actually made the account.
+    - curtin in-target --target=/target -- ln -sf /etc/systemd/system/labtris-expire-admin.service /etc/systemd/system/multi-user.target.wants/labtris-expire-admin.service

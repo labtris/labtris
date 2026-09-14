@@ -1,0 +1,22 @@
+[Unit]
+# The installer's own account is created by cloud-init on the first boot, not
+# during the install — subiquity writes it to /etc/cloud/cloud.cfg.d/ and
+# leaves it there. So `passwd --expire` in a late-command runs against a user
+# that does not exist yet, fails, and takes the whole installation down on its
+# very last line. This waits until the account is really there.
+Description=Force a password change on the Labtris admin account
+After=cloud-init.service systemd-user-sessions.service
+Wants=cloud-init.service
+ConditionPathExists=!/var/lib/labtris/admin-expired
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Guarded: an appliance that cannot boot because a password could not be aged
+# is a far worse outcome than one whose password was not aged.
+ExecStart=/bin/sh -c 'chage -d 0 labtris-admin || true'
+ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/labtris && : > /var/lib/labtris/admin-expired'
+ExecStartPost=/usr/bin/systemctl disable labtris-expire-admin.service
+
+[Install]
+WantedBy=multi-user.target

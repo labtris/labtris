@@ -1,0 +1,868 @@
+@import "./fonts.css";
+
+/* Theme tokens.
+ *
+ * Every colour the app uses lives here, so a theme is a set of token values
+ * rather than a parallel stylesheet. The rule for adding a colour: if it is
+ * literally black, white, or an image-identity accent (the Alpine teal, the
+ * Ubuntu orange), hardcode it; anything structural is a token, or it will
+ * look wrong in half the themes.
+ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  /* The palette from the redesign: warm slate rather than navy, and a cyan
+   * accent rather than teal. Three surfaces, not a gradient — the page, the
+   * card that sits on it, and the control that sits on the card. */
+  --bg: #1a2226;
+  --bg-2: #2c3b41;
+  --panel: #222d32;
+  --panel-solid: #222d32;
+  --raise: rgba(255, 255, 255, 0.05);
+  --stroke: rgba(74, 90, 99, 0.85);
+  --text: #e4e9ec;
+  --muted: #9fadb5;
+  --accent: #00c0ef;
+  --accent-2: #26c4ff;
+  --danger: #f0857a;
+  --warn: #f5b74e;
+  --grid: rgba(159, 173, 181, 0.07);
+  /* Flat, not floating. The old 80px shadow under every panel is what made
+   * this read as a glowing dashboard rather than a tool. */
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --node-a: #2c3b41;
+  --node-b: #2c3b41;
+  --scrim: rgba(11, 20, 24, 0.62);
+  --halo: rgba(11, 20, 24, 0.85);
+  --wire: #6fd0e8;
+  --seg: #00c0ef;
+  --cloud: #a78bfa;
+  --screen: #000;
+  --radius: 14px;
+  /* The design's control geometry: fixed heights so a row of controls lines
+   * up, and one radius per kind of surface rather than per component. */
+  --ctl-h: 34px;
+  --r-ctl: 10px;
+  --r-node: 12px;
+  --r-card: 14px;
+  --r-tab: 8px;
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  font-size: 13.33px;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6fb;
+  --bg-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-solid: #ffffff;
+  --raise: rgba(15, 23, 42, 0.04);
+  --stroke: rgba(15, 23, 42, 0.14);
+  --text: #10192b;
+  --muted: #5b6a85;
+  --accent: #0d9488;
+  --accent-2: #2563eb;
+  --danger: #dc2626;
+  --warn: #b45309;
+  --grid: rgba(15, 23, 42, 0.06);
+  --shadow: 0 18px 50px rgba(15, 23, 42, 0.14);
+  --node-a: #ffffff;
+  --node-b: #eef2fa;
+  --scrim: rgba(15, 23, 42, 0.35);
+  --halo: rgba(255, 255, 255, 0.9);
+  --wire: #0284c7;
+  --seg: #0369a1;
+  --cloud: #7c3aed;
+  /* A VNC framebuffer is whatever the guest paints; the surround stays dark so
+   * a black desktop does not sit on a white page with a visible seam. */
+  --screen: #111827;
+}
+
+/* Not a dark theme with bigger numbers: pure black and pure white, saturated
+ * accents, and borders that are actually visible rather than implied. */
+[data-theme="contrast"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-2: #0a0a0a;
+  --panel: #0a0a0a;
+  --panel-solid: #0a0a0a;
+  --raise: rgba(255, 255, 255, 0.1);
+  --stroke: #6b7280;
+  --text: #ffffff;
+  --muted: #cbd5e1;
+  --accent: #00ffc8;
+  --accent-2: #7aa2ff;
+  --danger: #ff5470;
+  --warn: #ffd400;
+  --grid: rgba(255, 255, 255, 0.12);
+  --shadow: 0 0 0 1px #6b7280;
+  --node-a: #111111;
+  --node-b: #000000;
+  --scrim: rgba(0, 0, 0, 0.8);
+  --halo: #000000;
+  --wire: #00d5ff;
+  --seg: #00d5ff;
+  --cloud: #d4a2ff;
+  --screen: #000;
+}
+
+/* Warm and low-contrast for long sessions; the accents stay distinguishable
+ * for anyone with a red/green deficiency, which the default teal/orange pair
+ * does not guarantee. */
+[data-theme="sepia"] {
+  color-scheme: light;
+  --bg: #f3ece1;
+  --bg-2: #fbf7f0;
+  --panel: rgba(251, 247, 240, 0.94);
+  --panel-solid: #fbf7f0;
+  --raise: rgba(87, 62, 38, 0.05);
+  --stroke: rgba(87, 62, 38, 0.2);
+  --text: #2e2418;
+  --muted: #6f6250;
+  --accent: #1d6f66;
+  --accent-2: #1f5fa8;
+  --danger: #a33a2c;
+  --warn: #a06a12;
+  --grid: rgba(87, 62, 38, 0.07);
+  --shadow: 0 16px 44px rgba(87, 62, 38, 0.16);
+  --node-a: #fffdf8;
+  --node-b: #f0e7d8;
+  --scrim: rgba(46, 36, 24, 0.4);
+  --halo: rgba(255, 253, 248, 0.9);
+  --wire: #1f6f9c;
+  --seg: #17607f;
+  --cloud: #7c5bbd;
+  --screen: #1c1814;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Editor palettes. Hex values are the published ones from each project rather
+ * than eyeballed approximations — people who use these every day notice.
+ * Each maps the same roles: bg0 -> --bg, bg1 -> --panel, fg -> --text, the
+ * muted grey -> --muted, and the scheme's own blue/cyan -> --wire so a link
+ * reads as a link and not as an error.
+ * ------------------------------------------------------------------------ */
+
+/* morhetz/gruvbox — dark, medium contrast */
+[data-theme="gruvbox"] {
+  color-scheme: dark;
+  --bg: #282828;
+  --bg-2: #32302f;
+  --panel: rgba(60, 56, 54, 0.94);
+  --panel-solid: #3c3836;
+  --raise: rgba(235, 219, 178, 0.06);
+  --stroke: rgba(168, 153, 132, 0.28);
+  --text: #ebdbb2;
+  --muted: #a89984;
+  --accent: #8ec07c;
+  --accent-2: #83a598;
+  --danger: #fb4934;
+  --warn: #fabd2f;
+  --grid: rgba(168, 153, 132, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --node-a: #3c3836;
+  --node-b: #32302f;
+  --scrim: rgba(29, 32, 33, 0.7);
+  --halo: rgba(40, 40, 40, 0.9);
+  --wire: #83a598;
+  --seg: #8ec07c;
+  --cloud: #d3869b;
+  --screen: #1d2021;
+}
+
+/* arcticicestudio/nord — the polar night / frost palette */
+[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: #2e3440;
+  --bg-2: #3b4252;
+  --panel: rgba(59, 66, 82, 0.94);
+  --panel-solid: #3b4252;
+  --raise: rgba(216, 222, 233, 0.06);
+  --stroke: rgba(76, 86, 106, 0.9);
+  --text: #eceff4;
+  --muted: #8b96a8;
+  --accent: #88c0d0;
+  --accent-2: #81a1c1;
+  --danger: #bf616a;
+  --warn: #ebcb8b;
+  --grid: rgba(136, 192, 208, 0.07);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  --node-a: #3b4252;
+  --node-b: #343b49;
+  --scrim: rgba(46, 52, 64, 0.72);
+  --halo: rgba(46, 52, 64, 0.9);
+  --wire: #88c0d0;
+  --seg: #8fbcbb;
+  --cloud: #b48ead;
+  --screen: #2e3440;
+}
+
+/* ethanschoonover/solarized — the one with a paper's worth of reasoning
+ * behind it. Both variants share the accent hues by design. */
+[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --bg: #002b36;
+  --bg-2: #073642;
+  --panel: rgba(7, 54, 66, 0.94);
+  --panel-solid: #073642;
+  --raise: rgba(147, 161, 161, 0.07);
+  --stroke: rgba(88, 110, 117, 0.6);
+  --text: #93a1a1;
+  --muted: #657b83;
+  --accent: #2aa198;
+  --accent-2: #268bd2;
+  --danger: #dc322f;
+  --warn: #b58900;
+  --grid: rgba(88, 110, 117, 0.14);
+  --shadow: 0 20px 60px rgba(0, 15, 20, 0.55);
+  --node-a: #073642;
+  --node-b: #02303c;
+  --scrim: rgba(0, 43, 54, 0.75);
+  --halo: rgba(0, 43, 54, 0.9);
+  --wire: #268bd2;
+  --seg: #2aa198;
+  --cloud: #6c71c4;
+  --screen: #002b36;
+}
+
+[data-theme="solarized-light"] {
+  color-scheme: light;
+  --bg: #fdf6e3;
+  --bg-2: #eee8d5;
+  --panel: rgba(238, 232, 213, 0.94);
+  --panel-solid: #fdf6e3;
+  --raise: rgba(101, 123, 131, 0.07);
+  --stroke: rgba(147, 161, 161, 0.65);
+  --text: #073642;
+  --muted: #657b83;
+  --accent: #2aa198;
+  --accent-2: #268bd2;
+  --danger: #dc322f;
+  --warn: #b58900;
+  --grid: rgba(101, 123, 131, 0.1);
+  --shadow: 0 16px 44px rgba(101, 123, 131, 0.18);
+  --node-a: #fdf6e3;
+  --node-b: #eee8d5;
+  --scrim: rgba(7, 54, 66, 0.35);
+  --halo: rgba(253, 246, 227, 0.92);
+  --wire: #268bd2;
+  --seg: #2aa198;
+  --cloud: #6c71c4;
+  --screen: #002b36;
+}
+
+/* dracula/dracula-theme */
+[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: #282a36;
+  --bg-2: #21222c;
+  --panel: rgba(68, 71, 90, 0.9);
+  --panel-solid: #44475a;
+  --raise: rgba(248, 248, 242, 0.06);
+  --stroke: rgba(98, 114, 164, 0.5);
+  --text: #f8f8f2;
+  --muted: #8b93b8;
+  --accent: #50fa7b;
+  --accent-2: #bd93f9;
+  --danger: #ff5555;
+  --warn: #f1fa8c;
+  --grid: rgba(189, 147, 249, 0.09);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --node-a: #44475a;
+  --node-b: #343746;
+  --scrim: rgba(40, 42, 54, 0.74);
+  --halo: rgba(40, 42, 54, 0.9);
+  --wire: #8be9fd;
+  --seg: #50fa7b;
+  --cloud: #ff79c6;
+  --screen: #21222c;
+}
+
+/* folke/tokyonight */
+[data-theme="tokyonight"] {
+  color-scheme: dark;
+  --bg: #1a1b26;
+  --bg-2: #16161e;
+  --panel: rgba(36, 40, 59, 0.94);
+  --panel-solid: #24283b;
+  --raise: rgba(192, 202, 245, 0.06);
+  --stroke: rgba(86, 95, 137, 0.5);
+  --text: #c0caf5;
+  --muted: #7982a9;
+  --accent: #7dcfff;
+  --accent-2: #7aa2f7;
+  --danger: #f7768e;
+  --warn: #e0af68;
+  --grid: rgba(122, 162, 247, 0.08);
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --node-a: #24283b;
+  --node-b: #1f2335;
+  --scrim: rgba(22, 22, 30, 0.76);
+  --halo: rgba(26, 27, 38, 0.9);
+  --wire: #7aa2f7;
+  --seg: #9ece6a;
+  --cloud: #bb9af7;
+  --screen: #16161e;
+}
+
+/* ---------------------------------------------------------------------------
+ * Material Design 2's dark and light baselines. The dark one is the spec's
+ * own guidance: a #121212 surface with white overlays for elevation rather
+ * than pure black, because black makes shadows invisible.
+ * ------------------------------------------------------------------------ */
+[data-theme="material-dark"] {
+  color-scheme: dark;
+  --bg: #121212;
+  --bg-2: #1e1e1e;
+  --panel: rgba(30, 30, 30, 0.96);
+  --panel-solid: #1e1e1e;
+  --raise: rgba(255, 255, 255, 0.09);
+  --stroke: rgba(255, 255, 255, 0.16);
+  --text: #e4e4e4;
+  --muted: #9e9e9e;
+  --accent: #03dac6;
+  --accent-2: #bb86fc;
+  --danger: #cf6679;
+  --warn: #ffb74d;
+  --grid: rgba(255, 255, 255, 0.05);
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  --node-a: #2c2c2c;
+  --node-b: #1e1e1e;
+  --scrim: rgba(0, 0, 0, 0.7);
+  --halo: rgba(18, 18, 18, 0.92);
+  --wire: #03dac6;
+  --seg: #bb86fc;
+  --cloud: #ff8a80;
+  --screen: #000;
+}
+
+[data-theme="material-light"] {
+  color-scheme: light;
+  --bg: #fafafa;
+  --bg-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.96);
+  --panel-solid: #ffffff;
+  --raise: rgba(0, 0, 0, 0.04);
+  --stroke: rgba(0, 0, 0, 0.12);
+  --text: #212121;
+  --muted: #616161;
+  --accent: #00897b;
+  --accent-2: #6200ee;
+  --danger: #b00020;
+  --warn: #ef6c00;
+  --grid: rgba(0, 0, 0, 0.05);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  --node-a: #ffffff;
+  --node-b: #f5f5f5;
+  --scrim: rgba(0, 0, 0, 0.4);
+  --halo: rgba(255, 255, 255, 0.92);
+  --wire: #1976d2;
+  --seg: #00897b;
+  --cloud: #6200ee;
+  --screen: #212121;
+}
+
+/* ---------------------------------------------------------------------------
+ * Morandi: not a published palette but a style — Giorgio Morandi's still
+ * lifes, where every colour is greyed toward the same middle. Low chroma
+ * throughout, which is restful for a long session and is exactly what makes
+ * it hard to use: with nothing saturated, state has to be carried by the few
+ * accents that are allowed any, so danger and warn keep more of theirs.
+ * ------------------------------------------------------------------------ */
+[data-theme="morandi"] {
+  color-scheme: light;
+  --bg: #e8e4dd;
+  --bg-2: #f2efe9;
+  --panel: rgba(242, 239, 233, 0.95);
+  --panel-solid: #f2efe9;
+  --raise: rgba(94, 88, 79, 0.05);
+  --stroke: rgba(140, 132, 121, 0.34);
+  --text: #413c35;
+  /* Darker than a Morandi palette naturally runs: at #8c8479 the secondary
+   * text measured 2.9:1 against this background, and a wire 2.4:1. Kept
+   * greyed and warm, just far enough down to be readable. */
+  --muted: #756c60;
+  --accent: #5f7360;
+  --accent-2: #5f7385;
+  --danger: #b07b72;
+  --warn: #bfa06a;
+  --grid: rgba(140, 132, 121, 0.09);
+  --shadow: 0 14px 40px rgba(94, 88, 79, 0.16);
+  --node-a: #faf8f4;
+  --node-b: #e5e0d7;
+  --scrim: rgba(74, 69, 62, 0.35);
+  --halo: rgba(242, 239, 233, 0.92);
+  --wire: #5f7385;
+  --seg: #5f7360;
+  --cloud: #806c80;
+  --screen: #3a3630;
+}
+
+/* The same restraint after dark: warm greys rather than blue-blacks. */
+[data-theme="morandi-dark"] {
+  color-scheme: dark;
+  --bg: #2b2926;
+  --bg-2: #34312d;
+  --panel: rgba(52, 49, 45, 0.95);
+  --panel-solid: #34312d;
+  --raise: rgba(232, 228, 221, 0.06);
+  --stroke: rgba(140, 132, 121, 0.36);
+  --text: #ddd7cd;
+  --muted: #9c9488;
+  --accent: #9db09a;
+  --accent-2: #9aacba;
+  --danger: #c08d84;
+  --warn: #d0b57f;
+  --grid: rgba(221, 215, 205, 0.06);
+  --shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
+  --node-a: #3b3833;
+  --node-b: #322f2b;
+  --scrim: rgba(43, 41, 38, 0.74);
+  --halo: rgba(43, 41, 38, 0.9);
+  --wire: #9aacba;
+  --seg: #9db09a;
+  --cloud: #b3a0b3;
+  --screen: #211f1d;
+}
+
+/* catppuccin/catppuccin — Mocha and Latte */
+[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg-2: #181825;
+  --panel: rgba(49,50,68,0.94);
+  --panel-solid: #313244;
+  --raise: rgba(205,214,244,0.06);
+  --stroke: rgba(88,91,112,0.7);
+  --text: #cdd6f4;
+  --muted: #9399b2;
+  --accent: #94e2d5;
+  --accent-2: #89b4fa;
+  --danger: #f38ba8;
+  --warn: #f9e2af;
+  --grid: rgba(137,180,250,0.07);
+  --shadow: 0 20px 60px rgba(0,0,0,0.5);
+  --node-a: #313244;
+  --node-b: #252537;
+  --scrim: rgba(17,17,27,0.75);
+  --halo: rgba(30,30,46,0.9);
+  --wire: #89b4fa;
+  --seg: #94e2d5;
+  --cloud: #cba6f7;
+  --screen: #11111b;
+}
+
+[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --bg: #eff1f5;
+  --bg-2: #e6e9ef;
+  --panel: rgba(255,255,255,0.95);
+  --panel-solid: #ffffff;
+  --raise: rgba(76,79,105,0.05);
+  --stroke: rgba(156,160,176,0.55);
+  --text: #4c4f69;
+  --muted: #6c6f85;
+  --accent: #179299;
+  --accent-2: #1e66f5;
+  --danger: #d20f39;
+  --warn: #df8e1d;
+  --grid: rgba(76,79,105,0.06);
+  --shadow: 0 14px 40px rgba(76,79,105,0.14);
+  --node-a: #ffffff;
+  --node-b: #e6e9ef;
+  --scrim: rgba(76,79,105,0.35);
+  --halo: rgba(239,241,245,0.92);
+  --wire: #1e66f5;
+  --seg: #179299;
+  --cloud: #8839ef;
+  --screen: #4c4f69;
+}
+
+/* rose-pine/rose-pine — and its light Dawn variant */
+[data-theme="rose-pine"] {
+  color-scheme: dark;
+  --bg: #191724;
+  --bg-2: #1f1d2e;
+  --panel: rgba(38,35,58,0.94);
+  --panel-solid: #26233a;
+  --raise: rgba(224,222,244,0.06);
+  --stroke: rgba(110,106,134,0.55);
+  --text: #e0def4;
+  --muted: #908caa;
+  --accent: #9ccfd8;
+  --accent-2: #c4a7e7;
+  --danger: #eb6f92;
+  --warn: #f6c177;
+  --grid: rgba(156,207,216,0.06);
+  --shadow: 0 20px 60px rgba(0,0,0,0.55);
+  --node-a: #26233a;
+  --node-b: #1f1d2e;
+  --scrim: rgba(25,23,36,0.76);
+  --halo: rgba(25,23,36,0.9);
+  --wire: #9ccfd8;
+  --seg: #31748f;
+  --cloud: #c4a7e7;
+  --screen: #191724;
+}
+
+[data-theme="rose-pine-dawn"] {
+  color-scheme: light;
+  --bg: #faf4ed;
+  --bg-2: #fffaf3;
+  --panel: rgba(255,250,243,0.95);
+  --panel-solid: #fffaf3;
+  --raise: rgba(87,82,121,0.05);
+  --stroke: rgba(152,147,165,0.5);
+  --text: #575279;
+  --muted: #797593;
+  --accent: #286983;
+  --accent-2: #907aa9;
+  --danger: #b4637a;
+  --warn: #ea9d34;
+  --grid: rgba(87,82,121,0.07);
+  --shadow: 0 14px 40px rgba(87,82,121,0.14);
+  --node-a: #fffaf3;
+  --node-b: #f2e9e1;
+  --scrim: rgba(87,82,121,0.35);
+  --halo: rgba(250,244,237,0.92);
+  --wire: #286983;
+  --seg: #56949f;
+  --cloud: #907aa9;
+  --screen: #575279;
+}
+
+/* sainnhe/everforest — medium dark; the green-tinted one */
+[data-theme="everforest"] {
+  color-scheme: dark;
+  --bg: #2d353b;
+  --bg-2: #343f44;
+  --panel: rgba(61,72,77,0.94);
+  --panel-solid: #3d484d;
+  --raise: rgba(211,198,170,0.06);
+  --stroke: rgba(133,146,137,0.45);
+  --text: #d3c6aa;
+  --muted: #9da9a0;
+  --accent: #a7c080;
+  --accent-2: #7fbbb3;
+  --danger: #e67e80;
+  --warn: #dbbc7f;
+  --grid: rgba(167,192,128,0.07);
+  --shadow: 0 20px 56px rgba(0,0,0,0.45);
+  --node-a: #3d484d;
+  --node-b: #343f44;
+  --scrim: rgba(45,53,59,0.75);
+  --halo: rgba(45,53,59,0.9);
+  --wire: #7fbbb3;
+  --seg: #83c092;
+  --cloud: #d699b6;
+  --screen: #272e33;
+}
+
+/* rebelot/kanagawa — after Hokusai's wave; ink and muted pigment */
+[data-theme="kanagawa"] {
+  color-scheme: dark;
+  --bg: #1f1f28;
+  --bg-2: #16161d;
+  --panel: rgba(42,42,55,0.95);
+  --panel-solid: #2a2a37;
+  --raise: rgba(220,215,186,0.06);
+  --stroke: rgba(84,84,109,0.7);
+  --text: #dcd7ba;
+  --muted: #a09b83;
+  --accent: #7aa89f;
+  --accent-2: #7e9cd8;
+  --danger: #e46876;
+  --warn: #ff9e3b;
+  --grid: rgba(126,156,216,0.07);
+  --shadow: 0 20px 60px rgba(0,0,0,0.55);
+  --node-a: #2a2a37;
+  --node-b: #223249;
+  --scrim: rgba(22,22,29,0.78);
+  --halo: rgba(31,31,40,0.9);
+  --wire: #7fb4ca;
+  --seg: #98bb6c;
+  --cloud: #957fb8;
+  --screen: #16161d;
+}
+
+/* atom/one-dark */
+[data-theme="onedark"] {
+  color-scheme: dark;
+  --bg: #282c34;
+  --bg-2: #21252b;
+  --panel: rgba(40,44,52,0.95);
+  --panel-solid: #2c313a;
+  --raise: rgba(171,178,191,0.06);
+  --stroke: rgba(92,99,112,0.6);
+  --text: #abb2bf;
+  --muted: #7f8797;
+  --accent: #56b6c2;
+  --accent-2: #61afef;
+  --danger: #e06c75;
+  --warn: #e5c07b;
+  --grid: rgba(97,175,239,0.07);
+  --shadow: 0 20px 60px rgba(0,0,0,0.5);
+  --node-a: #2c313a;
+  --node-b: #23272e;
+  --scrim: rgba(33,37,43,0.76);
+  --halo: rgba(40,44,52,0.9);
+  --wire: #61afef;
+  --seg: #98c379;
+  --cloud: #c678dd;
+  --screen: #21252b;
+}
+
+/* the original Monokai */
+[data-theme="monokai"] {
+  color-scheme: dark;
+  --bg: #272822;
+  --bg-2: #1e1f1c;
+  --panel: rgba(45,46,38,0.95);
+  --panel-solid: #2d2e26;
+  --raise: rgba(248,248,242,0.06);
+  --stroke: rgba(117,113,94,0.6);
+  --text: #f8f8f2;
+  --muted: #a59f85;
+  --accent: #a6e22e;
+  --accent-2: #66d9ef;
+  --danger: #f92672;
+  --warn: #e6db74;
+  --grid: rgba(102,217,239,0.07);
+  --shadow: 0 20px 60px rgba(0,0,0,0.55);
+  --node-a: #2d2e26;
+  --node-b: #22231d;
+  --scrim: rgba(30,31,28,0.78);
+  --halo: rgba(39,40,34,0.9);
+  --wire: #66d9ef;
+  --seg: #a6e22e;
+  --cloud: #ae81ff;
+  --screen: #1e1f1c;
+}
+
+/* ayu-theme/ayu — the Mirage variant */
+[data-theme="ayu-mirage"] {
+  color-scheme: dark;
+  --bg: #1f2430;
+  --bg-2: #191e2a;
+  --panel: rgba(35,40,52,0.95);
+  --panel-solid: #232834;
+  --raise: rgba(203,204,198,0.06);
+  --stroke: rgba(92,103,115,0.6);
+  --text: #cbccc6;
+  --muted: #8a94a3;
+  --accent: #ffcc66;
+  --accent-2: #73d0ff;
+  --danger: #f28779;
+  --warn: #ffa759;
+  --grid: rgba(115,208,255,0.07);
+  --shadow: 0 20px 60px rgba(0,0,0,0.55);
+  --node-a: #232834;
+  --node-b: #1c212c;
+  --scrim: rgba(25,30,42,0.78);
+  --halo: rgba(31,36,48,0.9);
+  --wire: #73d0ff;
+  --seg: #bae67e;
+  --cloud: #d4bfff;
+  --screen: #191e2a;
+}
+
+/* jnurmine/zenburn — the original low-contrast scheme, from 2002 */
+[data-theme="zenburn"] {
+  color-scheme: dark;
+  --bg: #3f3f3f;
+  --bg-2: #4f4f4f;
+  --panel: rgba(72,72,72,0.95);
+  --panel-solid: #484848;
+  --raise: rgba(220,220,204,0.06);
+  --stroke: rgba(112,144,128,0.5);
+  --text: #dcdccc;
+  --muted: #a6a692;
+  --accent: #8cd0d3;
+  --accent-2: #94bff3;
+  --danger: #dca3a3;
+  --warn: #f0dfaf;
+  --grid: rgba(220,220,204,0.06);
+  --shadow: 0 18px 50px rgba(0,0,0,0.45);
+  --node-a: #4f4f4f;
+  --node-b: #464646;
+  --scrim: rgba(48,48,48,0.75);
+  --halo: rgba(63,63,63,0.9);
+  --wire: #8cd0d3;
+  --seg: #9fc59f;
+  --cloud: #dc8cc3;
+  --screen: #2f2f2f;
+}
+
+/* GitHub's own primer palettes, dark and light */
+[data-theme="github-dark"] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --bg-2: #161b22;
+  --panel: rgba(22,27,34,0.96);
+  --panel-solid: #161b22;
+  --raise: rgba(255,255,255,0.05);
+  --stroke: rgba(48,54,61,1);
+  --text: #e6edf3;
+  --muted: #9198a1;
+  --accent: #3fb950;
+  --accent-2: #2f81f7;
+  --danger: #f85149;
+  --warn: #d29922;
+  --grid: rgba(139,148,158,0.07);
+  --shadow: 0 16px 48px rgba(1,4,9,0.85);
+  --node-a: #161b22;
+  --node-b: #0d1117;
+  --scrim: rgba(1,4,9,0.8);
+  --halo: rgba(13,17,23,0.92);
+  --wire: #2f81f7;
+  --seg: #3fb950;
+  --cloud: #a371f7;
+  --screen: #010409;
+}
+
+[data-theme="github-light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-2: #f6f8fa;
+  --panel: rgba(246,248,250,0.96);
+  --panel-solid: #ffffff;
+  --raise: rgba(31,35,40,0.04);
+  --stroke: rgba(209,217,224,1);
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #1a7f37;
+  --accent-2: #0969da;
+  --danger: #d1242f;
+  --warn: #9a6700;
+  --grid: rgba(31,35,40,0.05);
+  --shadow: 0 12px 32px rgba(31,35,40,0.12);
+  --node-a: #ffffff;
+  --node-b: #f6f8fa;
+  --scrim: rgba(31,35,40,0.4);
+  --halo: rgba(255,255,255,0.92);
+  --wire: #0969da;
+  --seg: #1a7f37;
+  --cloud: #8250df;
+  --screen: #1f2328;
+}
+
+/* IBM Carbon, Gray 100 */
+[data-theme="carbon"] {
+  color-scheme: dark;
+  --bg: #161616;
+  --bg-2: #262626;
+  --panel: rgba(38,38,38,0.96);
+  --panel-solid: #262626;
+  --raise: rgba(255,255,255,0.06);
+  --stroke: rgba(82,82,82,1);
+  --text: #f4f4f4;
+  --muted: #a8a8a8;
+  --accent: #42be65;
+  --accent-2: #4589ff;
+  --danger: #fa4d56;
+  --warn: #f1c21b;
+  --grid: rgba(255,255,255,0.05);
+  --shadow: 0 16px 48px rgba(0,0,0,0.7);
+  --node-a: #262626;
+  --node-b: #393939;
+  --scrim: rgba(0,0,0,0.72);
+  --halo: rgba(22,22,22,0.92);
+  --wire: #4589ff;
+  --seg: #42be65;
+  --cloud: #be95ff;
+  --screen: #000;
+}
+
+/* Amber phosphor: a VT220 under a desk lamp. Genuinely restful at 2am,
+ * and the one theme where the wire colour being the same as the text is
+ * correct rather than a mistake. */
+[data-theme="amber"] {
+  color-scheme: dark;
+  --bg: #12100a;
+  --bg-2: #1a1710;
+  --panel: rgba(26,23,16,0.96);
+  --panel-solid: #1a1710;
+  --raise: rgba(255,176,0,0.07);
+  --stroke: rgba(255,176,0,0.28);
+  --text: #ffb000;
+  --muted: #b3801f;
+  --accent: #ffcc55;
+  --accent-2: #ffb000;
+  --danger: #ff5f45;
+  --warn: #ffd479;
+  --grid: rgba(255,176,0,0.08);
+  --shadow: 0 20px 60px rgba(0,0,0,0.7);
+  --node-a: #1f1b12;
+  --node-b: #17140e;
+  --scrim: rgba(10,8,4,0.8);
+  --halo: rgba(18,16,10,0.92);
+  --wire: #ffb000;
+  --seg: #ffcc55;
+  --cloud: #ff9e5e;
+  --screen: #0a0804;
+}
+
+/* The blue-and-slate look network tooling has had for a decade. These are
+ * AdminLTE's own published skin-blue values — #3c8dbc navbar, #222d32
+ * sidebar, #ecf0f5 body — from the open-source template, not sampled from
+ * anyone's product. Familiarity on day one, under its own name.
+ */
+[data-theme="cobalt"] {
+  color-scheme: light;
+  --bg: #ecf0f5;
+  --bg-2: #ffffff;
+  --panel: rgba(255, 255, 255, 0.97);
+  --panel-solid: #ffffff;
+  --raise: rgba(34, 45, 50, 0.04);
+  --stroke: rgba(210, 214, 222, 1);
+  --text: #333333;
+  --muted: #5f6d76;
+  --accent: #00893f;
+  --accent-2: #2b7fa8;
+  --danger: #c73525;
+  --warn: #b06e00;
+  --grid: rgba(34, 45, 50, 0.06);
+  --shadow: 0 12px 34px rgba(34, 45, 50, 0.14);
+  --node-a: #ffffff;
+  --node-b: #f4f6f9;
+  --scrim: rgba(34, 45, 50, 0.42);
+  --halo: rgba(236, 240, 245, 0.92);
+  --wire: #2b7fa8;
+  --seg: #00893f;
+  --cloud: #7a5bb5;
+  --screen: #222d32;
+}
+
+/* The same, after dark: AdminLTE's sidebar colour taken over the whole page. */
+[data-theme="cobalt-dark"] {
+  color-scheme: dark;
+  --bg: #1a2226;
+  --bg-2: #222d32;
+  --panel: rgba(34, 45, 50, 0.96);
+  --panel-solid: #222d32;
+  --raise: rgba(255, 255, 255, 0.05);
+  --stroke: rgba(74, 90, 99, 0.85);
+  --text: #e4e9ec;
+  --muted: #9fadb5;
+  --accent: #00c0ef;
+  --accent-2: #3c8dbc;
+  --danger: #dd4b39;
+  --warn: #f39c12;
+  --grid: rgba(60, 141, 188, 0.08);
+  --shadow: 0 18px 52px rgba(0, 0, 0, 0.55);
+  --node-a: #2c3b41;
+  --node-b: #222d32;
+  --scrim: rgba(15, 20, 23, 0.78);
+  --halo: rgba(26, 34, 38, 0.9);
+  --wire: #3c8dbc;
+  --seg: #00a65a;
+  --cloud: #a678de;
+  --screen: #1a2226;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; background: var(--bg); color: var(--text); }
+button, input, select, textarea { font-family: inherit; }
+button { cursor: pointer; }
+code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }

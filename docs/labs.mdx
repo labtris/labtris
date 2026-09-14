@@ -1,0 +1,122 @@
+---
+title: "Organising labs"
+description: "Folders, clone, lock, config sets, import and export."
+---
+
+One lab is easy. Forty is the problem this page is about.
+
+## Folders
+
+Every lab has a folder, which is just a path string — `ccna/week-3`,
+`customer/acme`, `scratch`. The lab list groups by it, and the breadcrumb in the
+header shows where you are.
+
+Move a lab by editing its folder in the inspector. Renaming a folder moves
+everything in it:
+
+<CodeGroup>
+
+```bash curl
+curl -X POST http://<host>:8081/api/v1/folders/rename \
+  -H 'content-type: application/json' \
+  -d '{"from": "ccna", "to": "ccna-2026"}'
+```
+
+```python Python
+import httpx
+httpx.post(
+    "http://<host>:8081/api/v1/folders/rename",
+    json={"from": "ccna", "to": "ccna-2026"},
+).raise_for_status()
+```
+
+</CodeGroup>
+
+There is no folder object to create or delete. A folder exists while a lab
+claims it and stops existing when the last one leaves — so there is no way to
+end up with an empty folder you have to tidy, and no way to lose a lab by
+deleting the folder around it.
+
+## Clone
+
+**Clone** copies the topology — nodes, links, networks, geometry, config sets —
+under a new name. It does not copy running state; the clone starts stopped.
+
+This is how you build a class: get one lab right, clone it per student, hand out
+the copies.
+
+It is also the safe way to try something. Clone, break the clone, keep the
+original.
+
+## Lock
+
+**Lock** makes a lab read-only. Nodes still start, stop and console, but the
+topology cannot be edited and the lab cannot be deleted.
+
+Use it on the lab you spent an afternoon getting right, or on anything a class
+is working from. Unlocking is one click — the point is not security, it is not
+deleting the wrong thing at 9am.
+
+## Config sets
+
+A config set is a named collection of startup configuration, one entry per node.
+A lab can hold several.
+
+| | |
+|---|---|
+| **Capture** | reads what the running nodes have now and saves it under a name |
+| **Apply** | pushes a set back onto the nodes |
+| **Edit** | change a node's text by hand |
+
+The workflow that makes this worth having:
+
+1. Build the lab, configure it properly, **capture** as `working`.
+2. Break something deliberately, **capture** as `broken-ospf`.
+3. Hand out the lab with `broken-ospf` applied. When someone is stuck, apply
+   `working` and let them read it.
+
+Resetting a class to a known state is one apply rather than twenty consoles.
+
+## Import
+
+| Format | What it is |
+|---|---|
+| `labtris-lab-v1` | Labtris's own export. Round-trips exactly |
+| `.unl` | Legacy topology XML (as produced by older emulators) |
+| `.clab.yml` | containerlab |
+
+The two foreign formats go through one parser, so they cannot disagree about
+what a template means.
+
+**Anything that cannot be carried over becomes a labelled placeholder and a
+warning, not a rejection.** A 17-node topology that arrives with 14 real nodes
+and 3 placeholders is worth more than an error message — the warnings say
+exactly what did not map, and the placeholders hold the shape and the wiring so
+you can substitute images yourself.
+
+## Export
+
+**Export** writes the lab as JSON. It is the topology, not the images — a lab
+file is kilobytes and moves by email.
+
+## Backup
+
+**Settings → Backup** downloads every lab plus the instance's settings as one
+`.tar.gz`.
+
+Configuration only. Images are deliberately not in it: they are tens of
+gigabytes, they are yours rather than ours to redistribute, and a backup you
+cannot email is one nobody takes.
+
+**Restore is additive.** Labs are created alongside what is already here rather
+than replacing it — `skip` (the default) leaves labs this instance already has
+alone, `clone` brings them in under a suffixed name, which is what you want when
+merging two instances. A restore that silently deletes is not a restore.
+
+Google Drive is wired up if you want backups off the box; **Settings → Backup**
+walks through linking an account, pushing, and pulling one back.
+
+## Next
+
+[Users and access](/users) — accounts, the two roles, and what ownership
+actually protects.

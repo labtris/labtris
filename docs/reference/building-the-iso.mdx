@@ -1,0 +1,139 @@
+---
+title: "Building the ISO"
+description: "How the installer ISO is built, why it looks the way it does, and how to reproduce it."
+---
+
+One ISO that installs Labtris unattended on bare metal, VMware, ESXi or
+Proxmox. It is the official Ubuntu server image with an autoinstall answer
+file, the Labtris source and the branding baked in.
+
+```bash
+make iso                    # dist/labtris-<version>-amd64.iso
+make iso-test               # boot it under QEMU, touching no real disk
+```
+
+The first build downloads Ubuntu's ~3 GB base image into `.cache/iso/` and
+verifies it against the published `SHA256SUMS`. Later builds reuse it, so a
+rebuild after changing something of ours takes a couple of minutes.
+
+## What it does and does not contain
+
+It contains the platform: Ubuntu, QEMU, Docker, Postgres, guacd, nginx and
+Labtris itself. About 3.7 GB.
+
+It contains **no guest images**. That is deliberate on two counts. Vendor
+images — Cisco, Palo Alto — cannot be redistributed, and shipping them would
+be the one thing in this space that reliably attracts lawyers. The free ones
+would add tens of gigabytes to an artifact people download over hotel wifi,
+to save a fetch the QEMU backend already does on demand.
+
+## Requirements
+
+```bash
+sudo apt-get install -y xorriso p7zip-full curl        # Debian/Ubuntu
+brew install xorriso p7zip                             # macOS
+```
+
+`rsvg-convert` or ImageMagick is optional and only rasterises the boot splash
+logo; without either the build succeeds and the splash is plain.
+
+## Knobs
+
+| variable | default | |
+|---|---|---|
+| `RELEASE` | `24.04.3` | Ubuntu point release. Pinned on purpose — a build whose base image changes between runs is not reproducible. |
+| `ARCH` | `amd64` | |
+| `OUT` | `dist/labtris-<version>-amd64.iso` | |
+| `MIRROR` | `releases.ubuntu.com` | Point at a local mirror to skip the download. |
+| `CACHE` | `.cache/iso` | |
+
+## Installing from it
+
+```bash
+sudo dd if=dist/labtris-0.4.0-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+```
+
+Boot it and walk away: the answer file covers locale, keyboard, disk layout
+and user, so nothing is asked. It ships as `/autoinstall.yaml` on the media,
+which Subiquity finds by itself — deliberately, because the alternative
+(`ds=nocloud;s=/cdrom/nocloud/` on the kernel line) needs a semicolon, and
+GRUB reads a bare semicolon as a command separator. When that escape did not
+survive into `grub.cfg` the result was an ISO that booted perfectly and then
+stopped to ask for a language: a failure that looks exactly like success
+until nobody is there to answer. It **erases the target disk** — `storage:
+layout: lvm` takes the whole thing.
+
+First login is `labtris-admin` / `labtris`, and the password is expired at
+install time so it must be changed immediately. The console then prints the
+address to browse to, resolved live rather than as a placeholder:
+
+```
+  ██████   Labtris 0.4.0
+  ██████   network emulation
+
+    Web UI    http://192.168.1.47:8081
+
+    labtris-doctor   check this install
+```
+
+The web UI's first visit asks you to create an administrator. Until you do,
+anyone who can reach the port can claim it — so do it before putting the
+machine on a network you do not control.
+
+## Installing without the ISO
+
+The ISO runs `packaging/install-labtris.sh`, and that script works on its own
+against any Ubuntu 24.04 machine:
+
+```bash
+sudo ./packaging/install-labtris.sh --source "$PWD"     # from a working tree
+sudo ./packaging/install-labtris.sh --branch main       # from the repository
+```
+
+It is idempotent, so it doubles as the upgrade path. Running it is also the
+cheapest way to test the ISO's install logic without building an ISO —
+`make install` does exactly that on the current machine.
+
+What it sets up differs from the development instructions in `06-install.md`
+in two ways that matter:
+
+- **Postgres runs natively**, not in a container. One less thing to order at
+  boot, and it avoids the failure where a container publishes on a port some
+  other Postgres already holds and every query fails authentication.
+- **The database URL lives in `/etc/labtris/labtris.env`**, not in whichever
+  shell started the service. A restart that loses it comes up against the
+  wrong database and 500s every request, which looks like an application bug
+  and is not one.
+
+The database password is generated per install into
+`/etc/labtris/db-password`. Appliance images that ship a known password are
+how every product in this category ends up with the same credentials.
+
+## Testing a build
+
+```bash
+./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+```
+
+Boots the ISO under QEMU against a throwaway qcow2, with UEFI firmware if
+OVMF is installed — worth having, because the UEFI path is the half most
+likely to break after a repack, and the half most real machines use. VNC on
+`:1`, serial on stdio, and the installed UI forwarded to
+`http://localhost:8443`.
+
+On a host without `/dev/kvm` this emulates, and an unattended install then
+takes hours rather than minutes. Worth knowing before you start one.
+
+## Branding
+
+| stage | file |
+|---|---|
+| boot menu | `packaging/iso/build.sh` rewrites `boot/grub/grub.cfg` |
+| boot splash | `packaging/iso/overlay/usr/share/plymouth/themes/labtris/` |
+| console banner | `packaging/iso/overlay/etc/update-motd.d/00-labtris` |
+| web UI | `web/src/lib/logo.svg`, already branded |
+
+The Subiquity installer itself is barely themeable and still says Ubuntu in
+places. That is not worth fighting, and Ubuntu's trademark policy is the
+reason the banner says "Built on Ubuntu. Not affiliated with Canonical."
+rather than dressing the installer up as an official flavour.

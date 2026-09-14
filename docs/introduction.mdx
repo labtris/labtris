@@ -1,0 +1,36 @@
+---
+title: "Introduction"
+description: "Written for someone who has just arrived, in the order you will need it."
+---
+
+Written for someone who has just arrived, in the order you will need it.
+
+| | |
+|---|---|
+| [1 · Install](/install) | Getting Labtris onto a machine, from the ISO or from source |
+| [2 · Your first lab](/first-lab) | Two nodes, a wire, a console, a ping — in about five minutes |
+| [3 · Nodes and images](/nodes-and-images) | Docker and QEMU, bringing your own images, and the two settings that stop a guest booting |
+| [4 · Networking](/networking) | Bridges, NAT with DHCP, cloud, VLANs, impairment, and spanning hosts |
+| [5 · Consoles](/consoles) | Serial, VNC and RDP, the terminal, and driving several nodes at once |
+| [6 · Seeing what is happening](/observing) | Capture, Wireshark, addressing, NAT sessions, diagnostics |
+| [7 · Organising labs](/labs) | Folders, clone, lock, config sets, import and export |
+| [8 · Users and access](/users) | The first account, roles, and what ownership protects |
+| [9 · API and the assistant](/api/rest) | REST, MCP, and pointing a model at your lab |
+| [10 · Running the server](/operations) | Upgrades, backup, density, reboots, and what to do when something is wrong |
+
+## As a PDF
+
+```
+$ make handbook          # -> dist/labtris-handbook.pdf
+```
+
+Stdlib Python plus headless Chrome — no LaTeX, no pandoc. The PDF is a build
+artefact and is not committed; each release carries one.
+
+## Conventions in these pages
+
+Commands prefixed `$` run on the **Labtris server**. Commands prefixed `n1:~#`
+run **inside a lab node**, through its console.
+
+Where a page says something does not work yet, that is deliberate. This project
+would rather you know in advance than find out at the point you needed it.

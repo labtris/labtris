@@ -1,0 +1,84 @@
+---
+title: "Users and access"
+description: "The first account, roles, and what ownership protects."
+---
+
+Two roles, one ownership rule. That is the whole model, and it is deliberately
+small.
+
+## The first account
+
+An instance with no accounts asks the first person who opens it to create one.
+That account is an administrator.
+
+Before it exists, the API is open. That is on purpose: an instance nobody can
+sign into is not more secure, it is bricked. It does mean **create the account
+before the machine is anywhere interesting** — the window is exactly as long as
+you leave it.
+
+Once one administrator exists, the setup endpoint refuses to make another and
+every request needs a session.
+
+> The machine's own `labtris-admin` shell login is a different thing entirely.
+> That is the operating system; this is the application.
+
+## The two roles
+
+| | |
+|---|---|
+| **admin** | Everything, including creating and disabling accounts, and clearing up after anyone |
+| **user** | Everything else |
+
+There is no third. Anything finer is a guess about how a team works, and a lab
+tool that makes you model permissions before you can build a topology has
+already lost.
+
+Add people in **Settings → Users**. An account can be disabled, which keeps its
+labs and blocks the login — which is what you want at the end of a course.
+
+## What ownership protects
+
+The rule is narrower than most people expect, so it is worth stating plainly:
+
+**Everyone can see and open every lab, and everyone can work in one** — add a
+node, draw a link, move things around, start and stop, console in. Two people in
+the same lab at once is a thing this is meant to support, and a shared workshop
+where only the owner may touch anything is not shared.
+
+**What is reserved to the owner is destruction.** Deleting a lab, deleting a
+node, wiping a disk. Those are the actions nobody can undo for you.
+
+Admins override, because someone has to be able to clear up after a student who
+left, and because an instructor is an admin.
+
+A lab created before the first account has no owner. Whoever is signed in may
+claim responsibility for it — refusing everyone would make those labs
+undeletable, and letting everyone through would be the hole this closes.
+
+## Mine
+
+The lab list has a **Mine** filter and the search box matches owner names as
+well as lab names, because "show me Priya's labs" is a thing people ask on a
+shared box.
+
+## Sessions
+
+Signing in sets a session cookie. The API also accepts a bearer token, which is
+what scripts and the MCP server use — see [API and the
+assistant](/api/rest).
+
+## What is not here yet
+
+Being honest about the edges, because finding out later is worse:
+
+- **LDAP/AD and RADIUS** — planned, not built. Accounts are local.
+- **Per-user quotas** — nothing stops one person booting forty VMs. On a shared
+  box this is a conversation, not a control.
+- **Audit log** — who did what to which lab is not recorded.
+- **Cohorts and scheduled reset** — you can clone a lab per student by hand; the
+  automation around that does not exist.
+
+## Next
+
+[API and the assistant](/api/rest) — driving Labtris from a
+script, or from a model.

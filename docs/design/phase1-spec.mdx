@@ -1,0 +1,565 @@
+---
+title: "Phase 1 spec"
+description: "What the first shipping release is — and is not."
+---
+
+**This document is the prompt.** It is self-contained: an implementer needs only this file
+plus a Postgres instance and a Docker daemon. `docs/01`–`04` are background for *why*;
+this file is *what*.
+
+## Scope
+
+Build the foundation: schema, the privileged network daemon, the runtime abstraction, and
+one working runtime backend (Docker).
+
+**In scope:** repo skeleton · Postgres schema + migrations · `netd` privileged daemon ·
+`NodeRuntime` protocol · `DockerRuntime` · REST API for labs/nodes/networks/links ·
+deterministic interface naming · acceptance tests.
+
+**Out of scope (do not build):** QEMU backend (Phase 1b) · canvas/frontend (Phase 2) ·
+`tc` impairment and capture (Phase 3 — but `netd` reserves the verbs) · AI tab (Phase 5) ·
+auth beyond a dev stub · multi-host.
+
+**Constraint: clean-room.** Do not read or copy code from any incumbent
+network-emulation product. Mechanism facts in [`/design/findings`](/design/findings)
+(observed behaviour of a running system) are fair game; source code is not.
+
+## Definition of done
+
+`pytest tests/acceptance/test_phase1.py` passes green against a real Postgres and a real
+Docker daemon. That test is specified verbatim in §9.
+
+---
+
+## 1. Architecture constraint: the privilege split
+
+Two processes. This is non-negotiable and shapes everything.
+
+```
+┌────────────────────────────────────────┐
+│ labtris-api        user: pnl  (unprivileged)│
+│ FastAPI · SQLAlchemy · aiodocker        │
+│ NEVER calls ip/tc/tcpdump/systemctl     │
+└───────────────┬────────────────────────┘
+                │ AF_UNIX SOCK_STREAM, NDJSON
+                │ /run/labtris/netd.sock  (0660, group pnl)
+┌───────────────▼────────────────────────┐
+│ labtris-netd       user: root               │
+│ pyroute2 netlink · tc · (later) capture │
+│ strict verb allowlist · no shell, ever  │
+└─────────────────────────────────────────┘
+```
+
+Rules:
+
+- The API process must never acquire `CAP_NET_ADMIN` and must never invoke a subprocess for
+  a network operation. If you find yourself writing `subprocess` in `labtris_api/`, it belongs
+  in `netd`.
+- `netd` has no database access. It is stateless and takes fully-resolved arguments. It
+  never derives a name, allocates an ID, or reads intent. The API decides; `netd` executes.
+- `netd` never invokes a shell. `pyroute2` for netlink and tc. If a binary is unavoidable
+  later, `execve` with an argument list — never a string.
+- Every `netd` verb validates its arguments against a strict regex/enum before acting. A
+  malformed interface name is an error, not a passthrough.
+
+### netd wire protocol
+
+Newline-delimited JSON. One request per line, one response per line, same connection.
+
+```jsonc
+// request
+{"id": "01J...", "verb": "bridge.create", "params": {"name": "b3f9k2m1"}}
+// success
+{"id": "01J...", "ok": true, "result": {"index": 42}}
+// failure
+{"id": "01J...", "ok": false, "error": {"code": "EEXIST", "message": "bridge exists"}}
+```
+
+Verbs for Phase 1 (implement all; the last three are stubs that return
+`{"code":"ENOTIMPL"}` — they exist so Phase 3 doesn't reshape the protocol):
+
+| Verb | Params | Result |
+|---|---|---|
+| `ping` | — | `{"pong": true, "version": "1"}` |
+| `bridge.create` | `name` | `{"index": int}` |
+| `bridge.delete` | `name` | `{}` |
+| `bridge.list` | — | `{"bridges": [{"name","index"}]}` |
+| `tap.create` | `name`, `owner_uid` | `{"index": int}` |
+| `tap.delete` | `name` | `{}` |
+| `iface.attach` | `name`, `bridge` | `{}` |
+| `iface.detach` | `name` | `{}` |
+| `iface.set_state` | `name`, `up: bool` | `{}` |
+| `veth.create` | `name`, `peer` | `{"index","peer_index"}` |
+| `netns.move` | `name`, `pid: int` | `{}` |
+| `tc.set` | `name`, `spec` | `ENOTIMPL` |
+| `tc.clear` | `name` | `ENOTIMPL` |
+| `capture.start` | `name`, `bpf` | `ENOTIMPL` |
+
+Name validation, enforced in `netd` **and** in the API:
+
+```python
+IFNAME_RE = re.compile(r"^(t|b|v)[0-9a-z]{8}$")   # tap / bridge / veth
+```
+
+Error codes: `EEXIST`, `ENOENT`, `EINVAL`, `EPERM`, `EBUSY`, `ENOTIMPL`, `EINTERNAL`.
+
+---
+
+## 2. Repo layout
+
+Create exactly this. Do not add top-level directories.
+
+```
+labtris/
+├── pyproject.toml
+├── docker-compose.dev.yml          # postgres only
+├── alembic.ini
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── labtris_api/
+│   ├── __init__.py
+│   ├── main.py                     # FastAPI app factory
+│   ├── config.py                   # pydantic-settings
+│   ├── db.py                       # async engine, session dep
+│   ├── models.py                   # SQLAlchemy ORM
+│   ├── schemas.py                  # Pydantic v2 request/response
+│   ├── errors.py                   # error envelope + handlers
+│   ├── naming.py                   # base36 interface naming
+│   ├── netd_client.py              # async client for the unix socket
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── health.py
+│   │   ├── labs.py
+│   │   ├── nodes.py
+│   │   ├── networks.py
+│   │   └── links.py
+│   └── runtime/
+│       ├── __init__.py
+│       ├── base.py                 # NodeRuntime protocol + types
+│       ├── registry.py             # kind -> runtime resolution
+│       └── docker.py               # DockerRuntime
+├── labtris_netd/
+│   ├── __init__.py
+│   ├── __main__.py                 # serve on the unix socket
+│   ├── protocol.py                 # frame parse/serialize
+│   ├── verbs.py                    # verb allowlist + dispatch
+│   └── net.py                      # pyroute2 operations
+└── tests/
+    ├── conftest.py
+    ├── unit/
+    │   ├── test_naming.py
+    │   └── test_protocol.py
+    └── acceptance/
+        └── test_phase1.py
+```
+
+### Pinned dependencies
+
+Python **3.12**. Pin exactly; do not float.
+
+```toml
+[project]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.4",
+  "pydantic-settings==2.7.0",
+  "sqlalchemy[asyncio]==2.0.36",
+  "asyncpg==0.30.0",
+  "alembic==1.14.0",
+  "aiodocker==0.24.0",
+  "pyroute2==0.8.1",
+  "structlog==24.4.0",
+  "ulid-py==1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.25.0",
+  "httpx==0.28.1",
+  "ruff==0.8.4",
+  "mypy==1.14.0",
+]
+```
+
+SQLAlchemy **2.0 style only** (`Mapped[...]`, `mapped_column`, `DeclarativeBase`). Pydantic
+**v2 only** (`model_config`, `field_validator`). No legacy syntax from either.
+
+---
+
+## 3. Database schema
+
+Postgres 16. Primary keys are ULIDs stored as `CHAR(26)`. Every table gets
+`created_at`/`updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
+
+```sql
+CREATE TYPE node_state    AS ENUM ('defined','starting','running','stopping','stopped','failed');
+CREATE TYPE network_kind  AS ENUM ('bridge','cloud');
+CREATE TYPE runtime_kind  AS ENUM ('docker','qemu','containerlab','iol','dynamips');
+
+CREATE TABLE labs (
+  id          CHAR(26) PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  locked      BOOLEAN NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (name)
+);
+
+CREATE TABLE nodes (
+  id            CHAR(26) PRIMARY KEY,
+  lab_id        CHAR(26) NOT NULL REFERENCES labs(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  runtime       runtime_kind NOT NULL,
+  image         TEXT NOT NULL,
+  state         node_state NOT NULL DEFAULT 'defined',
+  cpu_limit     NUMERIC(4,2),
+  ram_mb        INTEGER,
+  env           JSONB NOT NULL DEFAULT '{}',
+  cmd           JSONB,                      -- null = image default
+  runtime_ref   TEXT,                       -- container id / domain name
+  last_error    TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lab_id, name)
+);
+CREATE INDEX ON nodes (lab_id);
+
+CREATE TABLE networks (
+  id          CHAR(26) PRIMARY KEY,
+  lab_id      CHAR(26) NOT NULL REFERENCES labs(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  kind        network_kind NOT NULL DEFAULT 'bridge',
+  host_ifname TEXT UNIQUE,                  -- b<base36:8>, null until realized
+  cloud_ref   TEXT,                         -- e.g. 'pnet0' when kind='cloud'
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lab_id, name),
+  CHECK ((kind = 'cloud') = (cloud_ref IS NOT NULL))
+);
+
+CREATE TABLE interfaces (
+  id          CHAR(26) PRIMARY KEY,
+  node_id     CHAR(26) NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  idx         INTEGER NOT NULL,             -- 0-based, per node
+  name        TEXT NOT NULL,                -- guest-visible, e.g. 'eth0'
+  mac         MACADDR NOT NULL,
+  host_ifname TEXT UNIQUE,                  -- t<base36:8>, null until realized
+  network_id  CHAR(26) REFERENCES networks(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (node_id, idx),
+  UNIQUE (node_id, name)
+);
+CREATE INDEX ON interfaces (network_id);
+
+-- Links are first-class. A link is realized as a network with exactly two members,
+-- but the user-facing object is the link.
+CREATE TABLE links (
+  id           CHAR(26) PRIMARY KEY,
+  lab_id       CHAR(26) NOT NULL REFERENCES labs(id) ON DELETE CASCADE,
+  a_iface_id   CHAR(26) NOT NULL REFERENCES interfaces(id) ON DELETE CASCADE,
+  b_iface_id   CHAR(26) NOT NULL REFERENCES interfaces(id) ON DELETE CASCADE,
+  network_id   CHAR(26) NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+  -- Phase 3 fills these; columns exist now so the model doesn't churn.
+  impair_ab    JSONB,
+  impair_ba    JSONB,
+  admin_up     BOOLEAN NOT NULL DEFAULT true,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (a_iface_id),
+  UNIQUE (b_iface_id),
+  CHECK (a_iface_id <> b_iface_id)
+);
+
+-- Geometry is NOT topology. Separate table, separate endpoint, separate lifecycle.
+CREATE TABLE geometry (
+  lab_id     CHAR(26) PRIMARY KEY REFERENCES labs(id) ON DELETE CASCADE,
+  data       JSONB NOT NULL DEFAULT '{}',   -- {nodes:{id:{x,y}}, links:{id:{waypoints}}, view:{}}
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Reserves host interface names so allocation is race-free across processes.
+CREATE TABLE ifname_registry (
+  host_ifname TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('tap','bridge','veth')),
+  owner_id    CHAR(26) NOT NULL,            -- interface.id or network.id
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+The `UNIQUE (a_iface_id)` / `UNIQUE (b_iface_id)` constraints enforce at most one link per
+interface at the database level. Do not enforce this only in Python.
+
+---
+
+## 4. Interface naming
+
+`docs/03-architecture.md` calls for base36 with a collision check. Concretely:
+
+```python
+def host_ifname(kind: Literal["tap","bridge","veth"], owner_id: str, salt: int = 0) -> str:
+    prefix = {"tap": "t", "bridge": "b", "veth": "v"}[kind]
+    digest = hashlib.blake2b(f"{owner_id}:{salt}".encode(), digest_size=8).digest()
+    n = int.from_bytes(digest, "big")
+    return prefix + base36(n).rjust(8, "0")[:8]
+```
+
+Allocation is a transaction: compute the name, `INSERT` into `ifname_registry`, and on
+unique-violation retry with `salt+1` (cap at 16 attempts, then `EINTERNAL`). Never probe
+the kernel to test availability — that is a TOCTOU race. The registry is the source of
+truth; the kernel is downstream of it.
+
+Total length is 9 chars, well inside `IFNAMSIZ`-1 = 15, with no entity ceiling. Identity
+resolves by DB lookup, never by parsing the name.
+
+---
+
+## 5. Runtime abstraction
+
+`labtris_api/runtime/base.py` — these are real types, not sketches.
+
+```python
+from typing import Protocol, Literal
+from dataclasses import dataclass
+from enum import StrEnum
+
+class Capability(StrEnum):
+    SUSPEND     = "suspend"
+    SNAPSHOT    = "snapshot"
+    HOTPLUG_NIC = "hotplug_nic"
+    EXEC        = "exec"
+    SERIAL      = "serial"
+
+class StopMode(StrEnum):
+    GRACEFUL = "graceful"
+    FORCE    = "force"
+
+@dataclass(frozen=True)
+class RuntimeHandle:
+    node_id: str
+    ref: str                    # container id, domain name, ...
+    pid: int | None = None
+
+@dataclass(frozen=True)
+class RuntimeState:
+    exists: bool
+    running: bool
+    pid: int | None
+    exit_code: int | None
+    detail: str = ""
+
+@dataclass(frozen=True)
+class ConsoleEndpoint:
+    kind: Literal["exec", "serial", "vnc", "telnet"]
+    target: str                 # container id, or host:port
+    meta: dict[str, str]
+
+@dataclass(frozen=True)
+class NodeSpec:
+    """Everything a runtime needs. No ORM objects cross this boundary."""
+    node_id: str
+    name: str
+    image: str
+    env: dict[str, str]
+    cmd: list[str] | None
+    cpu_limit: float | None
+    ram_mb: int | None
+    interfaces: list["IfaceSpec"]
+
+@dataclass(frozen=True)
+class IfaceSpec:
+    iface_id: str
+    idx: int
+    guest_name: str             # eth0
+    host_ifname: str            # t3f9k2m1
+    mac: str
+
+class NodeRuntime(Protocol):
+    kind: str
+    capabilities: frozenset[Capability]
+
+    async def create(self, spec: NodeSpec) -> RuntimeHandle: ...
+    async def start(self, h: RuntimeHandle) -> None: ...
+    async def stop(self, h: RuntimeHandle, mode: StopMode) -> None: ...
+    async def destroy(self, h: RuntimeHandle) -> None: ...
+    async def attach_iface(self, h: RuntimeHandle, i: IfaceSpec, bridge: str) -> None: ...
+    async def detach_iface(self, h: RuntimeHandle, i: IfaceSpec) -> None: ...
+    async def console(self, h: RuntimeHandle) -> ConsoleEndpoint: ...
+    async def observe(self, h: RuntimeHandle) -> RuntimeState: ...
+```
+
+**ORM objects must not cross this boundary.** Routers load from the DB, build a `NodeSpec`,
+and hand that to the runtime. This keeps backends testable and stops the QEMU backend from
+lazy-loading a SQLAlchemy relationship on an event loop it doesn't own.
+
+### DockerRuntime
+
+`capabilities = {EXEC, HOTPLUG_NIC}` — no `SUSPEND`, no `SNAPSHOT`. The API must surface
+capabilities so the UI can grey out unsupported actions rather than failing at call time.
+
+Implementation notes:
+
+- `aiodocker`, `NetworkMode="none"`. Do not use Docker's own networking; we own the dataplane.
+- Attach is: `netd veth.create(v<hash>, peer)` → `netd iface.attach(v<hash>, bridge)` →
+  `netd netns.move(peer, container_pid)` → rename peer to `guest_name` inside the netns and
+  set the MAC. The rename/MAC step runs in `netd` (it needs the target netns), so add it as
+  part of `netns.move` params: `{"name", "pid", "rename_to", "mac", "up"}`.
+- `console()` returns `kind="exec"`, `target=container_id`.
+- Label every container `pnl.node_id`, `pnl.lab_id` so orphans are findable.
+
+---
+
+## 6. REST API
+
+Prefix `/api/v1`. All responses JSON. Errors use one envelope:
+
+```json
+{"error": {"code": "not_found", "message": "lab 01J... not found", "detail": {}}}
+```
+
+Codes: `bad_request` 400 · `not_found` 404 · `conflict` 409 · `unprocessable` 422 ·
+`runtime_error` 502 · `internal` 500.
+
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/health` | → `{status, netd: bool, db: bool, docker: bool}` |
+| GET | `/labs` | → `[Lab]` |
+| POST | `/labs` | `{name, description?}` → `Lab` 201 |
+| GET | `/labs/{lab_id}` | → `LabDetail` (nodes, networks, links) |
+| DELETE | `/labs/{lab_id}` | → 204 (stops+destroys all nodes first) |
+| GET | `/labs/{lab_id}/geometry` | → `{data}` |
+| PUT | `/labs/{lab_id}/geometry` | `{data}` → `{data}` |
+| POST | `/labs/{lab_id}/nodes` | `{name, runtime, image, env?, cmd?, cpu_limit?, ram_mb?, interfaces?}` → `Node` 201 |
+| GET | `/nodes/{node_id}` | → `NodeDetail` (+`capabilities`) |
+| PATCH | `/nodes/{node_id}` | `{name?, env?, cmd?, cpu_limit?, ram_mb?}` → `Node` (409 if running) |
+| DELETE | `/nodes/{node_id}` | → 204 |
+| POST | `/nodes/{node_id}/start` | → `Node` |
+| POST | `/nodes/{node_id}/stop` | `{mode?}` → `Node` |
+| GET | `/nodes/{node_id}/console` | → `ConsoleEndpoint` |
+| POST | `/nodes/{node_id}/interfaces` | `{name?, network_id?}` → `Interface` 201 |
+| POST | `/labs/{lab_id}/networks` | `{name, kind?, cloud_ref?}` → `Network` 201 |
+| DELETE | `/networks/{network_id}` | → 204 (409 if in use) |
+| POST | `/labs/{lab_id}/links` | `{a_iface_id, b_iface_id}` → `Link` 201 |
+| DELETE | `/links/{link_id}` | → 204 |
+
+`POST /labs/{id}/nodes` accepts `interfaces: [{name?}]` to create N interfaces atomically
+with the node. Interface index is assigned server-side, lowest free.
+
+Creating a link: allocate a `network` (kind `bridge`, auto-named `lnk-<short>`), point both
+interfaces at it, insert the `link` row — all in one transaction. If both nodes are already
+running, realize it immediately via `netd`; otherwise realize at start.
+
+**Auth is a dev stub in Phase 1.** A `get_current_user` dependency that returns a fixed
+user. Do not build JWT, sessions, or RBAC now — but do route every handler through the
+dependency so adding real auth later is a one-file change.
+
+### Lifecycle: what happens on `start`
+
+1. `state = starting`, commit.
+2. For each interface without `host_ifname`, allocate via `ifname_registry`.
+3. For each attached network without `host_ifname`, allocate, then `netd bridge.create`.
+4. `runtime.create(spec)` → store `runtime_ref`.
+5. `runtime.start(handle)`.
+6. For each interface: `runtime.attach_iface(...)`.
+7. `netd iface.set_state(bridge, up=True)` for each bridge.
+8. `state = running`, commit.
+
+Any failure: `state = failed`, `last_error` set, and unwind what was created. Idempotency
+matters — starting a running node returns 200 with the current state, not an error.
+
+---
+
+## 7. Configuration
+
+`pydantic-settings`, prefix `LABTRIS_`:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `LABTRIS_DATABASE_URL` | `postgresql+asyncpg://pnl:pnl@localhost/pnl` | |
+| `LABTRIS_NETD_SOCKET` | `/run/labtris/netd.sock` | |
+| `LABTRIS_DOCKER_HOST` | `unix:///var/run/docker.sock` | |
+| `LABTRIS_LOG_LEVEL` | `info` | |
+
+No secrets in code, no defaults that are secrets.
+
+---
+
+## 8. Development environment
+
+`docker-compose.dev.yml` runs Postgres 16 only. `netd` runs on the host under `sudo`
+(it needs real netlink); the API runs unprivileged in your shell. Provide a `Makefile`
+with `dev-db`, `netd`, `api`, `test`, `lint`.
+
+For tests, `netd` may listen on a socket path from `LABTRIS_NETD_SOCKET` so CI can point it at
+a tmpdir.
+
+---
+
+## 9. Acceptance test — this defines done
+
+`tests/acceptance/test_phase1.py`. Requires real Postgres, real Docker, and a running
+`netd`. Skip with a clear message if any is absent; never silently pass.
+
+```python
+async def test_two_alpine_containers_ping_over_a_link(client):
+    lab  = await post(client, "/api/v1/labs", {"name": "p1"})
+
+    a = await post(client, f"/api/v1/labs/{lab['id']}/nodes", {
+        "name": "a", "runtime": "docker", "image": "alpine:3.20",
+        "cmd": ["sleep", "3600"], "interfaces": [{"name": "eth1"}]})
+    b = await post(client, f"/api/v1/labs/{lab['id']}/nodes", {
+        "name": "b", "runtime": "docker", "image": "alpine:3.20",
+        "cmd": ["sleep", "3600"], "interfaces": [{"name": "eth1"}]})
+
+    link = await post(client, f"/api/v1/labs/{lab['id']}/links", {
+        "a_iface_id": a["interfaces"][0]["id"],
+        "b_iface_id": b["interfaces"][0]["id"]})
+
+    await post(client, f"/api/v1/nodes/{a['id']}/start", {})
+    await post(client, f"/api/v1/nodes/{b['id']}/start", {})
+
+    # address the link from inside the guests, then prove L2 works
+    await dexec(a, "ip addr add 10.99.0.1/24 dev eth1 && ip link set eth1 up")
+    await dexec(b, "ip addr add 10.99.0.2/24 dev eth1 && ip link set eth1 up")
+    rc, out = await dexec(a, "ping -c3 -W2 10.99.0.2")
+    assert rc == 0, out
+
+    # teardown leaves no host state behind
+    await delete(client, f"/api/v1/labs/{lab['id']}")
+    assert await host_ifaces_matching(r"^[tbv][0-9a-z]{8}$") == []
+```
+
+Additional required tests:
+
+- `test_naming.py` — determinism, collision→salt retry, `IFNAME_RE` conformance, length ≤ 15.
+- `test_protocol.py` — NDJSON framing incl. a partial read split mid-frame; unknown verb →
+  `EINVAL`; malformed ifname → `EINVAL` and **no** netlink call (assert with a mock).
+- `test_link_uniqueness` — linking an already-linked interface returns 409.
+- `test_start_is_idempotent` — starting a running node returns 200, not 409.
+- `test_capabilities_exposed` — `GET /nodes/{id}` shows `exec` and `hotplug_nic`, and does
+  **not** show `suspend`.
+
+---
+
+## 10. Explicit non-goals for this phase
+
+Do not build: a frontend, WebSockets, the task queue, `tc`, capture, templates, import/export,
+QEMU, containerlab, multi-host, real auth, or metrics. Every one of these has a later phase.
+Resist scaffolding them "for later" — empty modules rot and mislead.
+
+## 11. Review checklist
+
+- [ ] No `subprocess`, `os.system`, or `shell=True` anywhere in `labtris_api/`
+- [ ] No `pyroute2` import anywhere in `labtris_api/`
+- [ ] No SQLAlchemy import anywhere in `labtris_netd/`
+- [ ] No ORM object passed into a `runtime/` function
+- [ ] Every `netd` verb validates arguments before touching the kernel
+- [ ] Interface names allocated through `ifname_registry`, never by kernel probing
+- [ ] `alembic upgrade head` produces exactly the §3 schema
+- [ ] Lab deletion leaves zero `t*`/`b*`/`v*` interfaces on the host
+- [ ] `ruff check` and `mypy labtris_api labtris_netd` both clean

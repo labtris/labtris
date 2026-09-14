@@ -1,0 +1,23 @@
+[Unit]
+Description=Labtris netd — the only process that touches netlink
+Documentation=https://github.com/labtris
+After=network-pre.target
+Wants=network-pre.target
+Before=labtris-api.service
+
+[Service]
+Type=simple
+# Root because it creates bridges, taps and vxlan endpoints. --socket-group is
+# what lets the API, which is not root, reach it; without it the socket is
+# 0660 root:root and every API call fails with a permission error that names
+# the API rather than the socket.
+ExecStart=/opt/labtris/.venv/bin/python -m labtris_netd \
+    --socket /run/labtris/netd.sock \
+    --socket-group labtris
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=labtris
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
