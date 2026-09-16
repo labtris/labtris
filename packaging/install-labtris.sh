@@ -34,6 +34,9 @@ REPO=${REPO:-https://github.com/labtris/labtris.git}
 BRANCH=${BRANCH:-main}
 SOURCE=""
 MODE=install
+#: Set when the web UI could not be produced, so the closing summary can say
+#: so rather than printing a URL that serves nothing but JSON.
+UI_MISSING=0
 #: Directories of packages carried on the install media, if any.
 DEBS=${DEBS:-}
 WHEELS=${WHEELS:-}
@@ -135,8 +138,13 @@ finalise() {
   {
     echo "Labtris ${version:-installed}."
     echo
-    printf '  %-20s %s\n' "Web UI:"          "http://${ip}:8081"
-    printf '  %-20s %s\n' "First login:"     "create it at that URL"
+    if [ "${UI_MISSING:-0}" = "1" ]; then
+      printf '  %-20s %s\n' "Web UI:"        "NOT INSTALLED — REST API only"
+      printf '  %-20s %s\n' ""               "cd $PREFIX/web && npm install && npm run build"
+    else
+      printf '  %-20s %s\n' "Web UI:"        "http://${ip}:8081"
+      printf '  %-20s %s\n' "First login:"   "create it at that URL"
+    fi
     printf '  %-20s %s\n' "Config:"          "$CONFDIR/labtris.env"
     printf '  %-20s %s\n' "DB password:"     "$CONFDIR/db-password"
     printf '  %-20s %s\n' "Service user:"    "$LABTRIS_USER"
@@ -253,7 +261,19 @@ else
 fi
 
 say "Code at $PREFIX"
-if [ -n "$SOURCE" ]; then
+if [ -n "$SOURCE" ] && [ -d "$SOURCE" ] && [ "$SOURCE" -ef "$PREFIX" ]; then
+  # Already in place — get.sh clones straight into $PREFIX and then calls this
+  # with --source "$PREFIX", so the copy below would tar a directory into
+  # itself. GNU tar notices the tree changing under it while the extracting
+  # half writes into it, warns "file changed as we read it" for most
+  # directories, and exits 1. Under `set -euo pipefail` that ends the install
+  # silently: no error text, no services, and /opt/labtris looking plausibly
+  # populated because the clone had already put the files there.
+  #
+  # That is the whole of `curl https://labtris.com/install | sudo bash`, so
+  # this path was broken for every user of the documented install command.
+  say "  already at $PREFIX — nothing to copy"
+elif [ -n "$SOURCE" ]; then
   mkdir -p "$PREFIX"
   # --delete would take .venv with it, so the tree is synced and the venv left.
   # web/dist is NOT excluded. It used to be, from when the UI was built on the
@@ -333,9 +353,27 @@ if [ -f "$PREFIX/web/dist/index.html" ]; then
 elif command -v npm >/dev/null 2>&1; then
   (cd "$PREFIX/web" && npm install --silent && npm run build --silent)
 else
-  # web/dist is gitignored and the API only mounts it when present, so a host
-  # with neither a prebuilt UI nor node serves the REST endpoints and no SPA.
-  echo "  no prebuilt UI and no npm — the API will serve no SPA" >&2
+  # No prebuilt UI and no npm. This is the `curl | sudo bash` path: web/dist is
+  # gitignored, so a git clone never carries it, and nothing has installed Node.
+  # Left alone the install "succeeds" and serves REST with no interface at all —
+  # which is not the product, and the reader was told to expect a browser.
+  #
+  # So fetch a toolchain and build it. It costs a couple of minutes and a few
+  # hundred MB once; the alternative is an install that looks fine and has no UI.
+  say "  no prebuilt UI — installing Node to build it"
+  apt-get install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+  if command -v npm >/dev/null 2>&1; then
+    ( cd "$PREFIX/web" && npm install --silent && npm run build --silent ) || true
+  fi
+  if [ -f "$PREFIX/web/dist/index.html" ]; then
+    say "  built the UI ($(du -sh "$PREFIX/web/dist" | cut -f1))"
+  else
+    # Loudly, and at the end where it will be read. A warning buried 1500 lines
+    # up in apt output is one nobody sees.
+    UI_MISSING=1
+    echo "  WARNING: could not build the web UI — the API will serve REST only." >&2
+    echo "           Install nodejs/npm and run: cd $PREFIX/web && npm install && npm run build" >&2
+  fi
 fi
 
 say "Unit and proxy files"
