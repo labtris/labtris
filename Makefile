@@ -1,4 +1,4 @@
-.PHONY: dev-db netd api web web-build guacd test lint migrate netd-hostb-setup netd-hostb iso iso-test handbook release install
+.PHONY: dev-db netd api web web-build guacd test lint migrate netd-hostb-setup netd-hostb iso iso-test handbook docs-site release install
 
 export LABTRIS_DATABASE_URL ?= postgresql+asyncpg://pnl:pnl@localhost/pnl
 export LABTRIS_NETD_SOCKET ?= /run/labtris/netd.sock
@@ -73,6 +73,11 @@ iso:
 # offline. Renders with headless Chrome; no LaTeX, no pandoc.
 handbook:
 	python3 docs/build-pdf.py
+
+# docs.labtris.com. Stdlib only, reusing build-pdf.py's renderer, so the
+# PDF and the site cannot disagree about how a page renders.
+docs-site:
+	python3 docs/build-site.py
 
 # Snapshot the OpenAPI spec into docs/api/openapi.json so the Mintlify docs
 # site can render REST reference pages from it. Reads from an already-running

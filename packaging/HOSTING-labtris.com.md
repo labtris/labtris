@@ -102,7 +102,7 @@ The `labtris.com/install` URL will not resolve until DNS + Pages is
 set up. In the meantime `get.sh` is also reachable at the raw
 GitHub URL, which is what the docs used to name:
 
-    curl -fsSL https://raw.githubusercontent.com/rajeshgangam/my-own-pnetlab/main/get.sh | sudo bash
+    curl -fsSL https://raw.githubusercontent.com/labtris/labtris/main/get.sh | sudo bash
 
 The docs no longer advertise this, but it works.
 

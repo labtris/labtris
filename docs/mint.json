@@ -19,7 +19,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url":  "https://github.com/rajeshgangam/my-own-pnetlab"
+      "url":  "https://github.com/labtris/labtris"
     }
   ],
   "topbarCtaButton": {
@@ -42,7 +42,7 @@
   },
   "footer": {
     "socials": {
-      "github": "https://github.com/rajeshgangam/my-own-pnetlab"
+      "github": "https://github.com/labtris/labtris"
     }
   },
   "navigation": [

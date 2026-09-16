@@ -17,7 +17,7 @@
 #
 set -euo pipefail
 
-REPO=${LABTRIS_REPO:-https://github.com/rajeshgangam/my-own-pnetlab.git}
+REPO=${LABTRIS_REPO:-https://github.com/labtris/labtris.git}
 BRANCH=${LABTRIS_BRANCH:-main}
 PREFIX=${LABTRIS_PREFIX:-/opt/labtris}
 FORCE_OS=${LABTRIS_FORCE_OS:-0}

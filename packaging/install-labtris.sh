@@ -30,7 +30,7 @@ set -euo pipefail
 LABTRIS_USER=${LABTRIS_USER:-labtris}
 PREFIX=${PREFIX:-/opt/labtris}
 CONFDIR=${CONFDIR:-/etc/labtris}
-REPO=${REPO:-https://github.com/rajeshgangam/my-own-pnetlab.git}
+REPO=${REPO:-https://github.com/labtris/labtris.git}
 BRANCH=${BRANCH:-main}
 SOURCE=""
 MODE=install
