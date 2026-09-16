@@ -30,6 +30,20 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "_site"
 
+#: Cloudflare Web Analytics beacon. Cookieless, stores nothing on the reader's
+#: machine, identifies nobody — the only kind of counting this project can
+#: honestly do while telling people the product ships no telemetry. The token
+#: names the site being counted, not the account, and is public by design: it
+#: is served in the HTML of every page.
+#:
+#: The same token as labtris.com on purpose, so the marketing site and the docs
+#: are one property and a reader moving between them is one visit, not two.
+#: Cloudflare splits the report by hostname anyway.
+#:
+#: Written in rather than left to the zone's auto-install, which is enabled and
+#: does not reach responses served by Cloudflare Pages.
+ANALYTICS_TOKEN = "b1c920bc4a4c4aa69cdcba4d91cab0b6"
+
 # Import the PDF builder as a module. It lives beside this file and is not a
 # package, so it is loaded by path rather than by name.
 _spec = importlib.util.spec_from_file_location("build_pdf", HERE / "build-pdf.py")
@@ -270,6 +284,8 @@ def shell(title: str, desc: str, body: str, groups, slug: str, depth: int, prev,
   </main>
   {toc(body)}
 </div>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+        data-cf-beacon='{{"token": "{ANALYTICS_TOKEN}"}}'></script>
 </body></html>"""
 
 
