@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import Guacamole from "guacamole-common-js";
   import Hint from "./lib/Hint.svelte";
   import Menu from "./lib/Menu.svelte";
@@ -3372,9 +3372,17 @@
   // selected — the details of what you just clicked belong on screen. We
   // do NOT auto-expand a minimised dock: a click-to-select shouldn't
   // force UI visible, and the tab strip already shows the label change.
+  //
+  // The `dock` read is inside untrack() so this effect only re-runs when
+  // the selection changes — not when the user switches tabs. Without
+  // that, clicking Logs while a node is selected snapped the dock right
+  // back to Inspector.
   $effect(() => {
-    if (selected || selectedLink) {
-      if (dock !== "inspector" && dock !== "console") dock = "inspector";
+    const _dep = selected || selectedLink;  // depend on selection only
+    if (_dep) {
+      untrack(() => {
+        if (dock !== "inspector" && dock !== "console") dock = "inspector";
+      });
     }
   });
 
