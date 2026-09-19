@@ -2684,6 +2684,14 @@
       // split back to a list on Save. Only what an admin explicitly
       // types goes here — empty stays empty.
       qemu_extra_args_text: (s.qemu_extra_args || []).join("\n"),
+      // Bootstrap block — {step_timeout_s, steps: [{wait_for, type}]}
+      // typed into the guest over the serial console on first boot.
+      // Full docs + example recipes: packaging/recipes/bootstrap/
+      // Stored on the row as JSON; edited here as a text blob so the
+      // regex quoting stays legible.
+      bootstrap_text: s.bootstrap
+        ? JSON.stringify(s.bootstrap, null, 2)
+        : "",
       uploading: null,  // "bios" | "cdrom" | null while an upload is in flight
       submitting: false,
       error: "",
@@ -2720,6 +2728,20 @@
         .split("\n")
         .map((s) => s.trim())
         .filter(Boolean);
+      // Bootstrap: empty string = no block (clear it). Non-empty must
+      // parse as JSON. Refuse to save on a syntax error rather than
+      // silently dropping the field.
+      let bootstrap = null;
+      const btext = (editTemplateForm.bootstrap_text || "").trim();
+      if (btext) {
+        try {
+          bootstrap = JSON.parse(btext);
+        } catch (e) {
+          editTemplateForm.error = `Bootstrap JSON is not valid: ${e.message}`;
+          editTemplateForm.submitting = false;
+          return;
+        }
+      }
       await api.updateTemplate(editTemplateForm.id, {
         name: editTemplateForm.name,
         description: editTemplateForm.description || null,
@@ -2736,6 +2758,8 @@
         bios: editTemplateForm.bios,
         cdrom: editTemplateForm.cdrom,
         qemu_extra_args: extraArgs,
+        // null clears the block entirely; an object sets it.
+        bootstrap: bootstrap,
       });
       editTemplateForm = null;
       await loadTemplates();
@@ -5075,6 +5099,17 @@
           <span>extra qemu args</span>
           <textarea rows="3" placeholder="one per line, e.g. -smbios type=1,manufacturer=Cisco"
                     bind:value={editTemplateForm.qemu_extra_args_text}></textarea>
+        </label>
+
+        <label class="pick pick-tall">
+          <span>bootstrap
+            <Hint text="Optional first-boot config sequence typed into the serial console. JSON: {'{'}step_timeout_s, steps: [{'{'}wait_for, type{'}'}, ...]{'}'}. `wait_for` is a regex, `type` is what to send. Substitutes {'{'}name{'}'} and {'{'}node_id{'}'}. Recipes in packaging/recipes/bootstrap/. Runs once per node; watch progress at /nodes/{'{'}id{'}'}/bootstrap." />
+          </span>
+          <textarea
+            rows="10"
+            class="mono tiny"
+            placeholder={'{"steps":[\n  {"wait_for":"login:", "type":"admin\\r\\n"},\n  {"wait_for":"Password:", "type":"admin\\r\\n"},\n  {"wait_for":"# *$", "type":"hostname {name}\\r\\n"}\n]}'}
+            bind:value={editTemplateForm.bootstrap_text}></textarea>
         </label>
 
         {#if editTemplateForm.error}

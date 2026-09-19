@@ -454,6 +454,12 @@ class TemplatePatch(BaseModel):
     #: image itself). Common uses: -smbios manufacturer strings for
     #: Cisco appliances, specific -cpu features for vjunos images.
     qemu_extra_args: list[str] | None = None
+    #: First-boot config sequence typed into the serial console. Shape:
+    #: `{step_timeout_s?: int, steps: [{wait_for: regex, type: str,
+    #: timeout_s?: int}, ...]}`. Runs at most once per node from this
+    #: template. `null` clears the block; an object sets it. See
+    #: packaging/recipes/bootstrap/ for example recipes.
+    bootstrap: dict[str, Any] | None = None
 
 
 class TaskOut(ORMModel):
