@@ -36,6 +36,21 @@ dependencies = [
   # The apt package `tesseract-ocr` and `tesseract-ocr-eng` are the real
   # deps; without them a /vnc/read call errors clearly.
   "pytesseract==0.3.13",
+  # `labtris` CLI. Typer for the nested subcommand tree + parameter parsing;
+  # Rich for tables and colored output; both are wheels on every supported
+  # Python. Server-side code does not import either — but the CLI ships in
+  # the same wheel as the API, so declaring them at the top level keeps a
+  # single `pip install -e .` producing a working `labtris` binary.
+  #
+  # click is pinned alongside because Typer 0.15.x and Click 8.2+ have an
+  # ABI mismatch on `Parameter.make_metavar()` (Click added a required
+  # `ctx` positional argument in 8.2, Typer's rich-help formatter calls it
+  # without one). Left unpinned pip picks Click 8.5 and `labtris --help`
+  # crashes with a TypeError. Pinning Click to 8.1.x — the version Typer
+  # 0.15.1 was released against — sidesteps that.
+  "typer==0.15.1",
+  "click==8.1.8",
+  "rich==13.9.4",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +67,10 @@ dev = [
 labtris-api = "labtris_api.main:run"
 labtris-netd = "labtris_netd.__main__:main"
 labtris-mcp = "labtris_mcp.server:main"
+# `labtris` is the human-facing CLI (Phase A of the LocalStack-inspired work);
+# `labtris-doctor` and `labtris-image` remain as deprecation shims that
+# delegate — nothing scripted breaks, but the new tree is what we document.
+labtris = "labtris_cli.__main__:app"
 labtris-doctor = "labtris_api.diagnose:main"
 labtris-image = "labtris_api.cli.image:main"
 
@@ -60,7 +79,7 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["labtris_api*", "labtris_netd*", "labtris_mcp*"]
+include = ["labtris_api*", "labtris_netd*", "labtris_mcp*", "labtris_client*", "labtris_cli*"]
 
 [tool.pytest.ini_options]
 markers = [

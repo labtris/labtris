@@ -89,8 +89,9 @@ async def setup(
         session, body.username, body.password, role="admin", display_name=body.display_name
     )
     await session.commit()
-    _set_cookie(response, issue_token(row))
-    return {"user": _public(row)}
+    token = issue_token(row)
+    _set_cookie(response, token)
+    return {"user": _public(row), "token": token, "expires_in": int(TOKEN_TTL.total_seconds())}
 
 
 @router.post("/auth/login")
@@ -108,8 +109,15 @@ async def login(
         raise unauthorized("that username and password do not match")
     row.last_login_at = datetime.now(UTC)
     await session.commit()
-    _set_cookie(response, issue_token(row))
-    return {"user": _public(row)}
+    token = issue_token(row)
+    _set_cookie(response, token)
+    # `token` in the response body is for non-browser callers (CLI, MCP, any
+    # scripted client). The browser reads none of it — the cookie set above
+    # is what carries its session. The token here is the same one the cookie
+    # holds; returning it in the body under a caller that just handed us its
+    # password is not new exposure and saves every non-browser client from
+    # parsing Set-Cookie.
+    return {"user": _public(row), "token": token, "expires_in": int(TOKEN_TTL.total_seconds())}
 
 
 @router.post("/auth/logout")
