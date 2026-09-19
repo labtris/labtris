@@ -21,6 +21,38 @@
   let health = $state(null);
   let selected = $state(null);
   let selectedLink = $state(null);
+  //: A selected network segment — clicking a port that joins a bridge (rather
+  //: than a p2p link) parks the id here so we can highlight every other node
+  //: on the same segment. Not exposed in the inspector yet; it's used purely
+  //: to compute `hilitedNodeIds`.
+  let selectedNet = $state(null);
+
+  //: Nodes that a selected link or segment reaches — used to soft-highlight
+  //: the endpoints so "what does this wire connect to" is visually obvious
+  //: without opening the inspector. A Set for cheap membership.
+  const hilitedNodeIds = $derived.by(() => {
+    const out = new Set();
+    if (selectedLink && lab) {
+      const link = (lab.links || []).find((l) => l.id === selectedLink);
+      if (link) {
+        for (const n of lab.nodes || []) {
+          if (n.interfaces?.some(
+            (i) => i.id === link.a_iface_id || i.id === link.b_iface_id,
+          )) {
+            out.add(n.id);
+          }
+        }
+      }
+    }
+    if (selectedNet && lab) {
+      for (const n of lab.nodes || []) {
+        if (n.interfaces?.some((i) => i.network_id === selectedNet)) {
+          out.add(n.id);
+        }
+      }
+    }
+    return out;
+  });
   let error = $state("");
   //: A non-error message that still needs saying — "this will take minutes",
   //: "it is saved, here is where it went". Rendered in the same slot as an
@@ -687,6 +719,7 @@
       await loadLab(labId, true);
       selected = node.id;
       selectedLink = null;
+      selectedNet = null;
     linkPop = null;
     } catch (e) {
       error = e.message;
@@ -837,6 +870,7 @@
     }
     selected = node.id;
     selectedLink = null;
+    selectedNet = null;
     linkPop = null;
     snapshots = [];
     if (node.runtime === "qemu") loadSnapshots();
@@ -927,6 +961,7 @@
     const add = e.ctrlKey || e.metaKey || e.shiftKey;
     selected = null;
     selectedLink = null;
+    selectedNet = null;
     linkPop = null;
     if (!add) selectedIds = [];
     const box = canvasBox();
@@ -1125,6 +1160,28 @@
 
   function beginWire(e, iface) {
     e.stopPropagation();
+    // If the port is already wired, a "beginWire" would only ever fail
+    // (the existing link stops any second one from taking hold) — and
+    // while wiring is armed, every other port on every other node
+    // lights up as wire-ok/wire-no, which reads as "everything is
+    // selected." Instead: on click of a wired port, select the link
+    // (or the network) so the two endpoints highlight and the link
+    // inspector shows the qos/admin controls.
+    if (iface.network_id) {
+      const link = (lab?.links ?? []).find(
+        (l) => l.a_iface_id === iface.id || l.b_iface_id === iface.id,
+      );
+      if (link) {
+        selectedLink = link.id;
+        selectedNet = null;
+      } else {
+        selectedNet = iface.network_id;
+        selectedLink = null;
+      }
+      selected = null;
+      selectedIds = [];
+      return;
+    }
     wiring = { from: iface };
   }
 
@@ -1482,6 +1539,7 @@
   function pickLink(e, link) {
     e.stopPropagation();
     selectedLink = link.id;
+    selectedNet = null;
     selected = null;
     linkPop = { id: link.id, x: e.clientX, y: e.clientY };
   }
@@ -1523,6 +1581,7 @@
     if (!selectedIds.includes(node.id)) selectedIds = [node.id];
     selected = node.id;
     selectedLink = null;
+    selectedNet = null;
     linkPop = null;
     if (selectedIds.length > 1) {
       const n = selectedIds.length;
@@ -1615,6 +1674,7 @@
     e.preventDefault();
     e.stopPropagation();
     selectedLink = link.id;
+    selectedNet = null;
     selected = null;
     const up = link.admin_up !== false;
     menu = {
@@ -2120,6 +2180,7 @@
     try {
       await api.deleteLink(selectedLink);
       selectedLink = null;
+      selectedNet = null;
     linkPop = null;
       await loadLab(lab.id, true);
     } catch (e) {
@@ -2536,6 +2597,7 @@
     pan = { ...pan, x: 200 - p.x * pan.k, y: 160 - p.y * pan.k };
     selected = node.id;
     selectedLink = null;
+    selectedNet = null;
     linkPop = null;
   }
 
@@ -4256,6 +4318,7 @@
             <div
               class="netobj"
               class:cloud={net.kind === "cloud"}
+              class:hilite={selectedNet === net.id}
               class:wire-target={wiring?.fromNode}
               style={`left:${np.x}px; top:${np.y}px`}
               onpointerdown={(e) => onNetDown(e, net, ni)}
@@ -4303,6 +4366,7 @@
               class="node"
               data-id={node.id}
               class:sel={selected === node.id || selectedIds.includes(node.id)}
+              class:hilite={hilitedNodeIds.has(node.id) && selected !== node.id && !selectedIds.includes(node.id)}
               class:multi={selectedIds.length > 1 && selectedIds.includes(node.id)}
               class:running={node.state === "running"}
               class:failed={node.state === "failed"}
@@ -5887,6 +5951,7 @@
                   onclick={() => {
                     selected = e.nodeId;
                     selectedLink = null;
+                    selectedNet = null;
     linkPop = null;
                   }}>{e.text}</button
                 >
@@ -6519,6 +6584,12 @@
     background: var(--node-a); padding: 10px 12px; user-select: none;
   }
   .node.sel { border-color: var(--c); box-shadow: 0 0 0 1px var(--c); }
+  /* Softer treatment than .sel — a link's endpoints get a coloured
+     outline (not a full "you selected me" chrome swap). Enough to
+     read "these are the two ends" at a glance, not so much that it
+     competes with a real primary selection. */
+  .node.hilite { box-shadow: 0 0 0 2px var(--accent); }
+  .netobj.hilite { box-shadow: 0 0 0 2px var(--accent); }
   /* Running is shown by the status dot, which is already there. */
   .node.running { border-color: color-mix(in srgb, var(--c) 55%, var(--stroke)); }
   .node.failed { border-color: var(--danger); }
