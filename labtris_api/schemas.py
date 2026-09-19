@@ -600,6 +600,9 @@ class VncTypeIn(BaseModel):
     #: A typed password lands instantly; a menu selection may take a
     #: frame or two to redraw. Clamped [0, 5000].
     settle_ms: int = 250
+    #: Scale the after-screenshot (default 0.5x). Same semantics as the
+    #: `scale` query on `/vnc/screenshot`.
+    scale: float = 0.5
 
     def model_post_init(self, _ctx: object) -> None:
         if (self.text is None) == (self.keys is None):
@@ -612,6 +615,8 @@ class VncTypeIn(BaseModel):
             self.settle_ms = 0
         elif self.settle_ms > 5000:
             self.settle_ms = 5000
+        if self.scale <= 0 or self.scale > 4:
+            raise ValueError("scale must be in (0, 4]")
 
 
 class VncTypeOut(BaseModel):
@@ -642,6 +647,8 @@ class VncMouseIn(BaseModel):
     #: can see what the click produced.
     screenshot: bool = True
     settle_ms: int = 400
+    #: Scale the after-screenshot. See VncTypeIn.scale.
+    scale: float = 0.5
 
     def model_post_init(self, _ctx: object) -> None:
         if self.action not in ("move", "click", "double_click"):
@@ -654,6 +661,79 @@ class VncMouseIn(BaseModel):
             self.settle_ms = 0
         elif self.settle_ms > 5000:
             self.settle_ms = 5000
+        if self.scale <= 0 or self.scale > 4:
+            raise ValueError("scale must be in (0, 4]")
+
+
+class VncWaitIn(BaseModel):
+    """Poll the framebuffer until it stops changing, then return the final PNG.
+
+    Replaces the 'screenshot in a loop' pattern the model falls into
+    after a click: one call, one LLM turn. `timeout_ms` bounds how long
+    the backend blocks; if the screen never settles the response
+    carries `settled: false` and whatever the latest frame is.
+
+    `stable_ms` — how long the frame must be identical before it counts
+    as settled. 400 ms handles a menu redraw or a cursor blink cycle."""
+
+    poll_ms: int = 200
+    stable_ms: int = 400
+    timeout_ms: int = 5000
+    scale: float = 0.5
+
+    def model_post_init(self, _ctx: object) -> None:
+        if self.poll_ms < 50:
+            self.poll_ms = 50
+        elif self.poll_ms > 2000:
+            self.poll_ms = 2000
+        if self.stable_ms < self.poll_ms:
+            self.stable_ms = self.poll_ms
+        elif self.stable_ms > 10000:
+            self.stable_ms = 10000
+        if self.timeout_ms < 200:
+            self.timeout_ms = 200
+        elif self.timeout_ms > 60000:
+            self.timeout_ms = 60000
+        if self.scale <= 0 or self.scale > 4:
+            raise ValueError("scale must be in (0, 4]")
+
+
+class VncWaitOut(BaseModel):
+    #: True if the frame stopped changing before timeout, false if not.
+    settled: bool
+    #: Base64-encoded PNG of the final frame, at the caller's `scale`.
+    screenshot: str
+    mime_type: str = "image/png"
+
+
+class VncReadIn(BaseModel):
+    """OCR the QEMU display and return only the text — no image.
+
+    Cheap in vision tokens: a full-screen login prompt costs ~1500
+    vision tokens as a PNG and ~15 tokens as text. Use this when you
+    only need to READ what is on screen (which prompt, which error,
+    which menu item is highlighted); use `vnc_screenshot` when you
+    need to SEE it (a graph, a diagram, a colour, pixel positions).
+
+    `region=x,y,w,h` crops before OCR (framebuffer pixels). Runs at
+    full resolution so tesseract has enough pixels to be accurate."""
+
+    region: str | None = None
+
+    def model_post_init(self, _ctx: object) -> None:
+        if self.region:
+            try:
+                parts = [int(p) for p in self.region.split(",")]
+            except ValueError as exc:
+                raise ValueError("region must be four comma-separated integers x,y,w,h") from exc
+            if len(parts) != 4 or any(p < 0 for p in parts) or parts[2] <= 0 or parts[3] <= 0:
+                raise ValueError("region must be x,y,w,h with w>0 and h>0")
+
+
+class VncReadOut(BaseModel):
+    #: OCR'd text, with the whitespace tesseract chose. Empty string if
+    #: the screen is blank or the resolution is too low for OCR.
+    text: str
 
 
 class VncMouseOut(BaseModel):

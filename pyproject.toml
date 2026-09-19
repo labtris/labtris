@@ -31,6 +31,11 @@ dependencies = [
   # For screenshot grid overlays and region crops on VNC screenshots.
   # ~3 MB wheel, universally available. Only the API imports it.
   "Pillow==11.1.0",
+  # Thin wrapper over the tesseract-ocr binary. Used by /vnc/read so the
+  # assistant can read a login prompt in 15 tokens instead of 1500.
+  # The apt package `tesseract-ocr` and `tesseract-ocr-eng` are the real
+  # deps; without them a /vnc/read call errors clearly.
+  "pytesseract==0.3.13",
 ]
 
 [project.optional-dependencies]

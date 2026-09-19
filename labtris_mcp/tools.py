@@ -357,11 +357,15 @@ def _console_exec(api: Api, a: dict[str, Any]) -> Any:
     "Use on nodes with no serial console — vendor appliances, graphical installers, "
     "Ubuntu VMs where `serial-getty` was never enabled. Pair with `vnc_type` and "
     "`vnc_mouse` to drive the guest. QEMU only; containers have no framebuffer.\n\n"
-    "Optional: `region=\"x,y,w,h\"` crops to a rectangle (framebuffer pixels) — save "
-    "tokens by grabbing just the dialog you care about. `grid=100` overlays a 100-pixel "
-    "grid with axis labels so you can name coordinates for a follow-up `vnc_mouse` "
-    "click without guessing.",
-    {"node_id": STR, "region": STR, "grid": INT},
+    "Defaults to `scale=0.5` — a 1280x800 framebuffer becomes 640x400, roughly a "
+    "quarter of the vision tokens per screenshot and still readable. Pass `scale=1.0` "
+    "when you need full resolution (tiny text, pixel-accurate coordinate picking).\n\n"
+    "Optional: `region=\"x,y,w,h\"` crops to a rectangle in framebuffer pixels (applied "
+    "before scale). `grid=100` overlays a 100-pixel grid with axis labels — useful for "
+    "picking coordinates for a follow-up `vnc_mouse` click. Note grid coordinates are "
+    "drawn in the post-scale pixel space; use the same `scale` for the follow-up mouse "
+    "call so the numbers align.",
+    {"node_id": STR, "region": STR, "grid": INT, "scale": NUM},
     ["node_id"],
 )
 def _vnc_screenshot(api: Api, a: dict[str, Any]) -> Any:
@@ -371,6 +375,8 @@ def _vnc_screenshot(api: Api, a: dict[str, Any]) -> Any:
         q.append(f"region={a['region']}")
     if a.get("grid"):
         q.append(f"grid={int(a['grid'])}")
+    if a.get("scale") is not None:
+        q.append(f"scale={float(a['scale'])}")
     if q:
         path += "?" + "&".join(q)
     png, ctype = api.post_bytes(path)
@@ -396,7 +402,7 @@ def _vnc_screenshot(api: Api, a: dict[str, Any]) -> Any:
     "`screenshot=false` only when firing a burst of typing where only the final frame "
     "matters. QEMU only.",
     {"node_id": STR, "text": STR, "keys": ARR_STR, "hold_ms": INT,
-     "screenshot": {"type": "boolean"}, "settle_ms": INT},
+     "screenshot": {"type": "boolean"}, "settle_ms": INT, "scale": NUM},
     ["node_id"],
 )
 def _vnc_type(api: Api, a: dict[str, Any]) -> Any:
@@ -411,6 +417,8 @@ def _vnc_type(api: Api, a: dict[str, Any]) -> Any:
         body["screenshot"] = bool(a["screenshot"])
     if a.get("settle_ms") is not None:
         body["settle_ms"] = int(a["settle_ms"])
+    if a.get("scale") is not None:
+        body["scale"] = float(a["scale"])
     out = api.post(f"/api/v1/nodes/{a['node_id']}/vnc/type", body)
     content: list[dict[str, Any]] = [
         {"type": "text", "text": f"keys_sent: {out.get('keys_sent')}"}
@@ -436,7 +444,7 @@ def _vnc_type(api: Api, a: dict[str, Any]) -> Any:
     "then call this. Uses QMP absolute coordinates under the hood, so clicks land "
     "where you asked pixel-accurately.",
     {"node_id": STR, "x": INT, "y": INT, "action": STR, "button": STR,
-     "screenshot": {"type": "boolean"}, "settle_ms": INT},
+     "screenshot": {"type": "boolean"}, "settle_ms": INT, "scale": NUM},
     ["node_id", "x", "y"],
 )
 def _vnc_mouse(api: Api, a: dict[str, Any]) -> Any:
@@ -446,6 +454,8 @@ def _vnc_mouse(api: Api, a: dict[str, Any]) -> Any:
             body[k] = a[k] if k != "settle_ms" else int(a[k])
     if a.get("screenshot") is not None:
         body["screenshot"] = bool(a["screenshot"])
+    if a.get("scale") is not None:
+        body["scale"] = float(a["scale"])
     out = api.post(f"/api/v1/nodes/{a['node_id']}/vnc/mouse", body)
     content: list[dict[str, Any]] = [
         {
@@ -462,6 +472,57 @@ def _vnc_mouse(api: Api, a: dict[str, Any]) -> Any:
             }
         )
     return {"content": content}
+
+
+@tool(
+    "vnc_wait_for_change",
+    "Block until the QEMU display stops changing, then return the final screenshot. "
+    "Use after a click, keystroke, or command that triggers an animation, a menu "
+    "redraw, or a boot progress screen — one call replaces the 'screenshot every "
+    "500ms' loop the model naturally reaches for. Default: poll every 200ms, "
+    "consider settled after 400ms of no change, give up after 5s and return whatever "
+    "is on screen with `settled: false`.",
+    {"node_id": STR, "poll_ms": INT, "stable_ms": INT, "timeout_ms": INT, "scale": NUM},
+    ["node_id"],
+)
+def _vnc_wait(api: Api, a: dict[str, Any]) -> Any:
+    body: dict[str, Any] = {}
+    for k in ("poll_ms", "stable_ms", "timeout_ms"):
+        if a.get(k) is not None:
+            body[k] = int(a[k])
+    if a.get("scale") is not None:
+        body["scale"] = float(a["scale"])
+    out = api.post(f"/api/v1/nodes/{a['node_id']}/vnc/wait_for_change", body)
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": f"settled: {out.get('settled')}"}
+    ]
+    if out.get("screenshot"):
+        content.append(
+            {
+                "type": "image",
+                "data": out["screenshot"],
+                "mimeType": out.get("mime_type") or "image/png",
+            }
+        )
+    return {"content": content}
+
+
+@tool(
+    "vnc_read",
+    "Read the text on a QEMU node's display via OCR — no image returned. Two orders "
+    "of magnitude cheaper in vision tokens than `vnc_screenshot` when you only need "
+    "to READ (which prompt, which error, which menu item, what does that dialog say). "
+    "Use `vnc_screenshot` when you need to SEE (a graph, a colour, pixel positions "
+    "for a mouse click). Optional `region=\"x,y,w,h\"` crops before OCR. Requires "
+    "tesseract-ocr installed on the host; a clear error names the fix if it isn't.",
+    {"node_id": STR, "region": STR},
+    ["node_id"],
+)
+def _vnc_read(api: Api, a: dict[str, Any]) -> Any:
+    body: dict[str, Any] = {}
+    if a.get("region"):
+        body["region"] = a["region"]
+    return api.post(f"/api/v1/nodes/{a['node_id']}/vnc/read", body)
 
 
 @tool("list_hosts", "Hosts in the multi-host control plane, and whether each is reachable.", {})

@@ -29,6 +29,11 @@ nginx
 wireshark
 xvfb
 x11vnc
+# OCR on VNC screenshots for the assistant's `vnc_read` tool. The `-eng`
+# language pack has to be listed explicitly — tesseract-ocr on its own
+# ships no language data and returns empty strings for every image.
+tesseract-ocr
+tesseract-ocr-eng
 # Kernel Samepage Merging: the density lever. See docs/04-scaling.md —
 # measured 8.5:1. ksmtuned ships in this list because qemu-kvm pulls it in
 # anyway and having it on the disc keeps offline installs whole. It is

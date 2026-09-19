@@ -964,55 +964,79 @@ async def _hmp(vm_dir: Path, command: str, wait: float = 0.4) -> str:
 # with `qmp_capabilities` before any other command is accepted.
 
 
-async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = None) -> Any:
-    """Send one QMP command and return the `return` payload (or raise on error).
+# One persistent QMP connection per VM. Mouse tools call QMP two to
+# four times per click (move + button down + button up + optional
+# after-shot); reconnecting and re-handshaking each time cost ~100ms
+# per call. Cached, the second and later calls are ~1-2ms round trip.
+# Reset on error (broken pipe, EOF): the next call reconnects.
+_qmp_conns: dict[Path, tuple[asyncio.StreamReader, asyncio.StreamWriter, asyncio.Lock]] = {}
 
-    Opens a fresh connection per call. The handshake (greeting +
-    qmp_capabilities) is not amortized because commands are rare — a
-    mouse click every couple of seconds is the peak — and per-call
-    connections cost <1ms.
-    """
+
+async def _qmp_open(vm_dir: Path) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, asyncio.Lock]:
+    """Return a live QMP (reader, writer, lock) for this VM, opening one if
+    necessary. Handshake is done once per connection; subsequent callers
+    reuse the same stream serialized by the lock."""
+    cached = _qmp_conns.get(vm_dir)
+    if cached is not None:
+        _, writer, _ = cached
+        if not writer.is_closing():
+            return cached
+        # Fell out from under us — cook a new one below.
+        _qmp_conns.pop(vm_dir, None)
+
     sock = vm_dir / "qmp.sock"
     if not sock.exists():
-        # Older VMs started before the -qmp arg landed. They still have
-        # HMP, but the mouse tools can't work on them without a restart.
         raise runtime_error(
             "qemu QMP socket not found — this VM was started before mouse "
             "support landed; stop and start it to gain the socket."
         )
     reader, writer = await asyncio.open_unix_connection(str(sock))
-    try:
-        # Greeting.
-        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
-        if not line:
-            raise runtime_error("QMP closed the connection before greeting")
-        # Handshake — no capabilities negotiated.
-        writer.write(b'{"execute":"qmp_capabilities"}\n')
-        await writer.drain()
-        _ = await asyncio.wait_for(reader.readline(), timeout=2.0)
-        # The command itself.
-        payload = {"execute": command}
-        if arguments:
-            payload["arguments"] = arguments
-        writer.write((json.dumps(payload) + "\n").encode())
-        await writer.drain()
-        # Skip event lines until we see a result (QMP interleaves events
-        # like SHUTDOWN/DEVICE_DELETED/JOB_STATUS_CHANGE with command
-        # replies; the reply is the first line carrying `return` or
-        # `error`).
-        while True:
-            raw = await asyncio.wait_for(reader.readline(), timeout=3.0)
-            if not raw:
-                raise runtime_error("QMP closed the connection before replying")
-            msg = json.loads(raw)
-            if "return" in msg:
-                return msg["return"]
-            if "error" in msg:
-                err = msg["error"]
-                raise runtime_error(f"QMP {command}: {err.get('desc', err)}")
-            # Otherwise it's an event; keep reading.
-    finally:
-        writer.close()
+    # Greeting + handshake.
+    line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+    if not line:
+        raise runtime_error("QMP closed the connection before greeting")
+    writer.write(b'{"execute":"qmp_capabilities"}\n')
+    await writer.drain()
+    _ = await asyncio.wait_for(reader.readline(), timeout=2.0)
+    lock = asyncio.Lock()
+    entry = (reader, writer, lock)
+    _qmp_conns[vm_dir] = entry
+    return entry
+
+
+async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = None) -> Any:
+    """Send one QMP command and return the `return` payload (or raise on error).
+
+    Uses a per-VM persistent connection cached in `_qmp_conns` — the
+    handshake happens once per VM, not per call. A lock serializes
+    writers so overlapping calls from different asyncio tasks don't
+    interleave. On any I/O error the cached connection is dropped and
+    the next call reopens.
+    """
+    reader, writer, lock = await _qmp_open(vm_dir)
+    async with lock:
+        try:
+            payload = {"execute": command}
+            if arguments:
+                payload["arguments"] = arguments
+            writer.write((json.dumps(payload) + "\n").encode())
+            await writer.drain()
+            while True:
+                raw = await asyncio.wait_for(reader.readline(), timeout=3.0)
+                if not raw:
+                    raise runtime_error("QMP closed the connection before replying")
+                msg = json.loads(raw)
+                if "return" in msg:
+                    return msg["return"]
+                if "error" in msg:
+                    err = msg["error"]
+                    raise runtime_error(f"QMP {command}: {err.get('desc', err)}")
+                # Event — keep reading.
+        except (ConnectionError, asyncio.TimeoutError, OSError):
+            _qmp_conns.pop(vm_dir, None)
+            with contextlib.suppress(Exception):
+                writer.close()
+            raise
 
 
 # QMP's tablet axis range is fixed at 0..32767 regardless of framebuffer
@@ -1038,8 +1062,80 @@ async def fb_dims(vm_dir: Path) -> tuple[int, int]:
     `query-vnc-servers` return everything except dimensions. Taking a
     screenshot and reading the PNG header is ~5 KB + 50 ms and always
     works.
+
+    Explicitly `scale=1.0` — mouse coordinate translation needs the real
+    framebuffer size, not a scaled-down preview.
     """
-    return _png_dims(await screendump_png(vm_dir))
+    return _png_dims(await screendump_png(vm_dir, scale=1.0))
+
+
+async def wait_for_screen_change(
+    vm_dir: Path,
+    *,
+    poll_ms: int = 200,
+    stable_ms: int = 400,
+    timeout_ms: int = 5000,
+) -> dict[str, Any]:
+    """Poll the framebuffer until it stops changing, then return the final PNG.
+
+    Every `poll_ms` we take a screenshot and compare its SHA-1 to the
+    previous one. Once the same hash has been seen for `stable_ms`
+    consecutively (i.e. `stable_ms // poll_ms` iterations), we call it
+    stable and return. If `timeout_ms` elapses first, we return whatever
+    the latest frame is with `settled=false`.
+
+    This replaces the "screenshot in a poll loop" pattern the model
+    naturally falls into after a click or a keystroke: one call blocks
+    on the backend and returns a single result instead of five round
+    trips through the LLM.
+    """
+    poll_s = poll_ms / 1000
+    stable_needed = max(1, stable_ms // poll_ms)
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    last_hash: str | None = None
+    stable_count = 0
+    last_png: bytes = b""
+    while True:
+        last_png = await screendump_png(vm_dir, scale=1.0)
+        h = hashlib.sha1(last_png).hexdigest()
+        if h == last_hash:
+            stable_count += 1
+            if stable_count >= stable_needed:
+                return {"png": last_png, "settled": True, "polls": stable_count}
+        else:
+            stable_count = 0
+            last_hash = h
+        if asyncio.get_event_loop().time() >= deadline:
+            return {"png": last_png, "settled": False, "polls": stable_count}
+        await asyncio.sleep(poll_s)
+
+
+def ocr_image_bytes(png: bytes) -> str:
+    """OCR the given PNG and return the recognized text.
+
+    Lazy import of pytesseract so the API starts even without it. Raises
+    a runtime error with the fix if pytesseract or the tesseract binary
+    is missing — the assistant can then fall back to a full screenshot.
+    """
+    try:
+        import pytesseract  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise runtime_error(
+            "pytesseract not installed. `sudo apt install tesseract-ocr "
+            "tesseract-ocr-eng` and `pip install pytesseract` in the venv."
+        ) from exc
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        img = Image.open(BytesIO(png))
+        return pytesseract.image_to_string(img)
+    except pytesseract.TesseractNotFoundError as exc:
+        raise runtime_error(
+            "tesseract binary not found. `sudo apt install tesseract-ocr "
+            "tesseract-ocr-eng`."
+        ) from exc
 
 
 async def vnc_mouse_move(vm_dir: Path, x: int, y: int, fb_w: int, fb_h: int) -> None:
@@ -1101,6 +1197,7 @@ async def screendump_png(
     *,
     region: tuple[int, int, int, int] | None = None,
     grid: int | bool = False,
+    scale: float = 0.5,
 ) -> bytes:
     """Grab the QEMU display as PNG bytes.
 
@@ -1116,13 +1213,22 @@ async def screendump_png(
 
     `grid=True` overlays a 100-pixel grid with axis labels so the model
     can name coordinates. Pass an int for a custom pitch (`grid=50`).
-    Both require Pillow.
+
+    `scale=0.5` (default) downscales the final image by 50%. A 1280x800
+    framebuffer becomes 640x400 — the model still reads a `login:`
+    prompt just as well but pays roughly a quarter of the vision
+    tokens per screenshot. Pass `scale=1.0` for full resolution.
+
+    Any of `region`, `grid`, or a non-1.0 `scale` requires Pillow.
     """
     if not vm_dir.exists() or _read_pid(vm_dir) is None:
         raise runtime_error("VM is not running")
     dest = vm_dir / f".shot-{os.urandom(4).hex()}.png"
     try:
-        await _hmp(vm_dir, f"screendump {dest} -f png", wait=1.0)
+        # 200ms is empirically fine for a 1280x800 dump — measured ~50ms
+        # on the reference host. The old 1s was defensive against long-
+        # loading BIOS displays, but every screenshot paid the penalty.
+        await _hmp(vm_dir, f"screendump {dest} -f png", wait=0.2)
         if not dest.exists() or dest.stat().st_size == 0:
             raise runtime_error("screendump produced no file — is the display attached?")
         raw = dest.read_bytes()
@@ -1130,7 +1236,7 @@ async def screendump_png(
         with contextlib.suppress(FileNotFoundError):
             dest.unlink()
 
-    if region is None and not grid:
+    if region is None and not grid and abs(scale - 1.0) < 0.01:
         return raw
 
     # Only import Pillow when the caller asks for a transformation —
@@ -1143,8 +1249,14 @@ async def screendump_png(
     if region is not None:
         x, y, w, h = region
         img = img.crop((x, y, x + w, y + h))
+    if scale > 0 and abs(scale - 1.0) >= 0.01:
+        w, h = img.size
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
     if grid:
         pitch = 100 if grid is True else int(grid)
+        # Grid coordinates are drawn in the CURRENT (post-scale) pixel
+        # space, so `vnc_mouse` clicks the model derives from them line
+        # up when the caller uses the same scale.
         overlay = img.convert("RGB").copy()
         d = ImageDraw.Draw(overlay)
         gw, gh = overlay.size

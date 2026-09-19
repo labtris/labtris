@@ -52,8 +52,12 @@ from labtris_api.schemas import (
     TemplateOut,
     VncMouseIn,
     VncMouseOut,
+    VncReadIn,
+    VncReadOut,
     VncTypeIn,
     VncTypeOut,
+    VncWaitIn,
+    VncWaitOut,
 )
 
 router = APIRouter(tags=["nodes"])
@@ -384,6 +388,7 @@ async def vnc_screenshot(
     node_id: str,
     region: str | None = None,
     grid: int = 0,
+    scale: float = 0.5,
     session: AsyncSession = Depends(get_session),
     _user: object = Depends(get_current_user),
 ) -> Response:
@@ -399,6 +404,11 @@ async def vnc_screenshot(
     - `grid=N` (query string, integer pixel pitch, 0 = off) overlays a
       light grid with axis labels so coordinate-picking is easy. 100 is
       a good default for a 1024x768 display; 50 for a smaller one.
+    - `scale=0.5` (default) downscales the returned image by half. A
+      1280x800 framebuffer becomes 640x400 — the model still reads a
+      login prompt just fine and pays a quarter of the vision tokens.
+      Pass `scale=1.0` when you need full detail (small text, tight
+      pixel-picking).
     """
     node = await get_node(session, node_id)
     if node.state != "running":
@@ -418,7 +428,11 @@ async def vnc_screenshot(
         if len(parts) != 4 or any(p < 0 for p in parts) or parts[2] <= 0 or parts[3] <= 0:
             raise unprocessable("region must be x,y,w,h with w>0 and h>0")
         region_tuple = (parts[0], parts[1], parts[2], parts[3])
-    png = await screendump_png(Path(node.runtime_ref), region=region_tuple, grid=grid or False)
+    if scale <= 0 or scale > 4:
+        raise unprocessable("scale must be in (0, 4]")
+    png = await screendump_png(
+        Path(node.runtime_ref), region=region_tuple, grid=grid or False, scale=scale,
+    )
     return Response(
         content=png,
         media_type="image/png",
@@ -469,7 +483,7 @@ async def vnc_type(
     if body.screenshot:
         if body.settle_ms:
             await asyncio.sleep(body.settle_ms / 1000)
-        png = await screendump_png(vm_dir)
+        png = await screendump_png(vm_dir, scale=body.scale)
         shot_b64 = b64.b64encode(png).decode()
     return VncTypeOut(
         keys_sent=sent,
@@ -528,7 +542,7 @@ async def vnc_mouse(
     if body.screenshot:
         if body.settle_ms:
             await asyncio.sleep(body.settle_ms / 1000)
-        png = await screendump_png(vm_dir)
+        png = await screendump_png(vm_dir, scale=body.scale)
         shot_b64 = b64.b64encode(png).decode()
     return VncMouseOut(
         fb_width=fb_w,
@@ -536,6 +550,80 @@ async def vnc_mouse(
         screenshot=shot_b64,
         mime_type="image/png" if shot_b64 else None,
     )
+
+
+@router.post("/nodes/{node_id}/vnc/wait_for_change", response_model=VncWaitOut)
+async def vnc_wait_for_change(
+    node_id: str,
+    body: VncWaitIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> VncWaitOut:
+    """Block until the display stops changing, then return the final PNG.
+
+    One call replaces the "screenshot in a loop" pattern the model
+    falls into after a click. Polls every `poll_ms`, considers the
+    screen settled once the same frame has been seen for `stable_ms`.
+    Returns `settled: false` (with the latest frame) if `timeout_ms`
+    elapses first."""
+    import base64 as b64
+
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu":
+        raise unprocessable(f"vnc wait not supported for runtime {node.runtime!r}")
+    if not node.runtime_ref:
+        raise not_found("node has no runtime handle")
+    from labtris_api.runtime.qemu import screendump_png, wait_for_screen_change
+
+    vm_dir = Path(node.runtime_ref)
+    result = await wait_for_screen_change(
+        vm_dir,
+        poll_ms=body.poll_ms,
+        stable_ms=body.stable_ms,
+        timeout_ms=body.timeout_ms,
+    )
+    # Result carries the full-res PNG (we hash at full res for accuracy).
+    # If the caller asked for a scaled preview, re-render at that scale
+    # rather than shipping the full frame — no need to spend the tokens.
+    if abs(body.scale - 1.0) >= 0.01:
+        png = await screendump_png(vm_dir, scale=body.scale)
+    else:
+        png = result["png"]
+    return VncWaitOut(settled=result["settled"], screenshot=b64.b64encode(png).decode())
+
+
+@router.post("/nodes/{node_id}/vnc/read", response_model=VncReadOut)
+async def vnc_read(
+    node_id: str,
+    body: VncReadIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> VncReadOut:
+    """OCR the QEMU display and return only the text.
+
+    Two orders of magnitude fewer tokens than `vnc_screenshot` when the
+    model just needs to read what's on screen — a login prompt, an
+    error dialog, which menu item is highlighted. Uses tesseract-ocr;
+    if it's not installed the response is a clear error naming the
+    apt package."""
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu":
+        raise unprocessable(f"vnc read not supported for runtime {node.runtime!r}")
+    if not node.runtime_ref:
+        raise not_found("node has no runtime handle")
+    from labtris_api.runtime.qemu import ocr_image_bytes, screendump_png
+
+    region_tuple: tuple[int, int, int, int] | None = None
+    if body.region:
+        parts = [int(p) for p in body.region.split(",")]
+        region_tuple = (parts[0], parts[1], parts[2], parts[3])
+    # Full resolution for OCR — tesseract wants pixels.
+    png = await screendump_png(Path(node.runtime_ref), region=region_tuple, scale=1.0)
+    return VncReadOut(text=ocr_image_bytes(png))
 
 
 @router.post("/nodes/{node_id}/interfaces", response_model=InterfaceOut, status_code=201)
