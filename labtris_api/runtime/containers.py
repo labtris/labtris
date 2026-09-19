@@ -61,7 +61,23 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         ),
         ContainerImage(id="nginx", label="Nginx", image="nginx:alpine"),
         ContainerImage(id="redis", label="Redis", image="redis:alpine"),
-        ContainerImage(id="frr", label="FRRouting", image="frrouting/frr:v8.4.0"),
+        ContainerImage(
+            id="frr",
+            label="FRRouting",
+            image="frrouting/frr:v8.4.0",
+            # Zebra refuses to start without CAP_SYS_ADMIN — it wants
+            # mount namespaces for VRFs, netlink features NET_ADMIN
+            # alone does not cover, and unconstrained interface renames.
+            # NET_BIND_SERVICE is what lets BGP take port 179 without
+            # running as root; SYS_NICE bumps thread priority for
+            # rt-affine daemons. This is what FRR's own docker
+            # instructions list as the minimum non-privileged set —
+            # short of `--privileged`, it's the same shape.
+            cap_add=("SYS_ADMIN", "NET_BIND_SERVICE", "SYS_NICE"),
+            notes="Extra caps SYS_ADMIN, NET_BIND_SERVICE, SYS_NICE "
+                  "on top of the base NET_ADMIN + NET_RAW. Zebra will "
+                  "not come up otherwise.",
+        ),
         ContainerImage(id="haproxy", label="HAProxy", image="haproxy:alpine"),
         ContainerImage(
             id="ubuntu",
