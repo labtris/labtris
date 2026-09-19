@@ -74,9 +74,38 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             # instructions list as the minimum non-privileged set —
             # short of `--privileged`, it's the same shape.
             cap_add=("SYS_ADMIN", "NET_BIND_SERVICE", "SYS_NICE"),
-            notes="Extra caps SYS_ADMIN, NET_BIND_SERVICE, SYS_NICE "
-                  "on top of the base NET_ADMIN + NET_RAW. Zebra will "
-                  "not come up otherwise.",
+            # Default PID 1 in this image is `watchfrr $(daemon_list)`
+            # — a single-process container the way Docker likes them,
+            # but it means `frrinit.sh restart` inside the container
+            # stops PID 1 and the container dies. The assistant hit
+            # this trying to enable `pimd` in /etc/frr/daemons.
+            #
+            # Two ways to reload daemons without dying:
+            #   1. Non-destructive: edit /etc/frr/daemons, then
+            #      `pkill -HUP watchfrr` — watchfrr re-reads the
+            #      daemon list and starts/stops accordingly, without
+            #      restarting itself. Fastest, no traffic drop.
+            #   2. Destructive: `frrinit.sh restart` — stops watchfrr
+            #      then starts it. Fine if a bash-supervised PID 1
+            #      outlives the stop.
+            #
+            # We take (2)'s safety net so both patterns work: run frr
+            # via frrinit.sh, then hand PID 1 to bash blocked on
+            # `tail -f /dev/null` (the docker-compose idiom for
+            # "sidecar processes only, keep the container alive").
+            # The daemon reload guidance stays in `notes` for the
+            # assistant to prefer (1) when possible.
+            cmd=[
+                "/bin/bash", "-c",
+                "/usr/lib/frr/frrinit.sh start && exec tail -f /dev/null",
+            ],
+            notes="Extra caps SYS_ADMIN, NET_BIND_SERVICE, SYS_NICE on "
+                  "top of the base NET_ADMIN + NET_RAW — Zebra will "
+                  "not come up otherwise. To reload daemons after an "
+                  "/etc/frr/daemons edit prefer `pkill -HUP watchfrr` "
+                  "(no traffic drop, no PID 1 churn); `frrinit.sh "
+                  "restart` also works because PID 1 is a bash "
+                  "supervisor, but drops the routing plane briefly.",
         ),
         ContainerImage(id="haproxy", label="HAProxy", image="haproxy:alpine"),
         ContainerImage(
