@@ -18,6 +18,13 @@ RestartSec=2
 # purpose — bouncing the API must not reboot everyone's labs. The API
 # reconciles what it finds when it comes back up.
 KillMode=process
+# Uvicorn's own shutdown waits for asyncio background tasks; we cancel the
+# long-lived ones in lifespan so a clean stop is fast. This cap is the
+# backstop: if something ever leaks a task in the future, an operator's
+# `systemctl restart` returns in 15s (with an ugly SIGKILL in the log)
+# instead of the default 90s during which nginx returns 502 to every
+# request because the API isn't accept()ing.
+TimeoutStopSec=15s
 
 [Install]
 WantedBy=multi-user.target

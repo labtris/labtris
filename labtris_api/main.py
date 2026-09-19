@@ -68,6 +68,53 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     await ws.stop_all()
 
+    # Cancel every long-lived background task we spawned via
+    # asyncio.create_task from a request handler. Uvicorn's shutdown
+    # hangs on any survivor until systemd's TimeoutStopSec (90s default)
+    # fires and SIGKILLs the process — during which nginx returns 502 to
+    # every new request because uvicorn stopped accept()ing. Naming the
+    # tasks explicitly here keeps shutdown in seconds, not minutes.
+    import asyncio
+    import contextlib
+
+    from labtris_api.routers.images import _pulls
+    from labtris_api.runtime.bootstrap import _running as _bs_running
+    from labtris_api.runtime.qemu import (
+        _qmp_conns,
+        _sessions as _serial_sessions,
+    )
+
+    for name, tasks in (
+        ("image-pull", list(_pulls.values())),
+        ("bootstrap", list(_bs_running.values())),
+    ):
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Serial-console pumps run one asyncio task per running VM and hold
+    # a unix socket open. Cancel them so uvicorn's shutdown doesn't wait
+    # for read() to return.
+    for sess in list(_serial_sessions.values()):
+        with contextlib.suppress(Exception):
+            await sess.close()
+
+    # QMP connection cache — just close the sockets; no task to await.
+    for _, writer, _ in list(_qmp_conns.values()):
+        with contextlib.suppress(Exception):
+            writer.close()
+    _qmp_conns.clear()
+
+    # RFB framebuffer cache — same treatment. drop_cached_client cancels
+    # the read loop and closes the socket for each entry.
+    from labtris_api.runtime.vnc_cache import _clients as _rfb_clients, drop_cached_client
+
+    for vm_dir in list(_rfb_clients.keys()):
+        with contextlib.suppress(Exception):
+            await drop_cached_client(vm_dir)
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="labtris", version=__version__, lifespan=lifespan)
