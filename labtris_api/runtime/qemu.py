@@ -1223,18 +1223,39 @@ async def screendump_png(
     """
     if not vm_dir.exists() or _read_pid(vm_dir) is None:
         raise runtime_error("VM is not running")
-    dest = vm_dir / f".shot-{os.urandom(4).hex()}.png"
-    try:
-        # 200ms is empirically fine for a 1280x800 dump — measured ~50ms
-        # on the reference host. The old 1s was defensive against long-
-        # loading BIOS displays, but every screenshot paid the penalty.
-        await _hmp(vm_dir, f"screendump {dest} -f png", wait=0.2)
-        if not dest.exists() or dest.stat().st_size == 0:
-            raise runtime_error("screendump produced no file — is the display attached?")
-        raw = dest.read_bytes()
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            dest.unlink()
+
+    # RFB cache path. A persistent VNC client per VM keeps the current
+    # framebuffer in memory and hands out screenshots in ~1 ms. First
+    # call for a VM opens the connection and waits for the initial
+    # frame; subsequent calls are memcache-fast. Any failure — protocol
+    # error, port not yet listening, cache eviction — falls back to the
+    # HMP screendump path below, which always works.
+    raw: bytes | None = None
+    port = _configured_vnc_port(vm_dir)
+    if port is not None:
+        try:
+            from labtris_api.runtime.vnc_cache import get_cached_client
+
+            client = await get_cached_client(vm_dir, port, node_id=vm_dir.name)
+            raw = await client.screenshot_png()
+        except Exception as exc:  # noqa: BLE001 — any cache issue falls through
+            logger.debug("vnc cache miss, falling back to screendump", exc_info=exc)
+            raw = None
+
+    if raw is None:
+        dest = vm_dir / f".shot-{os.urandom(4).hex()}.png"
+        try:
+            # 200ms is empirically fine for a 1280x800 dump — measured
+            # ~50ms on the reference host. The old 1s was defensive
+            # against long-loading BIOS displays, but every screenshot
+            # paid the penalty.
+            await _hmp(vm_dir, f"screendump {dest} -f png", wait=0.2)
+            if not dest.exists() or dest.stat().st_size == 0:
+                raise runtime_error("screendump produced no file — is the display attached?")
+            raw = dest.read_bytes()
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                dest.unlink()
 
     if region is None and not grid and abs(scale - 1.0) < 0.01:
         return raw
@@ -2085,6 +2106,13 @@ class QemuRuntime:
         if session is not None:
             await session.close()
         _procs.pop(h.node_id, None)
+        # Tear down the RFB framebuffer cache — its socket is dead the
+        # moment QEMU exits, and a stale entry would return an error on
+        # the next screenshot instead of transparently reconnecting.
+        _qmp_conns.pop(vm_dir, None)
+        from labtris_api.runtime.vnc_cache import drop_cached_client
+
+        await drop_cached_client(vm_dir)
 
     async def destroy(self, h: RuntimeHandle) -> None:
         await self.stop(h, StopMode.FORCE)
