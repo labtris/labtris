@@ -241,6 +241,72 @@ async def wipe_node(
     return await get_node(session, node.id)
 
 
+@router.get("/nodes/{node_id}/bootstrap")
+async def get_bootstrap_state(
+    node_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Where this node is in its first-boot config sequence.
+
+    Phase is one of `idle` (never ran / no template bootstrap), `running`,
+    `done`, `failed`. On `failed`, `error` names the step that timed out
+    or the pattern that never matched."""
+    from labtris_api.runtime import bootstrap as bs
+
+    node = await get_node(session, node_id)
+    if not node.runtime_ref:
+        return {"phase": "idle"}
+    return bs.read_state(Path(node.runtime_ref))
+
+
+@router.post("/nodes/{node_id}/bootstrap/retry")
+async def retry_bootstrap(
+    node_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Wipe the bootstrap markers and re-run against the current console.
+
+    Useful when the first attempt failed (a wrong prompt regex, a step
+    that ran too fast) — the fix is a template edit + a retry. The node
+    stays running throughout. Errors if no template bootstrap exists
+    for this image, or if the node isn't running (nothing to drive)."""
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu" or not node.runtime_ref:
+        raise unprocessable("bootstrap only applies to QEMU nodes")
+    from labtris_api.lifecycle import _template_bootstrap
+    from labtris_api.runtime import bootstrap as bs
+    from labtris_api.runtime.qemu import _sessions as qemu_sessions
+
+    spec = await _template_bootstrap(session, node.image)
+    if not spec:
+        raise unprocessable(
+            f"template for {node.image!r} has no `bootstrap` block — "
+            "add one and try again"
+        )
+    sess = qemu_sessions.get(node.id)
+    if sess is None:
+        raise unprocessable("serial console is not attached — restart the node")
+    bs.cancel(node.id)
+    vm_dir = Path(node.runtime_ref)
+    bs.reset(vm_dir)
+    runner = bs.BootstrapRunner(
+        node_id=node.id,
+        vm_dir=vm_dir,
+        spec=spec,
+        session=sess,
+        ctx={"name": node.name, "node_id": node.id},
+    )
+    import asyncio as _asyncio
+
+    task = _asyncio.create_task(runner.run(), name=f"bootstrap-{node.id}")
+    bs.register(node.id, task)
+    return {"phase": "running", "step": 0, "total": len(spec.get("steps") or [])}
+
+
 @router.post("/nodes/{node_id}/start", response_model=NodeOut)
 async def do_start(
     node_id: str,

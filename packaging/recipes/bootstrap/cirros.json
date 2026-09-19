@@ -1,0 +1,10 @@
+{
+  "step_timeout_s": 60,
+  "steps": [
+    { "wait_for": "cirros login:", "type": "cirros\n" },
+    { "wait_for": "Password:",      "type": "gocubsgo\n" },
+    { "wait_for": "\\$ ",            "type": "sudo hostname {name}\n" },
+    { "wait_for": "\\$ ",            "type": "echo LABTRIS_BOOTSTRAPPED\n" },
+    { "wait_for": "LABTRIS_BOOTSTRAPPED", "type": "" }
+  ]
+}

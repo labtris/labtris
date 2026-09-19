@@ -1,0 +1,31 @@
+{
+  "step_timeout_s": 180,
+  "steps": [
+    { "wait_for": "SETUP: --- (?:Initial|Basic) System Configuration Dialog ---",
+      "type": "no\r\n" },
+    { "wait_for": "(?:Username:|login:)",
+      "type": "admin\r\n" },
+    { "wait_for": "Password:",
+      "type": "admin\r\n" },
+    { "wait_for": "(?:>|#|\\$) *$",
+      "type": "enable\r\n" },
+    { "wait_for": "Password:",
+      "type": "admin\r\n" },
+    { "wait_for": "# *$",
+      "type": "configure terminal\r\n" },
+    { "wait_for": "\\(config\\)# *$",
+      "type": "hostname {name}\r\n" },
+    { "wait_for": "\\(config\\)# *$",
+      "type": "line vty 0 4\r\ntransport input ssh\r\nlogin local\r\nexit\r\n" },
+    { "wait_for": "\\(config\\)# *$",
+      "type": "username admin privilege 15 secret admin\r\n" },
+    { "wait_for": "\\(config\\)# *$",
+      "type": "interface Management0\r\nno shutdown\r\nip address dhcp\r\nexit\r\n" },
+    { "wait_for": "\\(config\\)# *$",
+      "type": "end\r\n" },
+    { "wait_for": "# *$",
+      "type": "write memory\r\n" },
+    { "wait_for": "\\[OK\\]",
+      "type": "" }
+  ]
+}

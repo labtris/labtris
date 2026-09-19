@@ -525,6 +525,33 @@ def _vnc_read(api: Api, a: dict[str, Any]) -> Any:
     return api.post(f"/api/v1/nodes/{a['node_id']}/vnc/read", body)
 
 
+@tool(
+    "node_bootstrap_status",
+    "Where a QEMU node is in its first-boot config sequence. Phase is one of "
+    "`idle` (never ran / template has no bootstrap block), `running` (typing "
+    "into the serial console right now), `done`, `failed`. On `failed`, the "
+    "response includes the step and the error. Poll after start_node if you "
+    "want to wait for a vendor image to become SSH-ready.",
+    {"node_id": STR},
+    ["node_id"],
+)
+def _node_bootstrap_status(api: Api, a: dict[str, Any]) -> Any:
+    return api.get(f"/api/v1/nodes/{a['node_id']}/bootstrap")
+
+
+@tool(
+    "node_bootstrap_retry",
+    "Wipe the bootstrap markers and re-run against the current console state. "
+    "Use after editing the template's bootstrap steps to fix a wrong regex or "
+    "a race. The node stays running throughout. Fails if there is no "
+    "`bootstrap` block on the template or if the node is not running.",
+    {"node_id": STR},
+    ["node_id"],
+)
+def _node_bootstrap_retry(api: Api, a: dict[str, Any]) -> Any:
+    return api.post(f"/api/v1/nodes/{a['node_id']}/bootstrap/retry")
+
+
 @tool("list_hosts", "Hosts in the multi-host control plane, and whether each is reachable.", {})
 def _hosts(api: Api, _: dict[str, Any]) -> Any:
     return api.get("/api/v1/hosts")

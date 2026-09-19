@@ -643,6 +643,38 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
         node.state = "running"
         await session.commit()
         await announce(node, "running")
+
+        # If the template carries a `bootstrap` block (list of
+        # {wait_for, type} steps) and this node hasn't been through it
+        # yet, kick it off as a background task. The node is `running`
+        # regardless; state on the bootstrap sits in the VM dir and is
+        # exposed at GET /nodes/{id}/bootstrap. QEMU only — containers
+        # already have a real shell.
+        if node.runtime == "qemu" and node.runtime_ref:
+            bootstrap_spec = await _template_bootstrap(session, node.image)
+            if bootstrap_spec:
+                from pathlib import Path
+
+                from labtris_api.runtime import bootstrap as bs
+                from labtris_api.runtime.qemu import _sessions as qemu_sessions
+
+                vm_dir = Path(node.runtime_ref)
+                sess = qemu_sessions.get(node.id)
+                if sess is not None and not bs.has_completed(vm_dir):
+                    runner = bs.BootstrapRunner(
+                        node_id=node.id,
+                        vm_dir=vm_dir,
+                        spec=bootstrap_spec,
+                        session=sess,
+                        ctx={"name": node.name, "node_id": node.id},
+                    )
+                    import asyncio as _asyncio
+
+                    task = _asyncio.create_task(
+                        runner.run(), name=f"bootstrap-{node.id}",
+                    )
+                    bs.register(node.id, task)
+
         return await get_node(session, node.id)
     except Exception as exc:
         node.state = "failed"
@@ -662,6 +694,11 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
 
 
 async def stop_node(session: AsyncSession, node: Node, mode: StopMode) -> Node:
+    # Cancel any in-flight bootstrap so it doesn't outlive the serial
+    # session it's driving. The `.bootstrap-done` marker survives so a
+    # restart doesn't re-run it unless the caller resets explicitly.
+    from labtris_api.runtime import bootstrap as _bs
+    _bs.cancel(node.id)
     runtime = get_runtime(node.runtime)
     if node.runtime_ref:
         handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
@@ -904,3 +941,31 @@ async def delete_lab(session: AsyncSession, lab: Lab) -> None:
         await session.delete(geom)
     await session.execute(sql_delete(Lab).where(Lab.id == lab.id))
     await session.commit()
+
+
+async def _template_bootstrap(session: AsyncSession, image: str) -> dict[str, Any] | None:
+    """Return the template's bootstrap spec for this image, or None.
+
+    Bootstrap only applies to custom (saved-image) templates because the
+    built-in catalog entries carry no user-editable fields. A missing
+    template row, a missing `bootstrap` key, or an empty steps list all
+    read as "no bootstrap" — the caller uses `None` to skip the runner
+    entirely.
+    """
+    from labtris_api.models import Template
+    from labtris_api.runtime.qemu import CUSTOM_PREFIX
+
+    if not image.startswith(CUSTOM_PREFIX):
+        return None
+    row = (
+        await session.execute(
+            select(Template).where(Template.image == image)
+        )
+    ).scalars().first()
+    if row is None:
+        return None
+    spec = row.spec or {}
+    bs = spec.get("bootstrap")
+    if not isinstance(bs, dict) or not bs.get("steps"):
+        return None
+    return bs
