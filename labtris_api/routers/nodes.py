@@ -370,14 +370,13 @@ async def console_exec(
         raise not_found("node has no runtime handle")
 
     if node.runtime == "docker":
+        from labtris_api.errors import ApiError
         from labtris_api.runtime.docker import docker_runtime
 
+        handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
         try:
             rc, out = await asyncio.wait_for(
-                docker_runtime.exec_shell(
-                    RuntimeHandle(node_id=node.id, ref=node.runtime_ref),
-                    body.command,
-                ),
+                docker_runtime.exec_shell(handle, body.command),
                 timeout=body.timeout_s,
             )
         except asyncio.TimeoutError:
@@ -388,6 +387,22 @@ async def console_exec(
                 runtime="docker",
                 warnings=[f"exec did not finish within {body.timeout_s}s"],
             )
+        except ApiError as exc:
+            # exec_shell already translated 404/409 into readable
+            # messages. If the container is really gone we can fix
+            # the DB drift here so the next call reports "stopped"
+            # cleanly instead of tripping the same error again.
+            msg = getattr(exc, "message", "") or ""
+            if "not running" in msg or "no longer exists" in msg:
+                try:
+                    observed = await docker_runtime.observe(handle)
+                    if not observed.running and node.state == "running":
+                        node.state = "stopped" if observed.exists else "defined"
+                        node.last_error = msg
+                        await session.commit()
+                except Exception:  # noqa: BLE001 — best-effort sync
+                    pass
+            raise
         # exec_shell merges stdout and stderr in the aiodocker demux. That
         # is what the underlying `stream.read_out()` produces without a
         # separator — we surface the joined bytes as stdout for now.

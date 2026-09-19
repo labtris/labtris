@@ -210,6 +210,21 @@ class DockerRuntime:
             out = b"".join(chunks).decode("utf-8", errors="replace")
             return rc, out
         except DockerError as exc:
+            # 409 = container is not in a state the exec API can act on
+            # (usually stopped/exited/dead). The DB thinking it's
+            # "running" is the state drift we cover in the router;
+            # here we just surface a message the model can act on
+            # rather than the raw aiodocker repr.
+            if exc.status == 409:
+                raise runtime_error(
+                    "container is not running — its state has drifted "
+                    "from Labtris. Start the node again."
+                ) from exc
+            if exc.status == 404:
+                raise runtime_error(
+                    "container no longer exists — it was removed outside "
+                    "Labtris. Recreate the node."
+                ) from exc
             raise runtime_error(f"docker exec failed: {exc}") from exc
         finally:
             await docker.close()
