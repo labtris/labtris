@@ -38,25 +38,66 @@ export function forgetKey() {
 }
 
 async function chat(cfg, messages, tools, signal) {
-  const res = await fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "content-type": "application/json",
-      ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      tools,
-      tool_choice: "auto",
-    }),
-  });
+  const doPost = (msgs) =>
+    fetch(cfg.baseUrl.replace(/\/+$/, "") + "/chat/completions", {
+      method: "POST",
+      signal,
+      headers: {
+        "content-type": "application/json",
+        ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages: msgs,
+        tools,
+        tool_choice: "auto",
+      }),
+    });
+
+  let res = await doPost(messages);
+  //: One class of provider 400 is worth retrying inline: the model produced
+  //: a tool-call payload with malformed JSON (unclosed quotes in `command`,
+  //: unescaped newlines in a config blob, ...). The gateway rejects the
+  //: whole response so we cannot even feed it back as a tool_result the
+  //: model could self-correct from. One retry with a nudge appended to the
+  //: user turn usually gets clean JSON second time; if not, the error we
+  //: throw below at least names what went wrong.
+  if (!res.ok && res.status === 400) {
+    const body = await res.clone().text().catch(() => "");
+    if (/Failed to parse tool call arguments|Unexpected token|JSONDecodeError|malformed/i.test(body)) {
+      const nudged = [
+        ...messages,
+        {
+          role: "user",
+          content:
+            "(Your previous tool call could not be parsed. Reissue it with " +
+            "valid JSON — escape newlines as \\n, quote strings with double " +
+            "quotes, and keep the payload compact.)",
+        },
+      ];
+      res = await doPost(nudged);
+    }
+  }
+
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     //: The provider's own words. "401" alone sends people to check Labtris,
-    //: which is the one place the problem cannot be.
-    throw new Error(`${cfg.baseUrl} returned ${res.status}: ${detail.slice(0, 300)}`);
+    //: which is the one place the problem cannot be. On 400 with a
+    //: tool-call parse error we add one line naming the actual cause,
+    //: because litellm's error envelope buries it three levels deep.
+    let hint = "";
+    if (
+      res.status === 400 &&
+      /Failed to parse tool call arguments|Expecting.*delimiter/i.test(detail)
+    ) {
+      hint =
+        "\n\nThe model produced malformed JSON in a tool call and the retry " +
+        "did not clean it up. Rephrase your request or try again — the " +
+        "provider drops the whole turn when this happens, so nothing was " +
+        "executed. Common cause: a very long `command` payload with " +
+        "special characters.";
+    }
+    throw new Error(`${cfg.baseUrl} returned ${res.status}: ${detail.slice(0, 300)}${hint}`);
   }
   return res.json();
 }
