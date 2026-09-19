@@ -50,6 +50,10 @@ from labtris_api.schemas import (
     StopBody,
     TemplateIn,
     TemplateOut,
+    VncMouseIn,
+    VncMouseOut,
+    VncTypeIn,
+    VncTypeOut,
 )
 
 router = APIRouter(tags=["nodes"])
@@ -373,6 +377,165 @@ async def console_exec(
         )
 
     raise unprocessable(f"console_exec not supported for runtime {node.runtime!r}")
+
+
+@router.post("/nodes/{node_id}/vnc/screenshot")
+async def vnc_screenshot(
+    node_id: str,
+    region: str | None = None,
+    grid: int = 0,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> Response:
+    """Grab a PNG of the QEMU display right now.
+
+    Only QEMU nodes have a display; the endpoint refuses container nodes
+    with 422. The response body is `image/png`, one to a few tens of KB
+    for a typical 1024×768 framebuffer.
+
+    - `region=x,y,w,h` (query string) crops after capture. Useful when
+      the model wants to inspect one dialog on a 1080p display without
+      spending tokens on the whole frame.
+    - `grid=N` (query string, integer pixel pitch, 0 = off) overlays a
+      light grid with axis labels so coordinate-picking is easy. 100 is
+      a good default for a 1024x768 display; 50 for a smaller one.
+    """
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu":
+        raise unprocessable(f"vnc screenshot not supported for runtime {node.runtime!r}")
+    if not node.runtime_ref:
+        raise not_found("node has no runtime handle")
+    from labtris_api.runtime.qemu import screendump_png
+
+    region_tuple: tuple[int, int, int, int] | None = None
+    if region:
+        try:
+            parts = [int(p) for p in region.split(",")]
+        except ValueError as exc:
+            raise unprocessable("region must be four comma-separated integers x,y,w,h") from exc
+        if len(parts) != 4 or any(p < 0 for p in parts) or parts[2] <= 0 or parts[3] <= 0:
+            raise unprocessable("region must be x,y,w,h with w>0 and h>0")
+        region_tuple = (parts[0], parts[1], parts[2], parts[3])
+    png = await screendump_png(Path(node.runtime_ref), region=region_tuple, grid=grid or False)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/nodes/{node_id}/vnc/type", response_model=VncTypeOut)
+async def vnc_type(
+    node_id: str,
+    body: VncTypeIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> VncTypeOut:
+    """Type text or send raw key combos into a QEMU node's display.
+
+    Two shapes, one endpoint:
+    - `text: "root\\nubuntu\\n"` — types each character; use for
+      passwords, hostnames, short answers at prompts.
+    - `keys: ["ctrl-alt-f2"]` — sends one raw HMP `sendkey` combo per
+      list element; use for function keys, ctrl/alt sequences, tty
+      switches, GRUB commands.
+
+    QEMU has no idea whether the guest was listening — you'll usually
+    want a screenshot before and after to confirm. This is the pair
+    with `vnc_screenshot` for driving a graphical console."""
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu":
+        raise unprocessable(f"vnc type not supported for runtime {node.runtime!r}")
+    if not node.runtime_ref:
+        raise not_found("node has no runtime handle")
+    import asyncio
+    import base64 as b64
+
+    from labtris_api.runtime.qemu import screendump_png, vnc_send_keys, vnc_send_text
+
+    vm_dir = Path(node.runtime_ref)
+    if body.text is not None:
+        sent = await vnc_send_text(vm_dir, body.text, hold_ms=body.hold_ms)
+    else:
+        assert body.keys is not None  # enforced by VncTypeIn.model_post_init
+        sent = await vnc_send_keys(vm_dir, body.keys, hold_ms=body.hold_ms)
+    # Optional after-shot. `settle_ms` covers the frame or two the guest
+    # takes to redraw after a menu selection or a click.
+    shot_b64: str | None = None
+    if body.screenshot:
+        if body.settle_ms:
+            await asyncio.sleep(body.settle_ms / 1000)
+        png = await screendump_png(vm_dir)
+        shot_b64 = b64.b64encode(png).decode()
+    return VncTypeOut(
+        keys_sent=sent,
+        screenshot=shot_b64,
+        mime_type="image/png" if shot_b64 else None,
+    )
+
+
+@router.post("/nodes/{node_id}/vnc/mouse", response_model=VncMouseOut)
+async def vnc_mouse(
+    node_id: str,
+    body: VncMouseIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> VncMouseOut:
+    """Move the pointer, or move-and-click, on a QEMU node's display.
+
+    Coordinates are framebuffer pixels (0..fb_width-1, 0..fb_height-1)
+    — the dimensions are returned in the response and in every
+    screenshot's IHDR. Uses QEMU's QMP `input-send-event` under the
+    hood so absolute coordinates land pixel-accurately, unlike HMP's
+    relative `mouse_move`. Requires a QMP socket on the VM (nodes
+    started before mouse support landed will need to be stopped and
+    started to gain one)."""
+    import asyncio
+    import base64 as b64
+
+    node = await get_node(session, node_id)
+    if node.state != "running":
+        raise unprocessable(f"node {node.name!r} is {node.state!r} — start it first")
+    if node.runtime != "qemu":
+        raise unprocessable(f"vnc mouse not supported for runtime {node.runtime!r}")
+    if not node.runtime_ref:
+        raise not_found("node has no runtime handle")
+    from labtris_api.runtime.qemu import (
+        fb_dims,
+        screendump_png,
+        vnc_mouse_click,
+        vnc_mouse_move,
+    )
+
+    vm_dir = Path(node.runtime_ref)
+    fb_w, fb_h = await fb_dims(vm_dir)
+    if body.x >= fb_w or body.y >= fb_h:
+        raise unprocessable(
+            f"({body.x}, {body.y}) is outside the {fb_w}x{fb_h} framebuffer"
+        )
+    if body.action == "move":
+        await vnc_mouse_move(vm_dir, body.x, body.y, fb_w, fb_h)
+    else:
+        await vnc_mouse_click(
+            vm_dir, body.x, body.y, fb_w, fb_h,
+            button=body.button, double=body.action == "double_click",
+        )
+    shot_b64: str | None = None
+    if body.screenshot:
+        if body.settle_ms:
+            await asyncio.sleep(body.settle_ms / 1000)
+        png = await screendump_png(vm_dir)
+        shot_b64 = b64.b64encode(png).decode()
+    return VncMouseOut(
+        fb_width=fb_w,
+        fb_height=fb_h,
+        screenshot=shot_b64,
+        mime_type="image/png" if shot_b64 else None,
+    )
 
 
 @router.post("/nodes/{node_id}/interfaces", response_model=InterfaceOut, status_code=201)

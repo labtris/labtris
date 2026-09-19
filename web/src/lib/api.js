@@ -94,6 +94,13 @@ export const api = {
   addUser: (body) => req("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   deleteUser: (id) => req(`/api/v1/users/${id}`, { method: "DELETE" }),
   catalog: () => req("/api/v1/catalog"),
+  imagePull: (image) =>
+    req("/api/v1/images/pull", {
+      method: "POST",
+      body: JSON.stringify({ image }),
+    }),
+  imageStatus: (image) =>
+    req(`/api/v1/images/status?image=${encodeURIComponent(image)}`),
   labs: () => req("/api/v1/labs"),
   labAddresses: (id) => req(`/api/v1/labs/${id}/addresses`),
   patchNetwork: (id, body) =>

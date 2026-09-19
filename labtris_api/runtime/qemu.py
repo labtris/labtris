@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -955,6 +956,301 @@ async def _hmp(vm_dir: Path, command: str, wait: float = 0.4) -> str:
         writer.close()
 
 
+# --------------------------------------------------------------- QMP
+#
+# QMP is JSON-RPC over a Unix socket. Used for the commands HMP doesn't
+# expose cleanly — currently just `input-send-event` for absolute mouse
+# coordinates. On startup, QMP sends a `QMP` greeting; we must reply
+# with `qmp_capabilities` before any other command is accepted.
+
+
+async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = None) -> Any:
+    """Send one QMP command and return the `return` payload (or raise on error).
+
+    Opens a fresh connection per call. The handshake (greeting +
+    qmp_capabilities) is not amortized because commands are rare — a
+    mouse click every couple of seconds is the peak — and per-call
+    connections cost <1ms.
+    """
+    sock = vm_dir / "qmp.sock"
+    if not sock.exists():
+        # Older VMs started before the -qmp arg landed. They still have
+        # HMP, but the mouse tools can't work on them without a restart.
+        raise runtime_error(
+            "qemu QMP socket not found — this VM was started before mouse "
+            "support landed; stop and start it to gain the socket."
+        )
+    reader, writer = await asyncio.open_unix_connection(str(sock))
+    try:
+        # Greeting.
+        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        if not line:
+            raise runtime_error("QMP closed the connection before greeting")
+        # Handshake — no capabilities negotiated.
+        writer.write(b'{"execute":"qmp_capabilities"}\n')
+        await writer.drain()
+        _ = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        # The command itself.
+        payload = {"execute": command}
+        if arguments:
+            payload["arguments"] = arguments
+        writer.write((json.dumps(payload) + "\n").encode())
+        await writer.drain()
+        # Skip event lines until we see a result (QMP interleaves events
+        # like SHUTDOWN/DEVICE_DELETED/JOB_STATUS_CHANGE with command
+        # replies; the reply is the first line carrying `return` or
+        # `error`).
+        while True:
+            raw = await asyncio.wait_for(reader.readline(), timeout=3.0)
+            if not raw:
+                raise runtime_error("QMP closed the connection before replying")
+            msg = json.loads(raw)
+            if "return" in msg:
+                return msg["return"]
+            if "error" in msg:
+                err = msg["error"]
+                raise runtime_error(f"QMP {command}: {err.get('desc', err)}")
+            # Otherwise it's an event; keep reading.
+    finally:
+        writer.close()
+
+
+# QMP's tablet axis range is fixed at 0..32767 regardless of framebuffer
+# size — the display maps it to pixels internally. Caller supplies
+# framebuffer-space coordinates plus the framebuffer dimensions; we
+# scale.
+_QMP_ABS_MAX = 32767
+
+
+def _png_dims(data: bytes) -> tuple[int, int]:
+    """Read (width, height) from a PNG's IHDR chunk. Bytes 16-24."""
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise runtime_error("screendump did not return a PNG")
+    w = int.from_bytes(data[16:20], "big")
+    h = int.from_bytes(data[20:24], "big")
+    return w, h
+
+
+async def fb_dims(vm_dir: Path) -> tuple[int, int]:
+    """Query the current framebuffer size via a throwaway screenshot.
+
+    QMP has no cheap way to ask; `query-display-options` and
+    `query-vnc-servers` return everything except dimensions. Taking a
+    screenshot and reading the PNG header is ~5 KB + 50 ms and always
+    works.
+    """
+    return _png_dims(await screendump_png(vm_dir))
+
+
+async def vnc_mouse_move(vm_dir: Path, x: int, y: int, fb_w: int, fb_h: int) -> None:
+    """Move the pointer to (x, y) in framebuffer pixels."""
+    ax = round(x * _QMP_ABS_MAX / max(1, fb_w - 1))
+    ay = round(y * _QMP_ABS_MAX / max(1, fb_h - 1))
+    ax = max(0, min(_QMP_ABS_MAX, ax))
+    ay = max(0, min(_QMP_ABS_MAX, ay))
+    await _qmp(
+        vm_dir,
+        "input-send-event",
+        {
+            "events": [
+                {"type": "abs", "data": {"axis": "x", "value": ax}},
+                {"type": "abs", "data": {"axis": "y", "value": ay}},
+            ]
+        },
+    )
+
+
+async def vnc_mouse_click(
+    vm_dir: Path,
+    x: int,
+    y: int,
+    fb_w: int,
+    fb_h: int,
+    button: str = "left",
+    double: bool = False,
+) -> None:
+    """Move to (x, y) and click.  button ∈ {left, right, middle}."""
+    if button not in ("left", "right", "middle"):
+        raise unprocessable(f"unknown mouse button {button!r}")
+    await vnc_mouse_move(vm_dir, x, y, fb_w, fb_h)
+    for _ in range(2 if double else 1):
+        await _qmp(
+            vm_dir,
+            "input-send-event",
+            {"events": [{"type": "btn", "data": {"button": button, "down": True}}]},
+        )
+        await _qmp(
+            vm_dir,
+            "input-send-event",
+            {"events": [{"type": "btn", "data": {"button": button, "down": False}}]},
+        )
+
+
+# --------------------------------------------------------------- VNC helpers
+#
+# QEMU exposes two HMP commands that together let us drive a graphical
+# console: `screendump filename -f png` captures the current framebuffer,
+# `sendkey <combo>` types one key at a time. Both are older than time,
+# universally present, and cost us zero new dependencies. The alternative
+# — talking RFB from a Python client — would need a library we do not
+# ship and would compete with Guacamole for the same port.
+
+
+async def screendump_png(
+    vm_dir: Path,
+    *,
+    region: tuple[int, int, int, int] | None = None,
+    grid: int | bool = False,
+) -> bytes:
+    """Grab the QEMU display as PNG bytes.
+
+    `screendump <path> -f png` in a temp file next to the VM's own state
+    directory (labtris owns it; /tmp under systemd hardening might not
+    work), then read + delete. QEMU writes synchronously inside the
+    command dispatch, so the file is complete by the time HMP returns
+    the prompt.
+
+    `region=(x, y, w, h)` crops after capture — useful when the model
+    wants to look at one dialog on a 1080p display without spending
+    tokens on the whole frame.
+
+    `grid=True` overlays a 100-pixel grid with axis labels so the model
+    can name coordinates. Pass an int for a custom pitch (`grid=50`).
+    Both require Pillow.
+    """
+    if not vm_dir.exists() or _read_pid(vm_dir) is None:
+        raise runtime_error("VM is not running")
+    dest = vm_dir / f".shot-{os.urandom(4).hex()}.png"
+    try:
+        await _hmp(vm_dir, f"screendump {dest} -f png", wait=1.0)
+        if not dest.exists() or dest.stat().st_size == 0:
+            raise runtime_error("screendump produced no file — is the display attached?")
+        raw = dest.read_bytes()
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            dest.unlink()
+
+    if region is None and not grid:
+        return raw
+
+    # Only import Pillow when the caller asks for a transformation —
+    # the common "raw framebuffer" path stays dep-free at call time.
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    img = Image.open(BytesIO(raw))
+    if region is not None:
+        x, y, w, h = region
+        img = img.crop((x, y, x + w, y + h))
+    if grid:
+        pitch = 100 if grid is True else int(grid)
+        overlay = img.convert("RGB").copy()
+        d = ImageDraw.Draw(overlay)
+        gw, gh = overlay.size
+        # Semi-transparent black lines are the least distracting — draw
+        # with a mid-grey stroke that reads on both dark and light
+        # backgrounds without dominating the image.
+        for gx in range(0, gw, pitch):
+            d.line([(gx, 0), (gx, gh)], fill=(160, 160, 160), width=1)
+            d.text((gx + 2, 2), str(gx), fill=(160, 160, 160))
+        for gy in range(0, gh, pitch):
+            d.line([(0, gy), (gw, gy)], fill=(160, 160, 160), width=1)
+            d.text((2, gy + 2), str(gy), fill=(160, 160, 160))
+        img = overlay
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+#: Map printable ASCII → QEMU HMP key name. Missing entries either need
+#: shift (upper-case letters, most punctuation) or are just the character
+#: itself lower-cased.
+_ASCII_TO_HMP: dict[str, str] = {
+    " ": "spc",
+    "\n": "ret",
+    "\r": "ret",
+    "\t": "tab",
+    "-": "minus",
+    "=": "equal",
+    "[": "bracket_left",
+    "]": "bracket_right",
+    ";": "semicolon",
+    "'": "apostrophe",
+    ",": "comma",
+    ".": "dot",
+    "/": "slash",
+    "\\": "backslash",
+    "`": "grave_accent",
+}
+#: The shifted layer — what a US-ASCII keyboard produces with shift held.
+_SHIFTED: dict[str, str] = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
+    "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+    "_": "minus", "+": "equal",
+    "{": "bracket_left", "}": "bracket_right",
+    ":": "semicolon", '"': "apostrophe",
+    "<": "comma", ">": "dot", "?": "slash",
+    "|": "backslash", "~": "grave_accent",
+}
+
+
+def _text_to_sendkeys(text: str) -> list[str]:
+    """Break a string into a list of HMP `sendkey` combos.
+
+    Each element is one command payload — `a`, `shift-a`, `spc`, `ret`,
+    `ctrl-c`. Callers that want raw HMP combos (`ctrl-alt-f2`, `esc`)
+    should build the list themselves; this only handles the "type this
+    string as if a human were typing" case.
+    """
+    keys: list[str] = []
+    for ch in text:
+        if "a" <= ch <= "z" or "0" <= ch <= "9":
+            keys.append(ch)
+        elif "A" <= ch <= "Z":
+            keys.append(f"shift-{ch.lower()}")
+        elif ch in _ASCII_TO_HMP:
+            keys.append(_ASCII_TO_HMP[ch])
+        elif ch in _SHIFTED:
+            keys.append(f"shift-{_SHIFTED[ch]}")
+        else:
+            # Unrepresentable in the sendkey vocabulary (non-ASCII,
+            # control chars). Skip rather than fail — a hex dump in
+            # the reply for one weird byte is worse than typing what
+            # we can.
+            continue
+    return keys
+
+
+async def vnc_send_text(vm_dir: Path, text: str, hold_ms: int = 40) -> int:
+    """Type `text` into the guest via HMP `sendkey`. Returns keys sent.
+
+    ASCII only; non-ASCII characters are skipped. This is intended for
+    passwords, hostnames, and short interactive answers — not for
+    pasting a config file. Every keystroke round-trips through HMP,
+    which is roughly 20ms; a 100-character password is ~2s of typing.
+    """
+    if not vm_dir.exists() or _read_pid(vm_dir) is None:
+        raise runtime_error("VM is not running")
+    keys = _text_to_sendkeys(text)
+    for k in keys:
+        await _hmp(vm_dir, f"sendkey {k} {hold_ms}", wait=0.05)
+    return len(keys)
+
+
+async def vnc_send_keys(vm_dir: Path, keys: list[str], hold_ms: int = 40) -> int:
+    """Send raw HMP `sendkey` combos: `ctrl-alt-f2`, `esc`, `f1`, `ret`.
+
+    Trusts the caller — a bad combo is refused by HMP and the exception
+    surfaces. Returns keys sent.
+    """
+    if not vm_dir.exists() or _read_pid(vm_dir) is None:
+        raise runtime_error("VM is not running")
+    for k in keys:
+        await _hmp(vm_dir, f"sendkey {k} {hold_ms}", wait=0.05)
+    return len(keys)
+
+
 def _config_path(vm_dir: Path) -> Path:
     return vm_dir / "config.json"
 
@@ -1421,7 +1717,14 @@ class QemuRuntime:
             _config_path(vm_dir).write_text(json.dumps(cfg))
         serial_sock = vm_dir / "serial.sock"
         mon_sock = vm_dir / "mon.sock"
-        for sock in (serial_sock, mon_sock):
+        # QMP is opened as a *second* monitor alongside HMP. HMP is our
+        # working shell (screendump, sendkey, set_link, info vnc — none
+        # of which have a comparable QMP path). QMP is JSON-only and
+        # exposes commands HMP doesn't (input-send-event with absolute
+        # tablet coordinates for mouse events). Two sockets, one QEMU
+        # process, no cost.
+        qmp_sock = vm_dir / "qmp.sock"
+        for sock in (serial_sock, mon_sock, qmp_sock):
             sock.unlink(missing_ok=True)
         opts = resolved_options(cfg.get("opts"))
         data_volume = (
@@ -1452,17 +1755,35 @@ class QemuRuntime:
                 "-drive", f"id=disk0,if=none,file={disk_path},format=qcow2,{common_disk_flags}",
                 "-device", "ide-hd,bus=ahci0.0,drive=disk0,bootindex=1",
             ]
-        else:
-            # bus=0,unit=0 pins the primary disk to the first slot on the
-            # first controller — SeaBIOS's default boot pick and, more
-            # importantly, what appliances that probe hardware topology
-            # (PAN-OS's dhpm among them) look for to decide "this is a
-            # normal virtual machine." bootindex=1 has the same "boot me
-            # first" effect for the drive form; safe on guests that
-            # don't care.
+        elif disk_bus in ("virtio", "ide"):
+            # Split form: -drive if=none + -device carries the disk.
+            # `bootindex` is a device-level option and QEMU 8.2+ refuses
+            # it on the shortcut `-drive if=<bus>` form ("Block format
+            # 'qcow2' does not support the option 'bootindex'"). It has
+            # to sit on -device instead, so we build the device pair
+            # here regardless of whether a companion CD-ROM is present.
+            # For virtio the device is `virtio-blk-pci`; for ide,
+            # `ide-hd` on the default IDE bus. PAN-OS's dhpm still sees
+            # a `pci.0` slot-0 topology from virtio-blk-pci, so the
+            # "this is a normal VM" heuristic that bus=0,unit=0 used to
+            # serve is still met.
+            device = "virtio-blk-pci" if disk_bus == "virtio" else "ide-hd"
             drive_and_ctrl = [
                 "-drive",
-                f"file={disk_path},if={disk_bus},bus=0,unit=0,{common_disk_flags},format=qcow2,bootindex=1",
+                f"id=disk0,if=none,file={disk_path},format=qcow2,{common_disk_flags}",
+                "-device",
+                f"{device},drive=disk0,bootindex=1",
+            ]
+        else:
+            # Buses we don't emit a matching -device for (scsi, sd) — keep
+            # the shortcut form and skip bootindex. Without a competing
+            # CD-ROM the guest still boots the disk via -boot c; a
+            # scsi/sd node that also carries a companion CD-ROM would
+            # need a full HBA + scsi-hd wiring pass, which is a bigger
+            # change than what this file has ever needed.
+            drive_and_ctrl = [
+                "-drive",
+                f"file={disk_path},if={disk_bus},bus=0,unit=0,{common_disk_flags},format=qcow2",
             ]
         # Companion BIOS. Only added when the template points at one,
         # and only if the path is inside our companion cache (a template
@@ -1536,6 +1857,8 @@ class QemuRuntime:
             f"unix:{serial_sock},server=on,wait=on",
             "-monitor",
             f"unix:{mon_sock},server=on,wait=off",
+            "-qmp",
+            f"unix:{qmp_sock},server=on,wait=off",
             "-vnc",
             # share=force-shared lets a new client take over the display
             # even when the previous one hasn't fully closed. QEMU's

@@ -558,8 +558,11 @@ class ConsoleExecIn(BaseModel):
     timeout_s: int = 10
 
     def model_post_init(self, _ctx: object) -> None:
-        if not self.command or not self.command.strip():
-            raise ValueError("command must not be empty")
+        # An empty / whitespace-only command is legitimate on a QEMU
+        # serial: `send("\n")` wakes a getty stuck at `login:`. Docker
+        # gets `sh -c ""`, which is a fast no-op the model can retry
+        # from. Refusing here used to block Ubuntu console logins for
+        # the assistant.
         if self.timeout_s < 1:
             self.timeout_s = 1
         elif self.timeout_s > 30:
@@ -572,6 +575,125 @@ class ConsoleExecOut(BaseModel):
     exit_code: int | None = None
     runtime: str
     warnings: list[str] = Field(default_factory=list)
+
+
+class VncTypeIn(BaseModel):
+    """Type text or send raw HMP `sendkey` combos into a QEMU node's display.
+
+    Exactly one of `text` or `keys` is required. `text` treats input as
+    ASCII characters and translates to per-key HMP sendkey combos.
+    `keys` is a list of raw combos passed verbatim (`ctrl-alt-f2`,
+    `esc`, `f1`, `ret`). Non-ASCII characters in `text` are silently
+    skipped — the sendkey vocabulary is US-ASCII only."""
+
+    text: str | None = None
+    keys: list[str] | None = None
+    #: 40 ms matches HMP's default hold. Bumped up if a guest misses
+    #: keystrokes; the practical range is [10, 200].
+    hold_ms: int = 40
+    #: Grab a screenshot after the keystrokes land and return it in the
+    #: response. On by default — the whole point of driving VNC is to
+    #: watch what happened. Skip only when chaining a burst of keys where
+    #: only the final frame matters.
+    screenshot: bool = True
+    #: Wait this many ms between the last keystroke and the screenshot.
+    #: A typed password lands instantly; a menu selection may take a
+    #: frame or two to redraw. Clamped [0, 5000].
+    settle_ms: int = 250
+
+    def model_post_init(self, _ctx: object) -> None:
+        if (self.text is None) == (self.keys is None):
+            raise ValueError("exactly one of `text` or `keys` must be set")
+        if self.hold_ms < 10:
+            self.hold_ms = 10
+        elif self.hold_ms > 500:
+            self.hold_ms = 500
+        if self.settle_ms < 0:
+            self.settle_ms = 0
+        elif self.settle_ms > 5000:
+            self.settle_ms = 5000
+
+
+class VncTypeOut(BaseModel):
+    #: Number of keystrokes / combos QEMU accepted. For `text` this may
+    #: be less than `len(text)` if characters were skipped.
+    keys_sent: int
+    #: Base64-encoded PNG of the display after the keystrokes landed and
+    #: `settle_ms` elapsed. `null` when the caller asked for
+    #: `screenshot=false` (chained-key bursts).
+    screenshot: str | None = None
+    mime_type: str | None = None
+
+
+class VncMouseIn(BaseModel):
+    """Move the pointer, or move and click, on a QEMU node's display.
+
+    Coordinates are in framebuffer pixels — 0 <= x < fb_width,
+    0 <= y < fb_height. The dimensions are returned by the previous
+    screenshot; a `vnc_mouse` call without an anchoring screenshot is
+    guessing. `button` is `left` / `right` / `middle`. `action` is
+    `move` (no click), `click`, or `double_click`."""
+
+    x: int
+    y: int
+    action: str = "click"
+    button: str = "left"
+    #: Same shape as VncTypeIn — return a screenshot after so the caller
+    #: can see what the click produced.
+    screenshot: bool = True
+    settle_ms: int = 400
+
+    def model_post_init(self, _ctx: object) -> None:
+        if self.action not in ("move", "click", "double_click"):
+            raise ValueError("action must be 'move', 'click', or 'double_click'")
+        if self.button not in ("left", "right", "middle"):
+            raise ValueError("button must be 'left', 'right', or 'middle'")
+        if self.x < 0 or self.y < 0:
+            raise ValueError("coordinates must be non-negative")
+        if self.settle_ms < 0:
+            self.settle_ms = 0
+        elif self.settle_ms > 5000:
+            self.settle_ms = 5000
+
+
+class VncMouseOut(BaseModel):
+    fb_width: int
+    fb_height: int
+    screenshot: str | None = None
+    mime_type: str | None = None
+
+
+class ImagePullIn(BaseModel):
+    """Kick off a QEMU catalog image download.
+
+    `image` is a catalog id (`ubuntu-24.04`), an https URL, or a
+    `custom-<sha>` saved-image reference. The pull runs in the
+    background; the response returns immediately with a status
+    snapshot. Poll `/images/status` for progress."""
+
+    image: str
+
+
+class ImageStatusOut(BaseModel):
+    """Snapshot of an image's download / prep state.
+
+    `cached` is the only field that is always present — it says whether
+    the qcow2 is on disk right now. The rest are populated while the
+    download is running:
+
+    - `phase`: "downloading" | "extracting" | "converting" | absent
+      when idle
+    - `done`: bytes downloaded so far
+    - `total`: total bytes expected (0 when the server didn't return a
+      Content-Length; extracting/converting stages have no total)
+    - `percent`: 0..100 for downloading; null for other phases."""
+
+    image: str
+    cached: bool
+    phase: str | None = None
+    done: int | None = None
+    total: int | None = None
+    percent: int | None = None
 
 
 class ManagementNetworkIn(BaseModel):

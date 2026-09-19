@@ -27,14 +27,17 @@ from labtris_api.errors import bad_request, conflict, runtime_error
 from labtris_api.lifecycle import new_id
 from labtris_api.models import Template
 from labtris_api.runtime.qemu import (
+    QEMU_CATALOG,
     _bios_dir,
     _cache_dir,
     _cdrom_dir,
     _ensure_qcow2,
     _install_custom,
+    _resolve_base_image,
     _sha256,
+    image_status,
 )
-from labtris_api.schemas import TemplateOut
+from labtris_api.schemas import ImagePullIn, ImageStatusOut, TemplateOut
 
 router = APIRouter(tags=["images"])
 
@@ -199,3 +202,86 @@ async def upload_companion(
         "sha256": digest,
         "size": size,
     }
+
+
+# ------------------------------------------------------------------ pull
+#
+# Same download machinery `_resolve_base_image` uses when a node starts,
+# exposed as an explicit "prefetch this image" call so operators can seed
+# the cache before a class or a scripted lab run instead of watching the
+# first node's start hang for eight minutes on the download.
+#
+# One in-flight pull per image is enough — `_resolve_base_image` locks on
+# the URL's digest internally, so two concurrent pulls of the same image
+# collapse to one. Callers poll GET /images/status?image=... for
+# progress.
+
+
+import asyncio
+
+# One background task per image, kept until it finishes. Nothing here
+# needs to survive a restart — a re-request after restart will happily
+# start a fresh pull, and _resolve_base_image will find the partial
+# `.part` file and resume from where curl left off.
+_pulls: dict[str, asyncio.Task[Any]] = {}
+
+
+async def _do_pull(image: str) -> None:
+    try:
+        await _resolve_base_image(image)
+    finally:
+        _pulls.pop(image, None)
+
+
+@router.post("/images/pull", response_model=ImageStatusOut, status_code=202)
+async def pull_image(
+    body: ImagePullIn,
+    _user: User = Depends(require_admin),
+) -> Any:
+    """Fetch a QEMU catalog image now, without waiting for a node start.
+
+    Accepts a catalog id (`ubuntu-24.04`, `cirros-0.6.2`, …), an https
+    URL, or a `custom-…` reference. Returns immediately with a 202 and
+    the current status — poll `GET /images/status?image=<same>` (or a
+    node's console log) to see the download progress.
+
+    The pull runs as a background asyncio task so the response is not
+    tied to the transfer. Multiple concurrent pulls of the same image
+    collapse to one; a fresh pull of an image that finished sees
+    `cached: true` and returns without work."""
+    image = body.image.strip()
+    if not image:
+        raise bad_request("image is required")
+    # Best-effort validation: a plain string that isn't a catalog id,
+    # not a URL, and not a saved-image ref is probably a typo.
+    if (
+        image not in QEMU_CATALOG
+        and not image.startswith(("http://", "https://", "custom-"))
+        and "/" not in image
+    ):
+        raise bad_request(
+            f"unknown image {image!r}: expected a catalog id, an https URL, "
+            "a custom-<sha> reference, or a local path"
+        )
+    status = image_status(image)
+    if status.get("cached"):
+        # Already on disk; nothing to do. Return the status snapshot
+        # rather than pretending we started work.
+        return {"image": image, **status}
+    if image not in _pulls:
+        _pulls[image] = asyncio.create_task(_do_pull(image))
+    return {"image": image, **image_status(image)}
+
+
+@router.get("/images/status", response_model=ImageStatusOut)
+async def image_status_get(
+    image: str,
+) -> Any:
+    """Snapshot: whether this image is on disk, being fetched, or
+    somewhere in between. Cheap — no I/O, just reads in-memory state
+    plus one stat() on the cache file. Poll every 1–5 seconds during
+    a pull; the phase moves through downloading → extracting →
+    converting → gone (with `cached: true`)."""
+    if not image:
+        raise bad_request("image is required (query param)")
+    return {"image": image, **image_status(image)}

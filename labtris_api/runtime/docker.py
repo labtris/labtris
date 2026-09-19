@@ -233,16 +233,43 @@ class DockerRuntime:
         docker = _docker()
         container = docker.containers.container(h.ref)
         # sh is the only shell guaranteed to exist; bash is nicer where present,
-        # and a container without either is one where no shell was ever going to
-        # work. The fallback happens inside the container, not here, so it costs
-        # no extra round trip.
+        # and a container without either is one where no shell was ever going
+        # to work. `-i` is what makes the shell interactive so it draws a prompt
+        # — without it the terminal opens blank and the user cannot tell "am I
+        # connected" from "is this thing broken".
+        #
+        # The fallback picks the shell inside the container so a busybox image
+        # gets `sh -i` instead of a bash-not-found error. `command -v bash`
+        # short-circuits the check without spawning bash if it's missing, and
+        # `exec` replaces the sh process so the interactive shell owns the tty
+        # cleanly.
+        #
+        # A previous version had `exec /bin/bash -i 2>/dev/null || exec /bin/sh
+        # -i` and produced a permanently blank terminal for every user. The
+        # reason took a debug session to find: bash's readline writes the
+        # prompt to *stderr*, and the `2>/dev/null` was swallowing it. Every
+        # keystroke worked; the guest just had no visible prompt. Do not
+        # reintroduce the stderr redirect.
         proc = await container.exec(
-            ["/bin/sh", "-c", "exec /bin/bash 2>/dev/null || exec /bin/sh"],
+            [
+                "/bin/sh",
+                "-c",
+                "if command -v bash >/dev/null 2>&1; then exec bash -i; "
+                "else exec /bin/sh -i; fi",
+            ],
             stdin=True,
             stdout=True,
             stderr=True,
             tty=True,
-            environment=["TERM=xterm-256color", f"COLUMNS={cols}", f"LINES={rows}"],
+            environment=[
+                "TERM=xterm-256color",
+                f"COLUMNS={cols}",
+                f"LINES={rows}",
+                # Busybox-sh fallback: it does not set a prompt in interactive
+                # mode unless one is in the env. Bash ignores this and uses
+                # its own default.
+                "PS1=\\u@\\h:\\w\\$ ",
+            ],
         )
         stream = proc.start(detach=False)
         return stream, proc, docker

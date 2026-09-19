@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from typing import Any
 
@@ -33,6 +34,7 @@ def tool(
 STR = {"type": "string"}
 INT = {"type": "integer"}
 NUM = {"type": "number"}
+ARR_STR = {"type": "array", "items": {"type": "string"}}
 
 
 @tool(
@@ -44,6 +46,37 @@ NUM = {"type": "number"}
 )
 def _catalog(api: Api, _: dict[str, Any]) -> Any:
     return api.get("/api/v1/catalog")
+
+
+@tool(
+    "image_pull",
+    "Prefetch a QEMU catalog image now, without spawning a node first. Kicks off the "
+    "download+extract+convert pipeline in the background and returns immediately with a "
+    "status snapshot; poll `image_status` for progress. Accepts a catalog id "
+    "(`ubuntu-24.04`, `cirros-0.6.2`), an https URL, or a `custom-<sha>` reference. "
+    "Idempotent — a call for an already-cached image reports `cached: true` and does "
+    "no work. Use this before starting a class or scripted lab so the first node's "
+    "start doesn't stall for eight minutes on the download.",
+    {"image": STR},
+    ["image"],
+)
+def _image_pull(api: Api, a: dict[str, Any]) -> Any:
+    return api.post("/api/v1/images/pull", {"image": a["image"]})
+
+
+@tool(
+    "image_status",
+    "Snapshot of a QEMU image's download / prep state. Returns `cached: true|false` "
+    "always, plus `phase` (downloading|extracting|converting), `done`/`total` bytes, "
+    "and `percent` (0-100) while a pull is in flight. Poll every 2-5 seconds after "
+    "`image_pull`; the phase moves through downloading → extracting → converting → "
+    "gone (with cached: true). Cheap — one stat call, safe to poll aggressively.",
+    {"image": STR},
+    ["image"],
+)
+def _image_status(api: Api, a: dict[str, Any]) -> Any:
+    from urllib.parse import quote
+    return api.get(f"/api/v1/images/status?image={quote(a['image'])}")
 
 
 @tool("list_labs", "Every lab on this instance.", {})
@@ -298,12 +331,16 @@ def _resources(api: Api, a: dict[str, Any]) -> Any:
 
 @tool(
     "console_exec",
-    "Run one shell command inside a running node and return its output. Docker nodes get "
-    "real stdout/stderr/exit_code via `docker exec sh -c`. QEMU nodes get whatever the serial "
-    "console produced within the timeout — no shell-prompt detection, output may be partial "
-    "or include unrelated console text (the response's `warnings` will say so). Use this for "
-    "questions like \"what address did DHCP give this VM?\" — cheaper and more direct than "
-    "running a capture on the veth.",
+    "Run one shell command inside a running node and return its output. Works on Docker "
+    "(real stdout/stderr/exit_code via `docker exec sh -c`) and on QEMU nodes that have a "
+    "serial getty (kernel/prompt speaks on ttyS0). "
+    "IMPORTANT: on QEMU, if this returns an empty `stdout` for a command that should "
+    "produce output, the guest almost certainly has no serial getty — switch to "
+    "`vnc_screenshot` + `vnc_type` / `vnc_mouse` for that node. Vendor appliances "
+    "(PAN-OS, NX-OS wizard, VMware installers, PC BIOS/GRUB), Ubuntu Desktop, and any "
+    "OS booted graphically without `systemctl enable serial-getty@ttyS0` all fall into "
+    "the VNC-only camp. Use this tool freely for containers and known-serial VMs; "
+    "avoid retrying it on the same node after one silent QEMU result.",
     {"node_id": STR, "command": STR, "timeout_s": INT},
     ["node_id", "command"],
 )
@@ -312,6 +349,119 @@ def _console_exec(api: Api, a: dict[str, Any]) -> Any:
     if a.get("timeout_s") is not None:
         body["timeout_s"] = int(a["timeout_s"])
     return api.post(f"/api/v1/nodes/{a['node_id']}/console/exec", body)
+
+
+@tool(
+    "vnc_screenshot",
+    "Capture the current framebuffer of a QEMU node's display and return it as a PNG. "
+    "Use on nodes with no serial console — vendor appliances, graphical installers, "
+    "Ubuntu VMs where `serial-getty` was never enabled. Pair with `vnc_type` and "
+    "`vnc_mouse` to drive the guest. QEMU only; containers have no framebuffer.\n\n"
+    "Optional: `region=\"x,y,w,h\"` crops to a rectangle (framebuffer pixels) — save "
+    "tokens by grabbing just the dialog you care about. `grid=100` overlays a 100-pixel "
+    "grid with axis labels so you can name coordinates for a follow-up `vnc_mouse` "
+    "click without guessing.",
+    {"node_id": STR, "region": STR, "grid": INT},
+    ["node_id"],
+)
+def _vnc_screenshot(api: Api, a: dict[str, Any]) -> Any:
+    path = f"/api/v1/nodes/{a['node_id']}/vnc/screenshot"
+    q: list[str] = []
+    if a.get("region"):
+        q.append(f"region={a['region']}")
+    if a.get("grid"):
+        q.append(f"grid={int(a['grid'])}")
+    if q:
+        path += "?" + "&".join(q)
+    png, ctype = api.post_bytes(path)
+    return {
+        "content": [
+            {
+                "type": "image",
+                "data": base64.b64encode(png).decode(),
+                "mimeType": ctype or "image/png",
+            }
+        ]
+    }
+
+
+@tool(
+    "vnc_type",
+    "Type text or send raw key combos into a QEMU node's display, as if a human were "
+    "at the keyboard, and return the resulting screenshot so you can verify. Two shapes: "
+    "`text=\"root\\nubuntu\\n\"` types each character (ASCII only, non-ASCII skipped); "
+    "`keys=[\"ctrl-alt-f2\"]` sends one raw HMP sendkey combo per element (function keys, "
+    "tty switches, ctrl/alt sequences). The response includes a PNG of the display after "
+    "the keystrokes land — you do not need to call vnc_screenshot separately. Set "
+    "`screenshot=false` only when firing a burst of typing where only the final frame "
+    "matters. QEMU only.",
+    {"node_id": STR, "text": STR, "keys": ARR_STR, "hold_ms": INT,
+     "screenshot": {"type": "boolean"}, "settle_ms": INT},
+    ["node_id"],
+)
+def _vnc_type(api: Api, a: dict[str, Any]) -> Any:
+    body: dict[str, Any] = {}
+    if a.get("text") is not None:
+        body["text"] = a["text"]
+    if a.get("keys") is not None:
+        body["keys"] = a["keys"]
+    if a.get("hold_ms") is not None:
+        body["hold_ms"] = int(a["hold_ms"])
+    if a.get("screenshot") is not None:
+        body["screenshot"] = bool(a["screenshot"])
+    if a.get("settle_ms") is not None:
+        body["settle_ms"] = int(a["settle_ms"])
+    out = api.post(f"/api/v1/nodes/{a['node_id']}/vnc/type", body)
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": f"keys_sent: {out.get('keys_sent')}"}
+    ]
+    if out.get("screenshot"):
+        content.append(
+            {
+                "type": "image",
+                "data": out["screenshot"],
+                "mimeType": out.get("mime_type") or "image/png",
+            }
+        )
+    return {"content": content}
+
+
+@tool(
+    "vnc_mouse",
+    "Move or click on a QEMU node's display at pixel coordinates (x, y). `action` is "
+    "'move' (no click), 'click' (default), or 'double_click'. `button` is 'left' "
+    "(default), 'right', or 'middle'. Response includes the framebuffer size and a "
+    "screenshot after the action so you can verify. Coordinates are the same pixel "
+    "space as vnc_screenshot's PNG — take a screenshot first, decide where to click, "
+    "then call this. Uses QMP absolute coordinates under the hood, so clicks land "
+    "where you asked pixel-accurately.",
+    {"node_id": STR, "x": INT, "y": INT, "action": STR, "button": STR,
+     "screenshot": {"type": "boolean"}, "settle_ms": INT},
+    ["node_id", "x", "y"],
+)
+def _vnc_mouse(api: Api, a: dict[str, Any]) -> Any:
+    body: dict[str, Any] = {"x": int(a["x"]), "y": int(a["y"])}
+    for k in ("action", "button", "settle_ms"):
+        if a.get(k) is not None:
+            body[k] = a[k] if k != "settle_ms" else int(a[k])
+    if a.get("screenshot") is not None:
+        body["screenshot"] = bool(a["screenshot"])
+    out = api.post(f"/api/v1/nodes/{a['node_id']}/vnc/mouse", body)
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": f"fb: {out.get('fb_width')}x{out.get('fb_height')}",
+        }
+    ]
+    if out.get("screenshot"):
+        content.append(
+            {
+                "type": "image",
+                "data": out["screenshot"],
+                "mimeType": out.get("mime_type") or "image/png",
+            }
+        )
+    return {"content": content}
 
 
 @tool("list_hosts", "Hosts in the multi-host control plane, and whether each is reachable.", {})

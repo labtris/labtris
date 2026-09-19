@@ -28,6 +28,9 @@ dependencies = [
   # cannot find it and neither could the tests, which ran where it happened to
   # be installed. It surfaced only on a clean machine, as a 502.
   "python-multipart==0.0.20",
+  # For screenshot grid overlays and region crops on VNC screenshots.
+  # ~3 MB wheel, universally available. Only the API imports it.
+  "Pillow==11.1.0",
 ]
 
 [project.optional-dependencies]

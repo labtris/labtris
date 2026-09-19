@@ -90,7 +90,9 @@ ships as a disk. Same canvas, same wiring, same consoles. QEMU nodes get real
 `savevm`/`loadvm` snapshots and suspend/resume.
 
 **Consoles.** The guest's real serial port relayed from QEMU — kernel messages
-and all — plus VNC and RDP through Guacamole. Passwords stay hidden because the
+and all — plus a real PTY inside every container (`docker exec -it` with
+`cd` that persists, Ctrl-C that interrupts, `top` that redraws), plus VNC and
+RDP through Guacamole for graphical guests. Passwords stay hidden because the
 guest decides what is echoed, not the page.
 
 **Networking.**
@@ -125,9 +127,6 @@ Being straight about this saves you an afternoon.
   addresses or bring up OSPF and BGP for you. Guests come up unaddressed.
 - **A vendor node catalogue.** Docker and QEMU run whatever you bring, but there
   is no curated list of vendor images yet.
-- **A real PTY for container consoles.** Each line is its own `docker exec`, so
-  `cd` does not persist and Ctrl-C has nothing to interrupt. QEMU consoles are
-  real serial streams and do not have this problem.
 - **Classroom features.** Shared labs, cohorts, per-user quotas and lab
   instructions are designed but unbuilt.
 - **The assistant.** The API and MCP surface exist and the browser-side loop is

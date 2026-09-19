@@ -21,6 +21,17 @@ def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _text(payload: Any, is_error: bool = False) -> dict[str, Any]:
+    # A tool may return content blocks directly (image, mixed) — pass those
+    # through instead of json-dumping the dict. Detected by a `content` key
+    # that is a list of blocks; anything else is treated as data to render.
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("content"), list)
+        and payload["content"]
+        and isinstance(payload["content"][0], dict)
+        and "type" in payload["content"][0]
+    ):
+        return {"content": payload["content"], "isError": is_error}
     body = payload if isinstance(payload, str) else json.dumps(payload, indent=2, default=str)
     return {"content": [{"type": "text", "text": body}], "isError": is_error}
 

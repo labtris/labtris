@@ -80,3 +80,30 @@ class Api:
 
     def delete(self, path: str) -> Any:
         return self.call("DELETE", path)
+
+    def post_bytes(self, path: str, body: Any = None) -> tuple[bytes, str]:
+        """POST and return the raw response body + Content-Type.
+
+        Used for endpoints that return binary data (vnc/screenshot returns
+        PNG bytes). Sidesteps `call()`'s json-decode step, which would
+        crash on non-JSON responses."""
+        url = f"{self.base}{path}"
+        data = json.dumps(body if body is not None else {}).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        elif self.auth:
+            req.add_header("Authorization", f"Basic {self.auth}")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return resp.read(), resp.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode(errors="replace")
+            try:
+                message = json.loads(raw)["error"]["message"]
+            except Exception:  # noqa: BLE001
+                message = raw[:400] or exc.reason
+            raise ApiError(exc.code, message) from None
+        except urllib.error.URLError as exc:
+            raise ApiError(0, f"cannot reach {self.base}: {exc.reason}") from None

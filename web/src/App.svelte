@@ -2563,6 +2563,29 @@
     }, 3000);
   }
 
+  //: One-shot POST /images/pull from the palette. Marks the image row as
+  //: `phase: "starting"` locally so `trackImageDownloads()` kicks its poll
+  //: loop off immediately; the next poll will overwrite with real
+  //: {phase, done, total, percent} from the server. Errors bubble to the
+  //: toast; the row stays in "starting" briefly before the poll clears it.
+  async function pullImage(id) {
+    const i = qemuImages.findIndex((q) => q.id === id);
+    if (i < 0) return;
+    // Optimistic local flip so the progress bar shows up in the same tick.
+    qemuImages = qemuImages.map((q, k) =>
+      k === i ? { ...q, phase: "starting", percent: 0 } : q,
+    );
+    trackImageDownloads();
+    try {
+      await api.imagePull(id);
+    } catch (e) {
+      qemuImages = qemuImages.map((q, k) =>
+        k === i ? { ...q, phase: null, percent: null } : q,
+      );
+      note = `Could not start pull: ${e.message || e}`;
+    }
+  }
+
   function openUpload() {
     uploadForm = {
       file: null,
@@ -3653,7 +3676,11 @@
   //: the node first" — which is what Console used to do.
   function openActions(node) {
     const why = node.state === "running" ? "" : "start the node first";
-    const list = [{ label: node.runtime === "qemu" ? "Console" : "Shell", run: () => openConsole(node), why }];
+    // The two are equivalent in shape (a terminal in the dock), so call
+    // both "Console" — QEMU's is a serial stream, Docker's is a real PTY
+    // over `docker exec -it`. Two different labels made the container
+    // console feel like a different feature people had to hunt for.
+    const list = [{ label: "Console", run: () => openConsole(node), why }];
     if (node.runtime === "qemu" || node.console?.vnc?.hostname) {
       list.push({ label: "VNC display", run: openVnc, why });
     }
@@ -3965,7 +3992,21 @@
               {:else if q.cached}
                 <div class="mono tiny ready">✓ on disk — starts immediately</div>
               {:else}
-                <div class="mono tiny cold">not downloaded — first start fetches it</div>
+                <div class="mono tiny cold">
+                  not downloaded — first start fetches it
+                  <button
+                    type="button"
+                    class="pull mono tiny"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      pullImage(q.id);
+                    }}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    title="Download the image now so the first node start is instant"
+                  >
+                    Pull now
+                  </button>
+                </div>
               {/if}
               {#if q.credentials}
                 <div class="mono tiny">login {q.credentials}</div>
@@ -6262,6 +6303,16 @@
   .dl { color: var(--accent); }
   .ready { color: var(--accent); opacity: .8; }
   .cold { color: var(--muted); }
+  .cold .pull {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border: 1px solid var(--stroke);
+    border-radius: 3px;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .cold .pull:hover { background: var(--stroke); color: var(--fg); }
   .bar { height: 3px; border-radius: 2px; background: var(--stroke); margin-top: 4px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); transition: width .4s linear; }
   .bar.indet i { width: 40%; animation: slide 1.2s ease-in-out infinite; }

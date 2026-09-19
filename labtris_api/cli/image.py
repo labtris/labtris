@@ -36,10 +36,14 @@ from labtris_api.lifecycle import new_id
 from labtris_api.models import Template
 from labtris_api.runtime.qemu import (
     CUSTOM_PREFIX,
+    IMAGE_PROGRESS,
+    QEMU_CATALOG,
     _cache_dir,
     _custom_path,
     _ensure_qcow2,
     _install_custom,
+    _resolve_base_image,
+    image_status,
 )
 
 
@@ -145,6 +149,62 @@ async def _list(_args: argparse.Namespace) -> None:
         print(f"{t.name:<32} {t.runtime:<7} {origin:<9} {mib:>8}  {t.image}")
 
 
+async def _pull(args: argparse.Namespace) -> None:
+    """Download a catalog image now, print a progress bar, exit when cached."""
+    image: str = args.image
+    if image not in QEMU_CATALOG and not image.startswith(("http://", "https://", "custom-")):
+        # Not fatal — a bare path is legal for _resolve_base_image — but
+        # the common case is a typoed catalog id and it helps to say so.
+        print(
+            f"note: {image!r} is not a known catalog id; treating as a URL or path.",
+            file=sys.stderr,
+        )
+
+    status = image_status(image)
+    if status.get("cached"):
+        print(f"{image}: already cached — nothing to do.")
+        return
+
+    # Kick off the pull and a progress-print loop in parallel.
+    pull_task = asyncio.create_task(_resolve_base_image(image))
+    try:
+        last_line = ""
+        while not pull_task.done():
+            st = IMAGE_PROGRESS.get(image) or {}
+            phase = st.get("phase", "starting")
+            if phase == "downloading":
+                done = int(st.get("done") or 0)
+                total = int(st.get("total") or 0)
+                pct = int(st.get("percent") or 0)
+                if total:
+                    line = f"\rdownloading  {pct:3d}%  {done / (1 << 20):8.1f} / {total / (1 << 20):.1f} MB"
+                else:
+                    line = f"\rdownloading  {done / (1 << 20):8.1f} MB (size unknown)"
+            elif phase == "extracting":
+                line = "\rextracting…                                        "
+            elif phase == "converting":
+                line = "\rconverting to qcow2…                               "
+            else:
+                line = f"\r{phase}…                                          "
+            if line != last_line:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                last_line = line
+            await asyncio.sleep(0.5)
+        # Clear the last progress line and let the exception (if any)
+        # from the pull surface below.
+        sys.stdout.write("\r" + " " * len(last_line) + "\r")
+        sys.stdout.flush()
+        path = pull_task.result()
+        size = path.stat().st_size / (1 << 20)
+        print(f"{image}: cached ({size:.1f} MB at {path})")
+    except PermissionError:
+        _permissions_hint()
+    except KeyboardInterrupt:
+        pull_task.cancel()
+        _die("cancelled", code=130)
+
+
 async def _rm(args: argparse.Namespace) -> None:
     async with SessionLocal() as session:
         row = (
@@ -223,6 +283,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     lst = subs.add_parser("list", help="list templates")
     lst.set_defaults(func=_list)
+
+    pull = subs.add_parser(
+        "pull",
+        help="download a catalog image now with a progress bar (no clicking around)",
+    )
+    pull.add_argument(
+        "image",
+        help="catalog id (e.g. cirros-0.6.2, ubuntu-24.04), https URL, or local path",
+    )
+    pull.set_defaults(func=_pull)
 
     rm = subs.add_parser("rm", help="remove a template (and its disk if unreferenced)")
     rm.add_argument("name", help="template name to remove")
