@@ -27,6 +27,48 @@ def _docker() -> aiodocker.Docker:
     return aiodocker.Docker(url)
 
 
+def _per_node_dir(node_id: str, subdir: str) -> str:
+    """Where a node's per-instance bind-mount subdir lives on the host.
+
+    Layout: ~/.local/share/labtris/node-mounts/<node_id>/<subdir>/. Made on
+    demand so the P4-upload endpoint (or any future uploader that talks to
+    this path) does not have to know the container hasn't been created yet.
+    Returned as a string because Docker's HostConfig.Binds wants strings."""
+    import os
+    from pathlib import Path
+
+    root = Path(
+        os.environ.get("LABTRIS_NODE_MOUNTS_DIR")
+        or "~/.local/share/labtris/node-mounts"
+    ).expanduser()
+    p = root / node_id / subdir
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+
+def per_node_dir(node_id: str, subdir: str) -> str:
+    """Public re-export so the P4 uploader endpoint can land bytes here
+    without importing a leading-underscore name."""
+    return _per_node_dir(node_id, subdir)
+
+
+def _seed_p4_default(node_id: str) -> None:
+    """Copy `basic_switch.p4` into the node's /p4 mount if empty.
+
+    Called from `create()` for a bmv2 node so a fresh drag-drop lands a
+    working switch. If the file already exists (a re-create after a
+    wipe kept the host dir), leave it alone."""
+    import shutil
+    from pathlib import Path
+
+    dst = Path(_per_node_dir(node_id, "p4")) / "prog.p4"
+    if dst.exists():
+        return
+    src = Path(__file__).resolve().parents[2] / "packaging" / "p4-programs" / "basic_switch.p4"
+    if src.exists():
+        shutil.copyfile(src, dst)
+
+
 class DockerRuntime:
     kind = "docker"
     capabilities: frozenset[Capability] = frozenset(
@@ -52,6 +94,25 @@ class DockerRuntime:
                 host_config["NanoCpus"] = int(spec.cpu_limit * 1_000_000_000)
             if spec.ram_mb is not None:
                 host_config["Memory"] = int(spec.ram_mb) * 1024 * 1024
+            # Per-instance bind mounts declared by the profile (e.g. bmv2
+            # gets /p4 pointed at ~/.local/share/labtris/node-mounts/<id>/p4).
+            # Directories are created on demand — the loader / uploader
+            # writes into them and the container reads on start. No shared
+            # cache: each node has its own copy so editing one node's
+            # program never touches another's.
+            if profile is not None and profile.per_node_mounts:
+                binds: list[str] = []
+                for subdir, container_path in profile.per_node_mounts:
+                    host_dir = _per_node_dir(spec.node_id, subdir)
+                    binds.append(f"{host_dir}:{container_path}:rw")
+                host_config["Binds"] = binds
+                # Seed a bmv2 node's /p4 with basic_switch.p4 on first
+                # create, so a drag-and-drop from the palette produces
+                # a switch that actually boots rather than one whose
+                # compile step immediately fails. Users can swap the
+                # program later via PUT /nodes/{id}/p4 or upload.
+                if profile.id == "bmv2":
+                    _seed_p4_default(spec.node_id)
             config: dict[str, Any] = {
                 "Image": spec.image,
                 "Hostname": spec.name,

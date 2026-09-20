@@ -134,6 +134,14 @@ class Node(Base):
     qemu_opts: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    #: Runtime-agnostic per-node options bag. First use: P4 program
+    #: selection for a bmv2 switch (`{"p4_program": "ecmp"}`). Also the
+    #: right home for future per-node knobs that are not qemu-specific
+    #: (a container node's hugepage size, a RDMA-capable node's rxe
+    #: interface name, custom kernel modules to load at boot). Kept
+    #: nullable rather than defaulting to `{}` because a NULL means
+    #: "no per-node opts" and lets a code path skip the read entirely.
+    opts: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     startup_config: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

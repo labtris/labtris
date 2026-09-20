@@ -48,6 +48,15 @@ class ContainerImage:
     #: What this image calls its own ports. Containers get eth0 from the
     #: netns; a NOS names them its own way. See naming.IFACE_SCHEMES.
     iface_scheme: str = "eth"
+    #: Per-instance bind mounts, each `(subdir, container_path)`. The
+    #: runtime resolves `subdir` under
+    #: `~/.local/share/labtris/node-mounts/<node_id>/<subdir>/` (creating
+    #: it if absent) and mounts it at `container_path`. First user: the
+    #: bmv2 P4 switch mounts a per-node `/p4` dir carrying `prog.p4`.
+    #: Anything else with per-instance user files (a NOS with a startup-
+    #: config file baked in, a Wireshark node with dissectors) hangs off
+    #: this same mechanism.
+    per_node_mounts: tuple[tuple[str, str], ...] = ()
 
 
 CONTAINER_CATALOG: dict[str, ContainerImage] = {
@@ -131,6 +140,41 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         # net.ipv4.ip_local_port_range and fs.pipe-max-size during boot and
         # docker keeps /proc/sys read-only for every unprivileged container.
         # containerlab runs it privileged for the same reason.
+        ContainerImage(
+            id="bmv2",
+            label="P4 switch (bmv2)",
+            image="p4lang/behavioral-model:latest",
+            cap_add=("SYS_ADMIN", "NET_BIND_SERVICE"),
+            cmd=[
+                "/bin/bash",
+                "-c",
+                # Compile whichever prog.p4 the mount surfaced (curated
+                # built-in or user upload — same shape either way), then
+                # exec simple_switch with the interfaces the runtime will
+                # hot-plug in as s1, s2, … Naming is set by the "s"
+                # iface_scheme in naming.py so the CLI's --interface
+                # argument line matches the names on the canvas.
+                (
+                    "cd /p4 && p4c-bm2-ss -o prog.json prog.p4 && "
+                    "exec simple_switch --log-console --no-p4 prog.json || "
+                    "exec tail -f /dev/null"
+                ),
+            ],
+            source="Docker Hub (p4lang/behavioral-model)",
+            iface_scheme="s",
+            per_node_mounts=(("p4", "/p4"),),
+            notes=(
+                "P4 programmable data plane (bmv2 simple_switch). The "
+                "container mounts a per-node directory at /p4 that "
+                "carries prog.p4 — either one of the curated built-ins "
+                "(basic_switch, ecmp, ecn, trim) or a file uploaded via "
+                "POST /nodes/{id}/p4. p4c-bm2-ss compiles on start; a "
+                "compile failure leaves the container up but the "
+                "switch stopped, so the logs stay reachable via the "
+                "console."
+            ),
+            boot_seconds=5,
+        ),
         ContainerImage(
             id="srlinux",
             label="Nokia SR Linux",

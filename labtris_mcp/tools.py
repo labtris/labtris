@@ -669,3 +669,53 @@ def _pod_load(api: Api, a: dict[str, Any]) -> Any:
 )
 def _pod_delete(api: Api, a: dict[str, Any]) -> Any:
     return api.delete(f"/api/v1/pods/{a['pod_id']}")
+
+
+@tool(
+    "p4_builtins",
+    "The curated P4 programs that ship with Labtris for use on a bmv2 "
+    "switch node. Each row names the program, a one-line description, "
+    "and its byte size.",
+    {},
+)
+def _p4_builtins(api: Api, _a: dict[str, Any]) -> Any:
+    return api.get("/api/v1/p4/builtins")
+
+
+@tool(
+    "node_p4_show",
+    "Return the P4 program currently mounted on a bmv2 switch node — "
+    "source (builtin|uploaded|none), program name, on-disk path, and "
+    "the source text if small enough to include.",
+    {"node_id": STR},
+    ["node_id"],
+)
+def _node_p4_show(api: Api, a: dict[str, Any]) -> Any:
+    return api.get(f"/api/v1/nodes/{a['node_id']}/p4")
+
+
+@tool(
+    "node_p4_set_builtin",
+    "Point a bmv2 node at one of the curated built-in P4 programs "
+    "(basic_switch, ecmp, ecn, trim). Restart the node for the change "
+    "to take effect. Refused if the node is not a bmv2 P4 switch.",
+    {"node_id": STR, "builtin": STR},
+    ["node_id", "builtin"],
+)
+def _node_p4_set(api: Api, a: dict[str, Any]) -> Any:
+    return api.call(
+        "PUT",
+        f"/api/v1/nodes/{a['node_id']}/p4",
+        {"builtin": a["builtin"]},
+    )
+
+
+@tool(
+    "node_p4_clear",
+    "Drop the P4 program mounted on a bmv2 node. On next start, the "
+    "runtime seeds `basic_switch` as the default again.",
+    {"node_id": STR},
+    ["node_id"],
+)
+def _node_p4_clear(api: Api, a: dict[str, Any]) -> Any:
+    return api.delete(f"/api/v1/nodes/{a['node_id']}/p4")

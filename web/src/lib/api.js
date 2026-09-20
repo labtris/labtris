@@ -3,6 +3,21 @@ export const KIND = [
   { id: "nginx", label: "Nginx", image: "nginx:alpine", cmd: null, color: "#6ee7b7", glyph: "⬢" },
   { id: "redis", label: "Redis", image: "redis:alpine", cmd: null, color: "#f87171", glyph: "◆" },
   { id: "frr", label: "FRRouting", image: "frrouting/frr:v8.4.0", cmd: null, color: "#60a5fa", glyph: "⬡" },
+  // bmv2 — the P4 software switch. Ships with a `/p4` mount defaulted to
+  // basic_switch.p4; pick another built-in or upload a custom .p4 from
+  // the node inspector (or `labtris node p4 …`). Distinct glyph so a
+  // programmable-data-plane node is visually different from a plain
+  // container on the canvas at a glance.
+  {
+    id: "bmv2",
+    label: "P4 switch (bmv2)",
+    image: "p4lang/behavioral-model:latest",
+    cmd: null,
+    color: "#a78bfa",
+    glyph: "⌥",
+    boot: 5,
+    note: "Programmable data plane. Default program: basic_switch.p4 (L2 forwarding). Swap for ecmp / ecn / trim or upload a custom .p4.",
+  },
   { id: "haproxy", label: "HAProxy", image: "haproxy:alpine", cmd: null, color: "#fbbf24", glyph: "▣" },
   { id: "ubuntu", label: "Ubuntu", image: "ubuntu:24.04", cmd: ["sleep", "infinity"], color: "#fb923c", glyph: "●" },
   { id: "busybox", label: "BusyBox", image: "busybox:1.36", cmd: ["sleep", "3600"], color: "#a78bfa", glyph: "■" },
@@ -144,6 +159,34 @@ export const api = {
     req(`/api/v1/labs/${id}/hooks`, { method: "PUT", body: JSON.stringify({ source }) }),
   hooksRun: (id) => req(`/api/v1/labs/${id}/hooks/run`, { method: "POST" }),
   hooksClear: (id) => req(`/api/v1/labs/${id}/hooks`, { method: "DELETE" }),
+  // P4 (bmv2) programmable switch — per-node program shape (Phase E1).
+  // The /p4 endpoints only make sense against a bmv2 node; the server
+  // refuses if the node's image is something else.
+  p4Builtins: () => req(`/api/v1/p4/builtins`),
+  nodeP4Get: (id) => req(`/api/v1/nodes/${id}/p4`),
+  nodeP4SetBuiltin: (id, builtin) =>
+    req(`/api/v1/nodes/${id}/p4`, { method: "PUT", body: JSON.stringify({ builtin }) }),
+  //: Multipart because a .p4 program can be dozens of KB — small, but
+  //: worth streaming through the same shape uploadCompanion uses. req()
+  //: hard-codes Content-Type: application/json which would kill the
+  //: multipart parse, so fetch directly.
+  nodeP4Upload: async (id, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await fetch(`/api/v1/nodes/${id}/p4`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: fd,
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      let msg = text;
+      try { msg = JSON.parse(text).error?.message || text; } catch {}
+      throw new Error(msg || `HTTP ${r.status}`);
+    }
+    return text ? JSON.parse(text) : null;
+  },
+  nodeP4Clear: (id) => req(`/api/v1/nodes/${id}/p4`, { method: "DELETE" }),
   geometry: (id) => req(`/api/v1/labs/${id}/geometry`),
   saveGeometry: (id, data) =>
     req(`/api/v1/labs/${id}/geometry`, { method: "PUT", body: JSON.stringify({ data }) }),

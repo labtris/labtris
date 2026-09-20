@@ -317,6 +317,14 @@
   let taskProgress = $state(null);
   let snapshots = $state([]);
   let snapshotName = $state("checkpoint1");
+  // P4 (bmv2) program state for the node inspector's "P4 program" block.
+  // Loaded lazily whenever a bmv2 node becomes selected; the block is
+  // hidden otherwise so this stays empty for every non-P4 node.
+  let p4Builtins = $state([]);
+  let p4State = $state(null);
+  let p4Choice = $state("");
+  let p4Busy = $state(false);
+  let p4Err = $state("");
   let hosts = $state([]);
   let hostForm = $state({ name: "", endpoint: "", token: "", underlay_ip: "" });
   let vncStatus = $state("idle");
@@ -3330,6 +3338,65 @@
     }
   }
 
+  //: A bmv2 P4 switch is a docker node whose image matches the catalog
+  //: id "bmv2". Kept as a derived rather than a string compare on every
+  //: render because the P4 program section reads it three times.
+  const isBmv2Node = $derived(
+    selectedNode?.runtime === "docker" &&
+      selectedNode?.image === "p4lang/behavioral-model:latest",
+  );
+
+  //: When a bmv2 node becomes selected, pull the builtin list (once per
+  //: page load — the shipped set does not change while the tab is open)
+  //: and the node's current state. Both go quiet when the selection
+  //: moves elsewhere so we do not keep hammering the API.
+  $effect(() => {
+    if (!isBmv2Node || !selectedNode) {
+      p4State = null;
+      p4Err = "";
+      return;
+    }
+    (async () => {
+      try {
+        if (!p4Builtins.length) p4Builtins = (await api.p4Builtins()) || [];
+        p4State = await api.nodeP4Get(selectedNode.id);
+        p4Choice = p4State?.program || "";
+      } catch (e) {
+        p4Err = e?.message || String(e);
+      }
+    })();
+  });
+
+  async function applyP4Builtin(e) {
+    const name = e.currentTarget.value;
+    if (!name || !selectedNode) return;
+    p4Busy = true;
+    p4Err = "";
+    try {
+      p4State = await api.nodeP4SetBuiltin(selectedNode.id, name);
+    } catch (err) {
+      p4Err = err?.message || String(err);
+    } finally {
+      p4Busy = false;
+    }
+  }
+
+  async function uploadP4Custom(e) {
+    const file = e.currentTarget.files?.[0];
+    if (!file || !selectedNode) return;
+    p4Busy = true;
+    p4Err = "";
+    try {
+      p4State = await api.nodeP4Upload(selectedNode.id, file);
+      p4Choice = "";
+      e.currentTarget.value = "";
+    } catch (err) {
+      p4Err = err?.message || String(err);
+    } finally {
+      p4Busy = false;
+    }
+  }
+
   async function doSaveSnapshot() {
     if (!selected || !snapshotName.trim()) return;
     busy = true;
@@ -5599,6 +5666,34 @@
                 <button onclick={() => doRestoreSnapshot(name)}>Restore</button>
               </div>
             {/each}
+          {/if}
+          {#if isBmv2Node}
+            <h3>P4 program</h3>
+            <p class="hint tiny">
+              The .p4 mounted at <code>/p4/prog.p4</code>. Picking a built-in copies it in;
+              uploading a custom file replaces it. Restart the node for the change to take effect.
+            </p>
+            <div class="style-row">
+              <select bind:value={p4Choice} onchange={applyP4Builtin} disabled={p4Busy}>
+                <option value="">(pick a built-in)</option>
+                {#each p4Builtins as b}
+                  <option value={b.name}>{b.name} — {b.description || "P4 program"}</option>
+                {/each}
+              </select>
+              <label class="ghost topbar-btn" style="cursor:pointer">
+                Upload .p4
+                <input type="file" accept=".p4" onchange={uploadP4Custom}
+                       style="display:none" />
+              </label>
+            </div>
+            {#if p4State}
+              <p class="hint tiny mono">
+                source: {p4State.source}
+                {#if p4State.program} · program: <strong>{p4State.program}</strong>{/if}
+                {#if p4State.exists}· {p4State.contents ? `${p4State.contents.length} chars` : "on disk"}{/if}
+              </p>
+            {/if}
+            {#if p4Err}<p class="hint tiny" style="color:var(--danger)">{p4Err}</p>{/if}
           {/if}
         {:else if linkObj}
           <h3>Link</h3>

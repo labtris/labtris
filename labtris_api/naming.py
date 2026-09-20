@@ -152,6 +152,11 @@ IFACE_SCHEMES: dict[str, IfaceScheme] = {
             start=1,
             first_names=("Mgmt0",),
         ),
+        # bmv2 (P4 software switch): ports appear as s1, s2, … so the
+        # `simple_switch --interface N@sN …` argument line matches the
+        # names the user sees on the canvas. Starts at 1 because bmv2
+        # rejects port 0 as reserved.
+        IfaceScheme("s", "s1, s2 — bmv2 P4 switch ports", "s{n}", start=1),
     ]
 }
 
