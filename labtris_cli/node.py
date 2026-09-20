@@ -53,3 +53,39 @@ def cmd_list(
         ],
         empty_message="no nodes — draw one in the UI or import a topology",
     )
+
+
+@app.command("start")
+def cmd_start(node_id: str) -> None:
+    """Start a single node by id."""
+    api = api_for(require_session())
+    try:
+        api.post(f"/api/v1/nodes/{node_id}/start")
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+
+
+@app.command("stop")
+def cmd_stop(
+    node_id: str,
+    mode: str = typer.Option("graceful", "--mode", help="graceful | force"),
+) -> None:
+    """Stop a single node by id."""
+    api = api_for(require_session())
+    try:
+        api.post(f"/api/v1/nodes/{node_id}/stop", {"mode": mode})
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+
+
+@app.command("wipe")
+def cmd_wipe(node_id: str) -> None:
+    """Wipe a single node's disk state — starts from scratch next time."""
+    api = api_for(require_session())
+    try:
+        api.post(f"/api/v1/nodes/{node_id}/wipe")
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None

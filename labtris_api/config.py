@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     qemu_allow_extra_args: bool = False
     qemu_vm_dir: str = "~/.local/share/labtris/qemu-vms"
     qemu_image_cache_dir: str = "~/.cache/labtris/qemu-images"
+    #: Where lab snapshots (`labtris-pod-v1.tar.gz`) are written on save
+    #: and read from on load. Kept under $HOME/.local/share by default so
+    #: it inherits the same "user data" retention as the QEMU VMs — an
+    #: apt upgrade or a systemd restart never trims it, and a full-disk
+    #: cleanup is one directory to eyeball.
+    pod_dir: str = "~/.local/share/labtris/pods"
 
     # The assistant talks to an OpenAI-compatible endpoint — LiteLLM by
     # default, so whichever provider you route there is your business and no

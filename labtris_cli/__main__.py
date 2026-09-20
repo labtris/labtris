@@ -24,6 +24,7 @@ import typer
 from labtris_client import ApiError
 from labtris_cli import lab as lab_cmd
 from labtris_cli import node as node_cmd
+from labtris_cli import pod as pod_cmd
 from labtris_cli import system as system_cmd
 from labtris_cli.auth import load_session, login as do_login, logout as do_logout
 from labtris_cli.format import console, error
@@ -36,6 +37,7 @@ app = typer.Typer(
 app.add_typer(lab_cmd.app, name="lab")
 app.add_typer(node_cmd.app, name="node")
 app.add_typer(system_cmd.app, name="system")
+app.add_typer(pod_cmd.app, name="pod")
 
 
 @app.command("login")

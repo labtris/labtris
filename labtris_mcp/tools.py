@@ -617,3 +617,54 @@ def _lab_hooks_run(api: Api, a: dict[str, Any]) -> Any:
 )
 def _lab_hooks_clear(api: Api, a: dict[str, Any]) -> Any:
     return api.delete(f"/api/v1/labs/{a['lab_id']}/hooks")
+
+
+@tool(
+    "lab_snapshot",
+    "Snapshot a lab into a portable pod archive (labtris-pod-v1.tar.gz) on "
+    "the server's pod_dir. Cold mode requires the lab to be stopped; a "
+    "future hot mode will capture running state.",
+    {"lab_id": STR, "mode": {"type": "string", "enum": ["cold"]}},
+    ["lab_id"],
+)
+def _lab_snapshot(api: Api, a: dict[str, Any]) -> Any:
+    return api.post(
+        f"/api/v1/labs/{a['lab_id']}/snapshot", {"mode": a.get("mode", "cold")}
+    )
+
+
+@tool(
+    "pods_list",
+    "Every pod archive present in the server's pod_dir, with lab name, "
+    "size, node count, mode and creation time.",
+    {},
+)
+def _pods_list(api: Api, _a: dict[str, Any]) -> Any:
+    return api.get("/api/v1/pods")
+
+
+@tool(
+    "pod_load",
+    "Restore a pod archive from a path on the SERVER host as a new lab. "
+    "Never overwrites in place; the new lab gets a fresh name (append "
+    "`name` to override) and fresh MACs. QEMU disks are installed into "
+    "the custom-image cache so the first start after load boots from the "
+    "snapshot state.",
+    {"path": STR, "name": STR},
+    ["path"],
+)
+def _pod_load(api: Api, a: dict[str, Any]) -> Any:
+    body = {"path": a["path"]}
+    if a.get("name"):
+        body["name"] = a["name"]
+    return api.call("POST", "/api/v1/pods/load", body)
+
+
+@tool(
+    "pod_delete",
+    "Remove a pod archive from the server's pod_dir.",
+    {"pod_id": STR},
+    ["pod_id"],
+)
+def _pod_delete(api: Api, a: dict[str, Any]) -> Any:
+    return api.delete(f"/api/v1/pods/{a['pod_id']}")

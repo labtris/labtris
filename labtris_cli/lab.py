@@ -122,3 +122,47 @@ def hooks_clear(lab_id: str) -> None:
         error(exc.message)
         raise typer.Exit(1) from None
     console().print(f"cleared hooks on {lab_id}")
+
+
+@app.command("snapshot")
+def cmd_snapshot(
+    lab_id: str,
+    mode: str = typer.Option("cold", "--mode", help="cold (v1) or hot (Phase D)."),
+    fmt: str = format_option(),
+) -> None:
+    """Write a cold snapshot of a lab to the server's pod_dir.
+
+    Cold snapshots require the lab to be stopped — start with
+    `labtris lab stop <id>` if any node is running. The returned `path`
+    is on the SERVER host, not the caller's; use `labtris pod list` +
+    server-side scp to fetch it."""
+    api = api_for(require_session())
+    try:
+        payload = api.post(f"/api/v1/labs/{lab_id}/snapshot", {"mode": mode})
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+    print_object(fmt, payload)
+
+
+@app.command("load")
+def cmd_load(
+    path: str = typer.Argument(..., help="Path on the SERVER host to a .tar.gz pod."),
+    name: str | None = typer.Option(None, "--name", help="New lab name (default: from pod)."),
+    fmt: str = format_option(),
+) -> None:
+    """Load a pod already sitting on the server host — creates a new lab.
+
+    For uploading a pod from your local machine, `labtris pod push
+    <local.tar.gz>` (coming in a follow-up) uses the /pods/upload
+    multipart endpoint. For now: scp the pod to the server first."""
+    api = api_for(require_session())
+    body = {"path": path}
+    if name:
+        body["name"] = name
+    try:
+        payload = api.call("POST", "/api/v1/pods/load", body)
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+    print_object(fmt, payload)
