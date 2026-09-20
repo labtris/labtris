@@ -6585,12 +6585,22 @@
     background-size: 24px 24px; }
   .canvas.nogrid { background-image: none; }
   .grid { position: absolute; transform-origin: 0 0; width: 4000px; height: 3000px; }
-  .wires { position: absolute; inset: 0; }
+  /* Wires layer floats above the node boxes so a link that visually
+     crosses a node stays visible instead of disappearing behind it —
+     the connectivity is the important information and should never
+     get occluded by a body. `pointer-events: none` on the container
+     keeps clicks passing through to the node divs; `.link-hit` opts
+     back in on the stroke area so a wire can still be selected. */
+  .wires { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
   /* Thinner and calmer: a 3px glowing cable per link turned a dense lab into
      soup. The glow is kept for the selected one, where it means something. */
   .link { fill: none; stroke: var(--wire); stroke-width: 1.75; stroke-linecap: round; opacity: .85; pointer-events: none; transition: stroke .15s, opacity .15s; }
-  .link.seg { stroke: var(--seg); stroke-width: 1.5; opacity: .6; stroke-dasharray: 1 5; }
-  .link-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+  /* Was `1 5` — one pixel on, five off — which read as spotty dots
+     rather than a cable, especially over long spans. `3 3` keeps the
+     "dashed = network segment (not a direct wire)" visual contract
+     with `.link` but reads as a proper line. */
+  .link.seg { stroke: var(--seg); stroke-width: 1.5; opacity: .7; stroke-dasharray: 3 3; }
+  .link-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; pointer-events: stroke; }
   .link-hit:hover + .link { opacity: 1; stroke-width: 2.5; }
   .link.sel { stroke: var(--text); stroke-width: 2.75; opacity: 1; filter: drop-shadow(0 0 6px var(--accent)); }
   .link.impaired { stroke: var(--warn); }
