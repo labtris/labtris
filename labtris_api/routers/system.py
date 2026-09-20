@@ -82,6 +82,27 @@ async def catalog(
     _user: object = Depends(get_current_user),
 ) -> dict[str, Any]:
     templates = (await session.execute(select(Template).order_by(Template.name))).scalars()
+    # Probe every catalog docker image in parallel for cache status.
+    # aiodocker inspect is one HTTP round-trip against the local docker
+    # socket, so ~10 concurrent probes finish in tens of ms and let the
+    # palette render Pull-now buttons on uncached images without a
+    # second endpoint. Silently defaults to None on any error so a
+    # missing docker daemon does not fail the catalog fetch entirely.
+    import asyncio as _asyncio
+
+    from labtris_api.runtime.docker import is_image_cached as _cached
+
+    async def _safe_cached(img: str) -> bool | None:
+        try:
+            return await _cached(img)
+        except Exception:  # noqa: BLE001
+            return None
+
+    _images = list(CONTAINER_CATALOG.values())
+    _cached_results = await _asyncio.gather(
+        *[_safe_cached(i.image) for i in _images], return_exceptions=False
+    )
+    _cached_map = {i.image: c for i, c in zip(_images, _cached_results)}
     return {
         "templates": [
             {
@@ -131,6 +152,12 @@ async def catalog(
                 "privileged": img.privileged,
                 "notes": img.notes,
                 "boot_seconds": img.boot_seconds,
+                # Cache status so the palette can show a Pull-now button
+                # against uncached docker images and avoid a silent
+                # multi-minute wait on first spawn. Probed in parallel
+                # above; None on docker-daemon errors so the palette
+                # falls back to "unknown" (no button, no ✓).
+                "cached": _cached_map.get(img.image),
             }
             for img in CONTAINER_CATALOG.values()
         ],

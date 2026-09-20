@@ -508,14 +508,21 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
     if node.state == "running":
         return node
     if node.state == "starting":
-        # A first-use qemu image is a multi-GB fetch, so a start can legitimately
-        # sit here for fifteen minutes and look dead. Clicking Start again used
+        # A first-use image is a multi-GB fetch, so a start can legitimately
+        # sit here for minutes and look dead. Clicking Start again used
         # to launch a second create against the same overlay, and the two raced
-        # for qemu-img's write lock.
+        # for qemu-img's write lock. Message is runtime-aware — a docker
+        # node pulls from a registry, not from the QEMU image cache.
+        if node.runtime == "qemu":
+            raise conflict(
+                f"node {node.name!r} is already starting — a first-time qemu image is "
+                "downloaded and converted before boot, which can take several minutes; "
+                "watch progress in the catalog Pull button or the Pull images task"
+            )
         raise conflict(
-            f"node {node.name!r} is already starting — a first-time qemu image is "
-            "downloaded and converted before boot, which can take several minutes; "
-            "watch progress in the catalog or the Pull images task"
+            f"node {node.name!r} is already starting — its docker image is "
+            f"being pulled from the registry. Watch `docker pull {node.image}` "
+            "progress in the palette (Pull now button) or in journalctl -u labtris-api"
         )
     runtime = get_runtime(node.runtime)
     node.state = "starting"

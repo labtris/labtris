@@ -272,6 +272,15 @@
   let templates = $state([]);
   let qemuImages = $state([]);
   let ifaceSchemes = $state([]);
+  // Docker container-catalog entries with their cache status (see the
+  // /catalog endpoint's `images` field). Used to render a Pull-now
+  // button on any KIND row whose image is not on disk yet, so a
+  // palette drag does not turn into a silent multi-minute registry
+  // pull inside a node start.
+  let dockerCatalogImages = $state([]);
+  // Per-image transient pull state so the button flips to "Pulling…"
+  // immediately on click without waiting for the next catalog refresh.
+  let pullingDockerImages = $state({});
   //: Bring-your-own image upload. Non-null while the modal is open; carries
   //: form state plus, once the upload starts, the XHR progress fraction.
   let uploadForm = $state(null);
@@ -2639,6 +2648,45 @@
   //: loop off immediately; the next poll will overwrite with real
   //: {phase, done, total, percent} from the server. Errors bubble to the
   //: toast; the row stays in "starting" briefly before the poll clears it.
+  //: Pull-now for a docker image ref, mirroring the QEMU pullImage()
+  //: path. Reuses POST /images/pull which now accepts docker refs too;
+  //: polls /images/status until cached, then refreshes the catalog so
+  //: the button disappears and the ✓ appears.
+  async function pullDockerImage(image) {
+    if (!image) return;
+    pullingDockerImages = { ...pullingDockerImages, [image]: true };
+    try {
+      await api.imagePull(image);
+    } catch (e) {
+      note = `Could not start docker pull: ${e.message || e}`;
+      pullingDockerImages = { ...pullingDockerImages, [image]: false };
+      return;
+    }
+    // Poll until cached (or 5 minutes elapse — a big image may need
+    // more, but at that point the user should just watch the API log).
+    const started = Date.now();
+    const poll = async () => {
+      if (Date.now() - started > 5 * 60_000) {
+        pullingDockerImages = { ...pullingDockerImages, [image]: false };
+        return;
+      }
+      try {
+        const s = await api.imageStatus(image);
+        if (s?.cached) {
+          pullingDockerImages = { ...pullingDockerImages, [image]: false };
+          // Refresh the catalog so the ✓ appears next to the entry.
+          try {
+            const cat = await api.catalog();
+            dockerCatalogImages = cat.images || [];
+          } catch { /* transient */ }
+          return;
+        }
+      } catch { /* transient */ }
+      setTimeout(poll, 2000);
+    };
+    setTimeout(poll, 2000);
+  }
+
   async function pullImage(id) {
     const i = qemuImages.findIndex((q) => q.id === id);
     if (i < 0) return;
@@ -2917,9 +2965,16 @@
       qemuImages = cat.qemu_images || [];
       nicModels = cat.nic_models || [];
       ifaceSchemes = cat.iface_schemes || [];
+      // Docker image cache status per catalog entry, so the palette can
+      // show a "Pull now" button on any uncached image. Same shape the
+      // qemu-image row uses (cached: true|false|null); null means the
+      // docker daemon errored during the probe, so the palette shows
+      // no button rather than false-positive-suggesting Pull.
+      dockerCatalogImages = cat.images || [];
       trackImageDownloads();
     } catch {
       qemuImages = [];
+      dockerCatalogImages = [];
     }
   }
 
@@ -4185,6 +4240,9 @@
         <p class="hint">Drag any image onto the canvas. No templates required.</p>
       {/if}
       {#each palKinds as k}
+        {@const dCat = dockerCatalogImages.find((i) => i.image === k.image)}
+        {@const uncached = dCat && dCat.cached === false && !pullingDockerImages[k.image]}
+        {@const pulling = !!pullingDockerImages[k.image]}
         <div
           class="kind"
           draggable="true"
@@ -4192,16 +4250,28 @@
           ondragstart={(e) => e.dataTransfer.setData("kind", k.id)}
         >
           <span class="glyph">{k.glyph}</span>
-          <div>
+          <div style="flex:1">
             <strong>{k.label}</strong>
-            <div class="mono tiny">{k.image}</div>
+            <div class="mono tiny">{k.image}{#if dCat?.cached} ✓{/if}</div>
             {#if k.note}
               <div class="mono tiny cold">{k.note}</div>
             {/if}
             {#if k.boot}
               <div class="mono tiny cold">~{k.boot}s to a usable CLI</div>
             {/if}
+            {#if uncached}
+              <div class="mono tiny cold">not on this host — first spawn will pull</div>
+            {:else if pulling}
+              <div class="mono tiny cold">pulling from registry…</div>
+            {/if}
           </div>
+          {#if uncached}
+            <button
+              class="pull mono tiny"
+              title="docker pull now, so the first drag does not stall"
+              onclick={(e) => { e.stopPropagation(); pullDockerImage(k.image); }}
+            >Pull now</button>
+          {/if}
         </div>
       {/each}
       <h3>Any image</h3>

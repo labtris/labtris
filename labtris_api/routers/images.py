@@ -226,11 +226,53 @@ import asyncio
 _pulls: dict[str, asyncio.Task[Any]] = {}
 
 
+def _looks_like_docker_ref(image: str) -> bool:
+    """True for anything Docker's registry client would understand.
+
+    QEMU refs go through the catalog / https / custom-<sha> paths;
+    Docker refs are `repo`, `repo:tag`, `ns/repo:tag`, `registry/ns/repo:tag`.
+    The distinction that matters here: anything with a slash, or the plain
+    catalog names that our own docker catalog uses. QEMU catalog ids never
+    contain a slash and are checked first, so this is a safe fallback."""
+    from labtris_api.runtime.containers import CONTAINER_CATALOG
+
+    if image in QEMU_CATALOG:
+        return False
+    if image.startswith(("http://", "https://", "custom-")):
+        return False
+    if "/" in image:
+        return True
+    # A bare catalog docker image ref (`alpine:3.20`) has no slash but
+    # is still docker-shaped. Match it via our container catalog.
+    return any(entry.image == image for entry in CONTAINER_CATALOG.values())
+
+
 async def _do_pull(image: str) -> None:
     try:
-        await _resolve_base_image(image)
+        if _looks_like_docker_ref(image):
+            from labtris_api.runtime.docker import pull_image_now
+
+            await pull_image_now(image)
+        else:
+            await _resolve_base_image(image)
     finally:
         _pulls.pop(image, None)
+
+
+async def _current_status(image: str) -> dict[str, Any]:
+    """Runtime-agnostic status snapshot. Docker refs get a live inspect
+    probe; QEMU refs stay on the on-disk cache lookup."""
+    if _looks_like_docker_ref(image):
+        from labtris_api.runtime.docker import is_image_cached
+
+        cached = await is_image_cached(image)
+        pulling = image in _pulls
+        return {
+            "cached": cached,
+            "phase": "cached" if cached else ("pulling" if pulling else "not-downloaded"),
+            "bytes": 0,
+        }
+    return image_status(image)
 
 
 @router.post("/images/pull", response_model=ImageStatusOut, status_code=202)
@@ -238,12 +280,13 @@ async def pull_image(
     body: ImagePullIn,
     _user: User = Depends(require_admin),
 ) -> Any:
-    """Fetch a QEMU catalog image now, without waiting for a node start.
+    """Fetch a QEMU or Docker image now, without waiting for a node start.
 
-    Accepts a catalog id (`ubuntu-24.04`, `cirros-0.6.2`, …), an https
-    URL, or a `custom-…` reference. Returns immediately with a 202 and
-    the current status — poll `GET /images/status?image=<same>` (or a
-    node's console log) to see the download progress.
+    Accepts a QEMU catalog id (`ubuntu-24.04`), an https URL, a
+    `custom-…` reference, OR a Docker image ref (`alpine:3.20`,
+    `p4lang/behavioral-model:latest`). Returns immediately with a 202
+    and the current status — poll `GET /images/status?image=<same>`
+    to watch the pull.
 
     The pull runs as a background asyncio task so the response is not
     tied to the transfer. Multiple concurrent pulls of the same image
@@ -252,25 +295,25 @@ async def pull_image(
     image = body.image.strip()
     if not image:
         raise bad_request("image is required")
-    # Best-effort validation: a plain string that isn't a catalog id,
-    # not a URL, and not a saved-image ref is probably a typo.
-    if (
+    is_docker = _looks_like_docker_ref(image)
+    # Best-effort validation. Docker refs are anything with a slash or a
+    # known container-catalog image; QEMU refs must be a catalog id, an
+    # https URL, or a custom-<sha>.
+    if not is_docker and (
         image not in QEMU_CATALOG
         and not image.startswith(("http://", "https://", "custom-"))
-        and "/" not in image
     ):
         raise bad_request(
             f"unknown image {image!r}: expected a catalog id, an https URL, "
-            "a custom-<sha> reference, or a local path"
+            "a custom-<sha> reference, a local path, or a docker image "
+            "ref (e.g. alpine:3.20 or p4lang/behavioral-model:latest)"
         )
-    status = image_status(image)
+    status = await _current_status(image)
     if status.get("cached"):
-        # Already on disk; nothing to do. Return the status snapshot
-        # rather than pretending we started work.
         return {"image": image, **status}
     if image not in _pulls:
         _pulls[image] = asyncio.create_task(_do_pull(image))
-    return {"image": image, **image_status(image)}
+    return {"image": image, **await _current_status(image)}
 
 
 @router.get("/images/status", response_model=ImageStatusOut)
@@ -278,10 +321,9 @@ async def image_status_get(
     image: str,
 ) -> Any:
     """Snapshot: whether this image is on disk, being fetched, or
-    somewhere in between. Cheap — no I/O, just reads in-memory state
-    plus one stat() on the cache file. Poll every 1–5 seconds during
-    a pull; the phase moves through downloading → extracting →
-    converting → gone (with `cached: true`)."""
+    somewhere in between. Cheap — for docker refs it is one
+    `docker inspect`; for qemu refs an in-memory + stat() lookup.
+    Poll every 1–5 seconds during a pull."""
     if not image:
         raise bad_request("image is required (query param)")
-    return {"image": image, **image_status(image)}
+    return {"image": image, **await _current_status(image)}

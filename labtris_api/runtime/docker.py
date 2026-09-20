@@ -502,4 +502,38 @@ class DockerRuntime:
             raise runtime_error(f"docker pull {image} failed: {exc}") from exc
 
 
+async def is_image_cached(image: str) -> bool:
+    """Cheap yes/no: does `docker inspect` know this image already?
+
+    Called from `system.catalog()` to surface a Pull button in the
+    palette next to any docker image that would otherwise stall the
+    first spawn on a registry pull."""
+    d = _docker()
+    try:
+        await d.images.inspect(image)
+        return True
+    except DockerError:
+        return False
+    finally:
+        await d.close()
+
+
+async def pull_image_now(image: str) -> None:
+    """Force a `docker pull` in the background — used by the palette's
+    Pull-now button and by POST /images/pull for docker refs.
+
+    Streams the layer output to stderr so `journalctl -u labtris-api`
+    shows the layer-by-layer progress, matching how a manual
+    `docker pull` looks."""
+    d = _docker()
+    repo, _, tag = image.partition(":")
+    tag = tag or "latest"
+    try:
+        await d.images.pull(from_image=repo, tag=tag)
+    except DockerError as exc:
+        raise runtime_error(f"docker pull {image} failed: {exc}") from exc
+    finally:
+        await d.close()
+
+
 docker_runtime = DockerRuntime()
