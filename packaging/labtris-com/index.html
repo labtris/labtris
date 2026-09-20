@@ -268,6 +268,80 @@
 </section>
 
 <section>
+  <h2>Why not just use&hellip;</h2>
+  <p>
+    The honest question. There is no shortage of network lab tools, and
+    a few of them are excellent. Here is where Labtris fits, in the voice
+    of someone who has used all of these on real projects.
+  </p>
+
+  <h3>&hellip;GNS3</h3>
+  <p>
+    The closest match, and the most mature open-source option — bigger
+    vendor coverage, a bigger community, an installer that has been
+    polished for over a decade. If you already have your image library
+    set up and you are happy driving a desktop client, keep using it.
+    Labtris is a bet on three things GNS3 does not lead with: a
+    browser-only interface (no local install for a user, one server for
+    a class), a first-class assistant surface (MCP tools plus a chat
+    panel that streams what the model is doing), and hot lab snapshots
+    that resume exactly where you captured. If those matter, try
+    Labtris. If they do not, GNS3 is a fine answer.
+  </p>
+
+  <h3>&hellip;EVE-NG or PNETLab</h3>
+  <p>
+    EVE-NG Community is free but not open source; the Pro tier is what
+    most people who need the extra features end up on. PNETLab is free
+    and closed-source. Both were the shape Labtris borrowed from — the
+    canvas, the palette, the folders, the config sets, the console
+    tabs. What Labtris changes is the licence (Apache-2.0), the trust
+    model (the source is here, in this repo, no phone-home) and the
+    upgrade story (<code>git pull && systemctl restart</code>, no
+    licence file, no bootstrap script that connects to a remote server
+    you cannot see). If open source is a hard requirement — for a
+    university, a public-sector lab, a homelab you want to still work
+    in five years — this is why Labtris exists.
+  </p>
+
+  <h3>&hellip;containerlab</h3>
+  <p>
+    Containerlab is excellent for what it does well: declarative YAML
+    topologies, CLI-first workflow, easy to put in CI. If your lab is
+    all containers and you like managing infrastructure as code, use
+    it. Where it gets awkward is QEMU: vendor VMs are packaged as
+    Docker images via vrnetlab, and that <em>works</em>, but "get an
+    IOSv qcow2 wrapped as a container that boots reliably" is not a
+    five-minute job — the wrapper is per-vendor, the images are big,
+    and the debugging happens inside a container that hides the
+    QEMU stderr you actually want to read. Labtris runs QEMU natively
+    alongside Docker on the same canvas — no wrapping, no
+    per-vendor Dockerfile, one process supervising both. It also has
+    a UI, which containerlab does not.
+  </p>
+
+  <h3>&hellip;Cisco CML / VIRL</h3>
+  <p>
+    Commercial, licensed per user, Cisco-focused. If your team is
+    all-Cisco and the license is paid for, it is the smoothest
+    experience for Cisco images specifically. Labtris is
+    vendor-neutral — any container, any qcow2 — and does not need
+    someone in procurement.
+  </p>
+
+  <h3>&hellip;vrnetlab or netlab</h3>
+  <p>
+    Complementary rather than alternative. vrnetlab is the QEMU-VM-
+    as-Docker-container wrapper containerlab leans on; you can bring a
+    vrnetlab-built image to Labtris just as easily as anywhere else.
+    netlab is a topology-generator and Ansible-config-pusher that sits
+    on top of containerlab; a similar layer over Labtris is on the
+    list. If you already use either, keep using them — Labtris does not
+    replace them.
+  </p>
+</section>
+
+<section>
   <h2>Get it</h2>
   <div class="grabs">
     <a class="grab" href="/install">
