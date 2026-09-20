@@ -97,7 +97,8 @@
         "design/architecture",
         "design/scaling",
         "design/phase1-spec",
-        "design/multipath-deferred"
+        "design/multipath-deferred",
+        "design/pfc-implementation"
       ]
     }
   ]

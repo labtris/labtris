@@ -1,0 +1,109 @@
+---
+title: "PFC in software — what Labtris does, what real hardware does"
+description: "Per-priority queueing + per-priority RED/ECN today; PAUSE-frame emission deferred."
+---
+
+802.1Qbb Priority Flow Control is the "lossless" half of DCB.
+Real switches implement it in two pieces:
+
+1. **Per-priority queueing.** Each of the 8 802.1p priority classes
+   (PCP 0–7) gets its own queue on ingress and egress. Congestion in
+   priority 4 does not head-of-line-block priority 5. Standard.
+2. **Per-priority PAUSE frames.** When one class's queue rises above
+   a threshold, the switch emits a MAC-control PAUSE frame
+   (opcode 0x0101, destination 01:80:C2:00:00:01) with a priority
+   vector telling the peer to stop sending on that specific class
+   for N quanta (each quantum = 512 bit-times at line rate). The
+   peer's NIC honours the pause in hardware.
+
+Piece (1) is what makes RoCEv2 usable — a congested TCP flow on
+priority 0 does not stall RDMA on priority 3. Piece (2) is what
+makes "lossless" true — the sender receives explicit backpressure
+before a queue overflows.
+
+## What Labtris ships today (Phase H)
+
+`ImpairSpec` accepts `pfc: true` + `pfc_priorities: [3, 4]`. The
+runtime translates that into Linux `tc` primitives:
+
+```
+tc qdisc add dev <tap> root handle 1: prio bands 8 \
+    priomap 0 1 2 3 4 5 6 7 0 0 0 0 0 0 0 0
+tc qdisc add dev <tap> parent 1:4 handle 14: red \
+    limit ... min ... max ... avpkt 1000 probability 0.02 ecn
+tc qdisc add dev <tap> parent 1:5 handle 15: red \
+    limit ... min ... max ... avpkt 1000 probability 0.02 ecn
+ethtool -A <tap> rx on tx on   # veth returns EOPNOTSUPP; logged
+```
+
+This gives piece (1) verbatim: eight strict-priority classes, each
+with independent queueing. Priorities named in `pfc_priorities` get
+RED with ECN marking on the class — early congestion signalling
+that DCTCP, DCQCN, and UET congestion control read as their
+"slow down on class N" hint. Priorities not named get the default
+`pfifo` leaf.
+
+Under a lab with `rate` or `netem` set, the whole prio tree hangs
+below those: `tbf → prio → (red|pfifo)` per band. Composes cleanly.
+
+## What Labtris does not yet ship
+
+Piece (2): actual per-priority PAUSE frame emission. Doing it
+properly in software needs:
+
+- An **XDP program** attached to the tap's ingress, tracking per-
+  priority queue depth in a bpf_map.
+- A **PAUSE-frame generator** — when a priority's depth crosses the
+  high-water mark, assemble a MAC-control PAUSE frame (opcode
+  0x0101, destination 01:80:C2:00:00:01, priority vector + N
+  quanta) and inject it back at the peer through the tap.
+- A **release path** — when depth drops below the low-water,
+  another PAUSE frame with 0 quanta to release the class.
+
+Not one week of work. The design is well-understood; there is no
+public XDP-side reference implementation yet, and writing one
+means custom C, libbpf, and reasonably careful testing against
+real NICs to make sure the frames match what a Broadcom / Mellanox
+switch actually emits.
+
+Deferred to Phase I. When it lands it plugs in behind the same
+schema (`pfc: true` + `pfc_priorities: [...]`), so any lab spec
+you write today keeps working with no change.
+
+## Why the current shape is still useful
+
+Fabric CC research usually observes one of three things at the
+receiver's end of a lossless class:
+
+- **Rate collapse under contention** — did the algorithm back off
+  fast enough that the class stopped growing its queue?
+- **Fairness across flows in the same class** — did two flows
+  converge to equal share?
+- **Latency stability** — did tail latency on the class stay
+  bounded across cross-traffic?
+
+All three are observable with piece (1) + RED marking. What you
+lose without piece (2) is the specific "sender saw a PAUSE frame
+and stopped for N quanta" trace — useful for hardware validation,
+less useful for algorithm exploration, which is what most Labtris
+users are doing.
+
+If your work depends on piece (2), test on a real switch fabric.
+Labtris will drive it, the same MCP + hooks + snapshot shape works
+regardless of whether the data-plane runs in `simple_switch`, on a
+Silicon One G200, or on a Broadcom Tomahawk 6.
+
+## Non-goals for Phase H
+
+- Real 802.1Qbb PAUSE frames — Phase I (see above).
+- 802.1Qaz ETS (per-class bandwidth minimums beyond strict-priority) —
+  needs `mqprio` + `htb`, requires multi-queue devices, veth is
+  single-queue. Would need per-node veth reshaping.
+- 802.1Qaz DCBX (auto-negotiation of the DCB config) — needs
+  `lldpad`, not shipping in the image.
+
+The three deferrals compose: when Phase I XDP-PAUSE ships, `pfc:
+true` gains real pause-frame semantics. When multi-queue veths
+land in a future kernel or via TUN/TAP + specific ethtool
+channels, ETS shares work. DCBX has no plan yet — most operators
+configure DCB by hand anyway.

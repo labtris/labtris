@@ -17,6 +17,63 @@ from pyroute2.netlink.exceptions import NetlinkError
 from labtris_netd.protocol import IFNAME_RE
 from labtris_netd.verbs import NetdFault
 
+
+def _pfc_apply_via_cli(
+    ifname: str,
+    netem: object,
+    rate: object,
+    pfc_priorities: list[int],
+    ecn_min: int,
+    ecn_max: int,
+) -> None:
+    """Shell out to `tc` to install prio + per-band red on `ifname`.
+
+    pyroute2's prio encoder rejects both list and bytes for `priomap`
+    with an unhelpful 'required argument is not an integer'. tc(8) is
+    the canonical way to configure prio anyway — it's part of iproute2,
+    on every host running netd, and stable across pyroute2 versions."""
+    if netem and rate:
+        parent, handle, major = "parent 2:0", "3:0", 3
+    elif netem or rate:
+        parent, handle, major = "parent 1:0", "2:0", 2
+    else:
+        parent, handle, major = "root", "1:0", 1
+    subprocess.run(
+        [
+            "tc", "qdisc", "add", "dev", ifname, *parent.split(),
+            "handle", handle, "prio",
+            "bands", "8",
+            "priomap", "0", "1", "2", "3", "4", "5", "6", "7",
+            "0", "0", "0", "0", "0", "0", "0", "0",
+        ],
+        check=True, capture_output=True,
+    )
+    for band in pfc_priorities:
+        if not (0 <= band < 8):
+            continue
+        try:
+            subprocess.run(
+                [
+                    "tc", "qdisc", "add", "dev", ifname,
+                    "parent", f"{major}:{band + 1}",
+                    "handle", f"{major}{band + 1}:0",
+                    "red",
+                    "limit", str(ecn_max * 4),
+                    "min", str(ecn_min),
+                    "max", str(ecn_max),
+                    "avpkt", "1000",
+                    "burst", str(max((2 * ecn_min + ecn_max) // 3000, 1)),
+                    "probability", "0.02",
+                    "ecn",
+                ],
+                check=True, capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # A band that failed does not tear down the whole spec —
+            # `tc qdisc show` will surface the partial attach.
+            pass
+
+
 CLONE_NEWNET = 0x40000000
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
@@ -375,18 +432,19 @@ class PyrouteNet:
         ecn = bool(spec.get("ecn") or False)
         ecn_min = int(spec.get("ecn_min_bytes") or 50_000)
         ecn_max = int(spec.get("ecn_max_bytes") or max(ecn_min * 3, 150_000))
-        # Real 802.1Qbb PFC needs OVS or an eBPF per-priority pause path
-        # neither of which is wired yet. Accepted as a stable schema hint
-        # so a lab spec that names `pfc: true` today does not need
-        # changing when the runtime lands. Logged so an operator watching
-        # journalctl sees why the promise is not being kept.
-        if spec.get("pfc"):
-            import logging as _log
-            _log.getLogger("labtris.netd").info(
-                "tc.set pfc=true requested on %s but not implemented; "
-                "leaving the link with netem+tbf+red only. Track upstream "
-                "OVS / eBPF pause-frame work.", name,
-            )
+        # Phase H: DCB per-priority queueing. When pfc=true, install
+        # `prio` root (8 bands, priomap 0..7 → bands 0..7) and attach a
+        # RED qdisc with ECN on each band named in pfc_priorities.
+        # Priorities not in the list get the default pfifo. This gives
+        # the queueing effect real 802.1Qbb PFC produces — class
+        # isolation + early congestion signalling on the "lossless"
+        # bands — without emitting wire-level PAUSE frames. Real pause
+        # frames need XDP-side generation and are Phase I. When rate or
+        # netem are also set they stack ABOVE prio (they act on the
+        # aggregate), so a pfc lab with a rate cap is `tbf → prio →
+        # (red|pfifo)` per band. See docs/design/pfc-implementation.mdx.
+        pfc = bool(spec.get("pfc") or False)
+        pfc_priorities: list[int] = list(spec.get("pfc_priorities") or [])
         with IPRoute() as ipr:
             idx = _lookup(ipr, name)
             netem = delay or jitter or loss or reorder or duplicate or corrupt
@@ -427,10 +485,13 @@ class PyrouteNet:
                         burst=16000,
                         limit=max(_kbit_to_bytes(rate) // 4, 16000),
                     )
-                if ecn:
+                if ecn and not pfc:
                     # RED as leaf qdisc: marks ECN when qavg is in
                     # [ecn_min, ecn_max), drops above. Sits under
                     # netem+tbf if either exists, else attaches root.
+                    # Skipped when pfc is also set — pfc installs its
+                    # own per-band REDs and a root-level RED would
+                    # collide with prio's placement.
                     handle = "3:0" if (netem or rate) else "1:0"
                     parent = (
                         "2:0" if (netem and rate)
@@ -451,8 +512,40 @@ class PyrouteNet:
                         probability=0.02,
                         ecn=True,
                     )
+                if pfc:
+                    # pyroute2's tc() for prio has a fragile encoder
+                    # for the priomap arg — passing either list or
+                    # bytes raises "required argument is not an
+                    # integer" from deep in the netlink packer, with
+                    # no useful hint. Fall back to the tc(8) CLI: it's
+                    # already on every host running netd (part of the
+                    # iproute2 package), spec-exact behaviour, no
+                    # pyroute2-version quirks to test around.
+                    _pfc_apply_via_cli(
+                        name, netem, rate, pfc_priorities,
+                        ecn_min, ecn_max,
+                    )
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc
+        # Best-effort ethtool PAUSE. Outside the netlink try because
+        # ethtool talks over ioctl, not netlink, and veth EOPNOTSUPP is
+        # not an error to raise — just a fact worth logging.
+        if pfc:
+            try:
+                import subprocess as _sub
+                r = _sub.run(
+                    ["ethtool", "-A", name, "rx", "on", "tx", "on"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode != 0:
+                    import logging as _log
+                    _log.getLogger("labtris.netd").info(
+                        "ethtool -A on %s: %s (expected on veth; "
+                        "see docs/design/pfc-implementation)",
+                        name, (r.stderr or "").strip()[:120],
+                    )
+            except (FileNotFoundError, OSError):
+                pass
         return {"applied": spec}
 
     def iface_counters(self, names: list[str]) -> dict[str, Any]:
