@@ -10,6 +10,22 @@ no licence server, no account — and the installer needs no internet at all.
 Apache-2.0. Self-hosted. Installs from a USB stick onto a machine that has never
 been online.
 
+## Why it exists
+
+I did not set out to build a lab tool. I set out to develop new networking
+features on my own infrastructure — test their compatibility across guests,
+debug the configurations that came out, reproduce the issues customers were
+seeing — and, the piece that pulled everything together, fine-tune LLM models
+on the specific task of reading a running network and telling me what was
+wrong with it.
+
+None of the existing tools (EVE-NG, PNETLab, GNS3, containerlab, CML) let me
+point an assistant at a live topology and iterate on it. So the MCP surface,
+the VNC tools that make a graphical guest first-class for the model, and the
+hot lab snapshots that hand a broken state to someone else in a file are here
+because I needed them for my own work. Turned out other people wanted the
+same shape.
+
 ```
 ┌─ Customer PoCs / edge-lab ───────────── ● 3 running ── 10.0.1.0/24 ─┐
 │                                                                     │

@@ -214,6 +214,27 @@
 </section>
 
 <section>
+  <h2>Why this exists</h2>
+  <p>
+    I did not set out to build a lab tool. I set out to develop new
+    networking features on my own infrastructure — test their
+    compatibility across guests, debug the configurations that came
+    out, reproduce the issues customers were seeing — and, the piece
+    that pulled everything together, fine-tune LLM models on the
+    specific task of reading a running network and telling me what
+    was wrong with it.
+  </p>
+  <p>
+    None of the tools listed further down let me point an assistant
+    at a live topology and iterate. So the MCP surface, the VNC tools
+    that make a graphical guest first-class for the model, the hot
+    snapshots that hand a broken state to someone else in a file —
+    those are here because I needed them for my own work. Turned out
+    other people wanted the same shape.
+  </p>
+</section>
+
+<section>
   <h2>What it is</h2>
   <p>
     An interactive network topology tool. You draw nodes on a canvas,
@@ -255,15 +276,18 @@
     snapshot, load, start — the marker is still there.
   </p>
 
-  <h3><span class="num">03</span>An assistant that drives graphical guests too.</h3>
+  <h3><span class="num">03</span>An assistant surface designed for real work, and for training on it.</h3>
   <p>
-    The MCP surface exposes VNC screenshots (with an OCR shortcut for
-    reading a login prompt in 15 tokens instead of 1500), typed keys
-    with sendkey combos, and pixel-accurate mouse clicks via QMP. A
-    Claude Code or Cursor session can install Ubuntu Desktop, walk a
-    vendor appliance wizard, or navigate a PC BIOS menu the same way
-    it edits a config file — because these are network guests and they
-    should be first-class targets for the model.
+    The MCP tools expose VNC screenshots (with an OCR shortcut so
+    reading a login prompt costs 15 tokens instead of 1500), typed
+    keys with sendkey combos, and pixel-accurate mouse clicks via QMP.
+    Every operation the UI does, the API does; every API endpoint has
+    an MCP tool wrapper. So a Claude Code or Cursor session can install
+    Ubuntu Desktop, walk a vendor appliance wizard, or debug a broken
+    BGP session the same way it edits a config file. If you are using
+    an assistant for actual troubleshooting — or training one on your
+    own infrastructure — it needs a place to try things and see what
+    happens. That is what this is.
   </p>
 </section>
 
