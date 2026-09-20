@@ -13,6 +13,7 @@
   import CapturePane from "./lib/CapturePane.svelte";
   import WiresharkPane from "./lib/WiresharkPane.svelte";
   import SettingsPane from "./lib/SettingsPane.svelte";
+  import HooksPane from "./lib/HooksPane.svelte";
   import ChatPane from "./lib/ChatPane.svelte";
 
   let labs = $state([]);
@@ -5363,6 +5364,7 @@
       <button class:on={dock === "packets"} onclick={() => switchDockAndExpand("packets")}>Packets</button>
       <button class:on={dock === "config"} onclick={() => switchDockAndExpand("config")}>Config</button>
       <button class:on={dock === "hosts"} onclick={() => { switchDockAndExpand("hosts"); loadHosts(); }}>Hosts</button>
+      <button class:on={dock === "hooks"} onclick={() => switchDockAndExpand("hooks")} disabled={!lab}>Hooks</button>
       <button class:on={dock === "events"} onclick={() => switchDockAndExpand("events")}>
         Events{#if unseenErrors}<sup class="badge">{unseenErrors}</sup>{/if}
       </button>
@@ -5919,6 +5921,12 @@
         <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
         <div class="vnc-canvas" tabindex="0" bind:this={vncContainerEl}></div>
       </div>
+    {:else if dock === "hooks"}
+      {#if lab}
+        <HooksPane labId={lab.id} onstatus={(s) => noteEvent({ kind: "info", text: `hooks: ${s}` })} />
+      {:else}
+        <div class="hint tiny">Open a lab to configure its ready hooks.</div>
+      {/if}
     {:else if dock === "events"}
       <div class="events">
         <div class="console-hd">

@@ -19,6 +19,7 @@ from labtris_api.routers import (
     events,
     feedback,
     health,
+    hooks,
     hosts,
     images,
     impair,
@@ -60,6 +61,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await apply_overrides(session)
     except Exception:  # noqa: BLE001 - a missing table must not stop the API booting
         pass
+    # Every lab that has hooks_source gets a fresh auto-fire watcher on
+    # startup. Without this, a restart would leave hooks defined but never
+    # firing until the user re-PUT the same spec.
+    try:
+        from labtris_api.routers.hooks import resume_watchers
+
+        await resume_watchers()
+    except Exception:  # noqa: BLE001 — hooks are opt-in; don't fail boot
+        pass
     yield
     # Wireshark sessions are deliberately started in their own process session
     # so they survive a reload — which is exactly what makes them leak if
@@ -79,6 +89,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     from labtris_api.routers.images import _pulls
     from labtris_api.runtime.bootstrap import _running as _bs_running
+    from labtris_api.runtime.hooks import _running as _hooks_running
     from labtris_api.runtime.qemu import (
         _qmp_conns,
         _sessions as _serial_sessions,
@@ -87,6 +98,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     for name, tasks in (
         ("image-pull", list(_pulls.values())),
         ("bootstrap", list(_bs_running.values())),
+        ("hooks-watch", list(_hooks_running.values())),
     ):
         for t in tasks:
             if not t.done():
@@ -151,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router.router, prefix=prefix)
     app.include_router(backup.router, prefix=prefix)
     app.include_router(feedback.router, prefix=prefix)
+    app.include_router(hooks.router, prefix=prefix)
 
     web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
     if web_dist.is_dir():

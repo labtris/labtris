@@ -702,6 +702,79 @@ class PyrouteNet:
     def capture_read(self, name: str) -> dict[str, Any]:
         return _captures.read(name)
 
+    def hook_ping(
+        self, pid: int, target: str, count: int, timeout_s: int
+    ) -> dict[str, Any]:
+        """Ping `target` from the netns of PID; return rc/stdout/stderr.
+
+        `nsenter -t PID -n` puts us in the container's network namespace
+        without paying for a full nsenter-into-mount-and-user; ping runs
+        with whatever it inherits from netd (root, which is what /bin/ping
+        wants for -W to work without setuid gymnastics)."""
+        proc = subprocess.run(
+            [
+                "nsenter",
+                "-t",
+                str(pid),
+                "-n",
+                "/bin/ping",
+                "-c",
+                str(count),
+                "-W",
+                str(timeout_s),
+                target,
+            ],
+            capture_output=True,
+            text=True,
+            # Wall-clock cap independent of ping's own per-packet -W, so a
+            # target that black-holes every packet can't hold this call
+            # open past count*(timeout+1) seconds.
+            timeout=count * (timeout_s + 1) + 5,
+        )
+        return {
+            "rc": proc.returncode,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+        }
+
+    def hook_http(self, pid: int, url: str, timeout_s: int) -> dict[str, Any]:
+        """GET `url` from the netns of PID and report the HTTP status.
+
+        curl is asked for the status code alone (`-w '%{http_code}'`) so
+        the body never comes back to us — hooks read pass/fail from the
+        status, not the body. Follows redirects (-L) because a hook that
+        wanted the endpoint after redirects would otherwise need one hook
+        per hop."""
+        proc = subprocess.run(
+            [
+                "nsenter",
+                "-t",
+                str(pid),
+                "-n",
+                "/usr/bin/curl",
+                "-sSL",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                str(timeout_s),
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s + 5,
+        )
+        try:
+            status = int(proc.stdout.strip() or "0")
+        except ValueError:
+            status = 0
+        return {
+            "rc": proc.returncode,
+            "http_status": status,
+            "stderr": proc.stderr,
+        }
+
     def host_tune(self, sysctls: dict[str, str]) -> dict[str, Any]:
         applied: dict[str, str] = {}
         for key, value in sysctls.items():

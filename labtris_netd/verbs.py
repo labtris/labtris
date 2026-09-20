@@ -48,6 +48,11 @@ VERBS = frozenset(
         "dhcp.stop",
         "dhcp.leases",
         "nat.sessions",
+        # Lab-scoped ready hooks (labtris_api/runtime/hooks.py). Both run
+        # inside a target container's netns via nsenter, keyed on the
+        # container PID the caller supplied.
+        "hook.ping",
+        "hook.http",
     }
 )
 
@@ -120,6 +125,10 @@ class NetOps(Protocol):
         self, name: str, vni: int, remote: str, local: str | None, dstport: int
     ) -> dict[str, Any]: ...
     def vxlan_delete(self, name: str) -> dict[str, Any]: ...
+    def hook_ping(
+        self, pid: int, target: str, count: int, timeout_s: int
+    ) -> dict[str, Any]: ...
+    def hook_http(self, pid: int, url: str, timeout_s: int) -> dict[str, Any]: ...
 
 
 class NetdFault(Exception):
@@ -482,4 +491,47 @@ def _call(verb: str, params: dict[str, Any], net: NetOps) -> dict[str, Any]:
         return net.vxlan_create(_require_ifname(params.get("name")), vni, remote, local, dstport)
     if verb == "vxlan.delete":
         return net.vxlan_delete(_require_ifname(params.get("name")))
+    if verb == "hook.ping":
+        pid = params.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise NetdFault("EINVAL", "pid must be a positive int")
+        target = params.get("target")
+        # No shell metacharacters — target flows into an argv, but a `--`
+        # in the wrong place could still surprise ping's own arg parser,
+        # so keep it to hostname or IPv4 shape.
+        if not isinstance(target, str) or not _TARGET_RE.match(target):
+            raise NetdFault("EINVAL", "target must be a hostname or IPv4 address")
+        count = params.get("count", 3)
+        if not isinstance(count, int) or not (1 <= count <= 20):
+            raise NetdFault("EINVAL", "count must be an int in [1,20]")
+        timeout = params.get("timeout_s", 5)
+        if not isinstance(timeout, int) or not (1 <= timeout <= 60):
+            raise NetdFault("EINVAL", "timeout_s must be an int in [1,60]")
+        return net.hook_ping(pid, target, count, timeout)
+    if verb == "hook.http":
+        pid = params.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            raise NetdFault("EINVAL", "pid must be a positive int")
+        url = params.get("url")
+        # Only http/https. curl accepts file://, ftp://, gopher:// and
+        # others; none of those are what a "hook probes an endpoint"
+        # means, and file:// pointed at /etc/shadow inside a netns'd
+        # process (which still shares the host fs) is exactly the shape
+        # of a bug worth heading off.
+        if not isinstance(url, str) or not (
+            url.startswith("http://") or url.startswith("https://")
+        ):
+            raise NetdFault("EINVAL", "url must start with http:// or https://")
+        timeout = params.get("timeout_s", 10)
+        if not isinstance(timeout, int) or not (1 <= timeout <= 60):
+            raise NetdFault("EINVAL", "timeout_s must be an int in [1,60]")
+        return net.hook_http(pid, url, timeout)
     raise NetdFault("EINVAL", f"unknown verb {verb!r}")
+
+
+# Hostname or IPv4. Loose on hostnames intentionally — the ip resolver in
+# ping/curl will reject anything real DNS refuses. This regex is only here to
+# block shell metacharacters that could survive being handed to subprocess
+# with shell=False (which we do), because a malicious `target` should not
+# even reach the exec syscall.
+_TARGET_RE = __import__("re").compile(r"^[A-Za-z0-9._:\-]{1,253}$")

@@ -64,6 +64,14 @@ class Lab(Base):
     configsets: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    #: Ready hooks — YAML canonical form, parsed cache, per-run state. See
+    #: labtris_api/runtime/hooks.py. All three nullable because "no hooks
+    #: defined" and "hooks defined but never run" are both meaningful, and
+    #: defaulting to `{}` would make the runner iterate empty every time
+    #: any node in the lab changed state.
+    hooks_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hooks: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    hooks_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -571,3 +571,49 @@ def _host_caps(api: Api, a: dict[str, Any]) -> Any:
 @tool("health", "Whether the API, database, netd and Docker are up.", {})
 def _health(api: Api, _: dict[str, Any]) -> Any:
     return api.get("/api/v1/health")
+
+
+@tool(
+    "lab_hooks_show",
+    "Return the lab's ready-hooks block: raw YAML source, parsed form, and "
+    "the last-run state (which hook passed, which failed, per-hook output).",
+    {"lab_id": STR},
+    ["lab_id"],
+)
+def _lab_hooks_show(api: Api, a: dict[str, Any]) -> Any:
+    return api.get(f"/api/v1/labs/{a['lab_id']}/hooks")
+
+
+@tool(
+    "lab_hooks_apply",
+    "Replace a lab's ready-hooks block with YAML text. Fails on parse errors. "
+    "The auto-fire watcher is restarted so the new hooks fire the next time "
+    "the lab's ready condition trips.",
+    {"lab_id": STR, "source": STR},
+    ["lab_id", "source"],
+)
+def _lab_hooks_apply(api: Api, a: dict[str, Any]) -> Any:
+    return api.call(
+        "PUT", f"/api/v1/labs/{a['lab_id']}/hooks", {"source": a["source"]}
+    )
+
+
+@tool(
+    "lab_hooks_run",
+    "Force a hooks run now, ignoring the ready_when trigger. Blocks until "
+    "every hook has run (or the first failure) and returns the outcome.",
+    {"lab_id": STR},
+    ["lab_id"],
+)
+def _lab_hooks_run(api: Api, a: dict[str, Any]) -> Any:
+    return api.post(f"/api/v1/labs/{a['lab_id']}/hooks/run")
+
+
+@tool(
+    "lab_hooks_clear",
+    "Drop the lab's hooks block and per-run state history.",
+    {"lab_id": STR},
+    ["lab_id"],
+)
+def _lab_hooks_clear(api: Api, a: dict[str, Any]) -> Any:
+    return api.delete(f"/api/v1/labs/{a['lab_id']}/hooks")

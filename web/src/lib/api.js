@@ -137,6 +137,13 @@ export const api = {
   lab: (id) => req(`/api/v1/labs/${id}`),
   exportLab: (id) => req(`/api/v1/labs/${id}/export`),
   deleteLab: (id) => req(`/api/v1/labs/${id}`, { method: "DELETE" }),
+  // Ready hooks (Phase B of the LocalStack-inspired work). YAML is the
+  // canonical form the user writes; the server parses + caches.
+  hooksGet: (id) => req(`/api/v1/labs/${id}/hooks`),
+  hooksApply: (id, source) =>
+    req(`/api/v1/labs/${id}/hooks`, { method: "PUT", body: JSON.stringify({ source }) }),
+  hooksRun: (id) => req(`/api/v1/labs/${id}/hooks/run`, { method: "POST" }),
+  hooksClear: (id) => req(`/api/v1/labs/${id}/hooks`, { method: "DELETE" }),
   geometry: (id) => req(`/api/v1/labs/${id}/geometry`),
   saveGeometry: (id, data) =>
     req(`/api/v1/labs/${id}/geometry`, { method: "PUT", body: JSON.stringify({ data }) }),
