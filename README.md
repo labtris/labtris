@@ -139,13 +139,16 @@ theoretical.
 Being straight about this saves you an afternoon.
 
 - **Configuration generation.** Labtris draws the links; it does not write
-  addresses or bring up OSPF and BGP for you. Guests come up unaddressed.
+  addresses or bring up OSPF and BGP for you. Guests come up unaddressed. Ready
+  hooks can tell you when addressing has converged; they will not do the
+  addressing for you.
 - **A vendor node catalogue.** Docker and QEMU run whatever you bring, but there
-  is no curated list of vendor images yet.
+  is no curated list of vendor images. The bootstrap runner is the framework
+  for one — vendor recipes drop into `packaging/recipes/bootstrap/*.json` —
+  but the list of vendors covered is small.
 - **Classroom features.** Shared labs, cohorts, per-user quotas and lab
-  instructions are designed but unbuilt.
-- **The assistant.** The API and MCP surface exist and the browser-side loop is
-  written, but it has not been verified against a real provider.
+  instructions are designed but unbuilt. Ownership and lock exist; the class
+  layer on top does not.
 
 ## Bring your own images
 
