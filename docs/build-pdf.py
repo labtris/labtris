@@ -44,10 +44,12 @@ PAGES = [
     ("labs.mdx",              "7",  "Organising labs"),
     ("hooks.mdx",             "8",  "Ready hooks"),
     ("snapshots.mdx",         "9",  "Portable snapshots"),
-    ("users.mdx",             "10", "Users and access"),
-    ("api/rest.mdx",          "11", "API and the assistant"),
-    ("cli.mdx",               "12", "The labtris CLI"),
-    ("operations.mdx",        "13", "Running the server"),
+    ("p4.mdx",                "10", "P4 programmable switches"),
+    ("fabrics.mdx",           "11", "AI fabrics"),
+    ("users.mdx",             "12", "Users and access"),
+    ("api/rest.mdx",          "13", "API and the assistant"),
+    ("cli.mdx",               "14", "The labtris CLI"),
+    ("operations.mdx",        "15", "Running the server"),
 ]
 
 CHROME_CANDIDATES = [

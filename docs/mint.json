@@ -64,6 +64,13 @@
       ]
     },
     {
+      "group": "AI fabrics",
+      "pages": [
+        "p4",
+        "fabrics"
+      ]
+    },
+    {
       "group": "API",
       "pages": [
         "api/rest",

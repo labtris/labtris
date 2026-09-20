@@ -1,0 +1,96 @@
+---
+title: "AI fabrics"
+description: "Generate a spine-leaf, rail-optimised, or fat-tree topology in one call."
+---
+
+Modern DC fabrics have a small vocabulary of shapes — spine-leaf,
+rail-optimised, fat-tree — and every network researcher redraws the
+same shape by hand every time. The generator ships those shapes as
+one-call primitives.
+
+## The three patterns
+
+<CodeGroup>
+
+```bash spine-leaf
+# 2 spines × 4 leaves × 8 hosts-per-leaf = 42 nodes
+labtris lab generate <lab-id> \
+  --pattern spine-leaf \
+  --spines 2 --leaves 4 --hosts-per-leaf 8 \
+  --spine-kind bmv2 --p4-program ecmp \
+  --leaf-kind frr --host-kind alpine
+```
+
+```bash rail-optimised
+# The GPU-cluster shape: 4 rails, 8 hosts per rail. NIC-i on every host
+# attaches to rail-i's spine. All-to-all within a rail needs no leaf hop.
+labtris lab generate <lab-id> \
+  --pattern rail-optimised \
+  --rails 4 --hosts-per-rail 8 \
+  --spine-kind bmv2 --p4-program ecmp
+```
+
+```bash fat-tree
+# k-ary Al-Fares (2008). k=4 → 4 core, 8 aggregation, 8 edge, 16 hosts.
+labtris lab generate <lab-id> \
+  --pattern fat-tree --k 4 \
+  --spine-kind bmv2 --leaf-kind frr
+```
+
+</CodeGroup>
+
+## The materialised lab
+
+Every generated node/link/network row is the same shape a hand-drawn
+lab produces — no hidden "generated" flag. After generation you can
+delete a node, edit a link, add a wire; the pattern is a starting
+point, not a template you have to keep intact.
+
+- **Nodes** are named by role and index: `spine-1`, `leaf-3`, `h-2-1`
+  (host 1 under leaf 2 in spine-leaf).
+- **Links** are p2p with a `lnk-*` backing bridge each, matching the
+  `create_link` path in `routers/links.py`.
+- **Geometry** places spines top, leaves middle, hosts bottom (or the
+  equivalent per pattern) so the canvas reads left-to-right.
+
+## Wiring rules per pattern
+
+- **spine-leaf** — full CLOS between spines and leaves (`spines ×
+  leaves` links). Each host has one uplink to its own leaf. No dual-
+  homing yet — needs the multipath schema in Phase F.
+- **rail-optimised** — each rail is a hub-and-spoke: one spine, N
+  hosts, no cross-rail wiring. Cross-rail traffic is the case Ultra
+  Ethernet argues for improving; modelling only one rail keeps the
+  generator honest about what it demonstrates.
+- **fat-tree** — Al-Fares 2008 wiring: aggregation-to-edge full mesh
+  within a pod, aggregation-to-core across pods with a stride pattern.
+
+## Non-goals for the current generator
+
+- **BGP EVPN startup-config generation** — the `--with-bgp-evpn` flag
+  is accepted but not yet written; the demo pods shipped with the
+  release carry a working config you can lift.
+- **RoCE-capable host tuning** — the `--with-rxe` flag accepts and
+  ignores. To load `rdma_rxe` on every host, `labtris node exec` a
+  `modprobe rdma_rxe` after start.
+- **Custom addressing plans** — the generator does not touch
+  addresses. Ready hooks + `console_exec` are the right primitives for
+  bringing addressing up.
+
+## Combining with everything else
+
+The generator produces a topology; every other primitive Labtris has
+still applies:
+
+- **[Ready hooks](/hooks)** to wait for BGP convergence or measure
+  reachability once the fabric is up.
+- **[Portable snapshots](/snapshots)** — cold-snapshot a generated
+  fabric, hand out the pod, students load and start.
+- **[Live link stats](/observing#live-link-stats)** — click the
+  Traffic toggle on the canvas, every link shows its bps in real time.
+- **[P4 program per switch](/p4)** — each spine's data plane is what
+  you compile onto it.
+
+## Next
+
+[Portable snapshots](/snapshots) — save the whole generated fabric.

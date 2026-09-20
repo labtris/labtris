@@ -1,0 +1,123 @@
+---
+title: "P4 programmable switches"
+description: "bmv2 as a first-class Labtris node, with per-node .p4 programs."
+---
+
+A `bmv2` node is a Docker container running `simple_switch` — the
+software P4 target from p4lang. Drag one onto the canvas and it comes
+up with `basic_switch.p4` compiled and ready to forward. Swap the
+program per node — pick another curated built-in, or upload your own
+`.p4` — and the change follows the node across restarts, snapshots,
+and pods.
+
+Why it matters: **every AI-fabric or Ultra Ethernet research task that
+needs to say "the switch behaves like this specifically" needs a
+programmable data plane.** Fixed-function switches emulate what
+vendors decided to ship; a P4 switch runs whatever you wrote.
+
+## The curated built-ins
+
+Four programs ship in `packaging/p4-programs/`:
+
+| Built-in | What it demonstrates | Fabric-research angle |
+|---|---|---|
+| `basic_switch` | L2 forwarding by destination MAC. | The baseline every other program is measured against. |
+| `ecmp` | Per-packet ECMP across a small port set, hashing the 5-tuple. | The building block of packet-spraying fabrics. Watch two captures at the two output ports of an ecmp_group_size=2 switch — the same flow's packets alternate. |
+| `ecn` | Mark ECN CE when the egress queue crosses a threshold. | Foundation of DCTCP, DCQCN, Ultra Ethernet CC. Combine with `netem` on the downstream link and you have a CC test bench. |
+| `trim` | Truncate packet body past the L4 header when queue depth crosses a threshold. | The Ultra Ethernet "trimming" primitive — the receiver learns immediately that a packet was congested, without waiting on a timeout. |
+
+Read them: the `.p4` files are 60–160 lines each, one concept per program.
+
+## Pick or upload
+
+<CodeGroup>
+
+```bash CLI
+# List what ships
+labtris node p4 builtins
+
+# Point one node at a built-in
+labtris node p4 set <node-id> --builtin ecmp
+
+# Upload your own — the file replaces whatever was mounted
+labtris node p4 upload <node-id> mycustom.p4
+
+# Read back the current state (source is on the response for small files)
+labtris node p4 show <node-id> -o json
+
+# Drop the mounted program (falls back to default on next start)
+labtris node p4 clear <node-id>
+```
+
+```bash curl
+# List builtins
+curl http://<host>:8081/api/v1/p4/builtins
+
+# Set builtin
+curl -X PUT http://<host>:8081/api/v1/nodes/<id>/p4 \
+  -H 'content-type: application/json' \
+  -d '{"builtin": "ecmp"}'
+
+# Upload custom
+curl -X POST http://<host>:8081/api/v1/nodes/<id>/p4 \
+  -F 'file=@mycustom.p4'
+
+# Read
+curl http://<host>:8081/api/v1/nodes/<id>/p4
+```
+
+</CodeGroup>
+
+## How it works underneath
+
+Each `bmv2` node carries a per-instance bind mount at `/p4` that maps
+to `~/.local/share/labtris/node-mounts/<node-id>/p4/` on the host.
+`prog.p4` in that directory is what `simple_switch` compiles on start.
+Two consequences worth naming:
+
+- **Editing a program on disk propagates on next restart.** No API
+  call needed — the container's compile step reads whatever is at
+  `/p4/prog.p4` at that moment.
+- **A wipe preserves the program.** The mount dir survives a
+  `wipe`, so if a node's runtime state is torn down and rebuilt, the
+  same P4 program comes back up. If you want a truly fresh switch,
+  `labtris node p4 clear` before wipe.
+
+The container's `CMD` is
+`bash -c '/p4/prog.p4 compiles; exec simple_switch --log-console prog.json ||
+exec tail -f /dev/null'`. A compile failure leaves the container up so
+the compile error is readable through the console — better than a
+crash loop.
+
+## Combining with the topology generator
+
+The [AI-fabric topology generator](/fabrics) accepts `spine_kind=bmv2` +
+`p4_program=<name>`. Every generated spine comes up with the P4
+program you chose.
+
+```bash
+labtris lab generate <lab-id> \
+  --pattern spine-leaf --spines 2 --leaves 4 --hosts-per-leaf 4 \
+  --spine-kind bmv2 --p4-program ecmp
+```
+
+A working spine-leaf with two ECMP-spraying spines in one command.
+
+## Non-goals
+
+- **Not a P4 tutorial.** The [p4.org tutorials](https://github.com/p4lang/tutorials)
+  are excellent and already exist; the curated programs assume you have
+  read them.
+- **Not tied to bmv2 in the long run.** The current node kind is bmv2
+  because it is the software P4 target that runs on any host. If you
+  need a P4 program compiled for Tofino, Silicon One, or Trident, use
+  the same `.p4` file — Labtris just runs it on bmv2, you compile for
+  hardware elsewhere.
+- **No control-plane runtime API yet.** simple_switch has one
+  (`simple_switch_CLI`, gRPC PI); Labtris does not currently expose
+  it. Populate table entries with a P4 program that does it in
+  `apply`, or exec into the container and use the CLI.
+
+## Next
+
+[AI fabrics](/fabrics) — patterns you generate on top of `bmv2` spines.
