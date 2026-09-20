@@ -261,16 +261,30 @@ async def _do_pull(image: str) -> None:
 
 async def _current_status(image: str) -> dict[str, Any]:
     """Runtime-agnostic status snapshot. Docker refs get a live inspect
-    probe; QEMU refs stay on the on-disk cache lookup."""
+    probe + any live pull-progress from `pull_image_now`'s aggregator;
+    QEMU refs stay on the on-disk cache lookup."""
     if _looks_like_docker_ref(image):
-        from labtris_api.runtime.docker import is_image_cached
+        from labtris_api.runtime.docker import (
+            docker_pull_progress,
+            is_image_cached,
+        )
 
         cached = await is_image_cached(image)
+        progress = docker_pull_progress(image)
         pulling = image in _pulls
         return {
             "cached": cached,
-            "phase": "cached" if cached else ("pulling" if pulling else "not-downloaded"),
-            "bytes": 0,
+            "phase": (
+                (progress or {}).get("phase")
+                if progress
+                else "cached" if cached else "pulling" if pulling else "not-downloaded"
+            ),
+            "bytes": (progress or {}).get("total", 0),
+            # Match the QEMU status shape so the palette's progress
+            # bar can render off the same fields for both.
+            "done": (progress or {}).get("done"),
+            "total": (progress or {}).get("total"),
+            "percent": (progress or {}).get("percent"),
         }
     return image_status(image)
 

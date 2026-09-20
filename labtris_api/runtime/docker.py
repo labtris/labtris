@@ -518,20 +518,81 @@ async def is_image_cached(image: str) -> bool:
         await d.close()
 
 
-async def pull_image_now(image: str) -> None:
-    """Force a `docker pull` in the background — used by the palette's
-    Pull-now button and by POST /images/pull for docker refs.
+#: Per-image live pull progress, updated by `pull_image_now` as
+#: aiodocker's pull stream emits per-layer events. Shape matches what
+#: `image_status` returns for QEMU pulls (done/total bytes, phase,
+#: percent) so the palette can render the same progress bar for both.
+#: Cleared to `{"cached": True}` on completion.
+_docker_pull_progress: dict[str, dict[str, object]] = {}
 
-    Streams the layer output to stderr so `journalctl -u labtris-api`
-    shows the layer-by-layer progress, matching how a manual
-    `docker pull` looks."""
+
+def docker_pull_progress(image: str) -> dict[str, object] | None:
+    """Snapshot of an in-flight docker pull, or None if nothing is
+    happening. Called by routers/images.py's status endpoint so the
+    palette's poll loop gets real byte-level progress."""
+    return _docker_pull_progress.get(image)
+
+
+async def pull_image_now(image: str) -> None:
+    """Force a `docker pull` in the background with layer-level
+    progress accounting.
+
+    aiodocker's `pull(..., stream=True)` returns an async iterator of
+    per-layer status dicts — `{status: 'Downloading', progressDetail:
+    {current: N, total: M}, id: layer_id}` — that mirror what the
+    docker CLI prints. We aggregate across layers to compute a whole-
+    image percent so the palette shows one growing bar instead of a
+    fistful of per-layer ones."""
     d = _docker()
     repo, _, tag = image.partition(":")
     tag = tag or "latest"
+    layers: dict[str, dict[str, int]] = {}
     try:
-        await d.images.pull(from_image=repo, tag=tag)
+        _docker_pull_progress[image] = {
+            "phase": "starting", "done": 0, "total": 0, "percent": 0,
+        }
+        stream = await d.images.pull(from_image=repo, tag=tag, stream=True)
+        async for line in stream:
+            # aiodocker sometimes hands back bytes rows, sometimes
+            # already-decoded dicts; handle both defensively.
+            if isinstance(line, (bytes, str)):
+                import json as _json
+
+                try:
+                    line = _json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+            if not isinstance(line, dict):
+                continue
+            status = str(line.get("status") or "")
+            layer_id = line.get("id")
+            detail = line.get("progressDetail") or {}
+            if layer_id and status in ("Downloading", "Extracting"):
+                layers[layer_id] = {
+                    "current": int(detail.get("current") or 0),
+                    "total": int(detail.get("total") or 0),
+                }
+            done = sum(int(l.get("current") or 0) for l in layers.values())
+            total = sum(int(l.get("total") or 0) for l in layers.values())
+            pct = int(done * 100 / total) if total else 0
+            _docker_pull_progress[image] = {
+                "phase": status.lower() or "pulling",
+                "done": done,
+                "total": total,
+                "percent": pct,
+            }
     except DockerError as exc:
+        _docker_pull_progress.pop(image, None)
         raise runtime_error(f"docker pull {image} failed: {exc}") from exc
+    else:
+        _docker_pull_progress[image] = {
+            "phase": "cached", "done": 0, "total": 0, "percent": 100,
+        }
+        # Leave the "cached" sentinel in for one status poll so the
+        # UI sees the 100% frame before we clear.
+        import asyncio as _asyncio
+        await _asyncio.sleep(2)
+        _docker_pull_progress.pop(image, None)
     finally:
         await d.close()
 

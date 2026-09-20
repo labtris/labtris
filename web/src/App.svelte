@@ -2695,7 +2695,11 @@
   //: the button disappears and the ✓ appears.
   async function pullDockerImage(image) {
     if (!image) return;
-    pullingDockerImages = { ...pullingDockerImages, [image]: true };
+    // Store as an object so the template can render `.percent` on it.
+    // Truthy check (`if (pullingDockerImages[image])`) still works on
+    // an object, so the existing "is pulling" template branch keeps
+    // firing.
+    pullingDockerImages = { ...pullingDockerImages, [image]: { phase: "starting", percent: 0 } };
     try {
       await api.imagePull(image);
     } catch (e) {
@@ -2703,29 +2707,34 @@
       pullingDockerImages = { ...pullingDockerImages, [image]: false };
       return;
     }
-    // Poll until cached (or 5 minutes elapse — a big image may need
-    // more, but at that point the user should just watch the API log).
     const started = Date.now();
     const poll = async () => {
-      if (Date.now() - started > 5 * 60_000) {
+      if (Date.now() - started > 15 * 60_000) {
         pullingDockerImages = { ...pullingDockerImages, [image]: false };
         return;
       }
       try {
         const s = await api.imageStatus(image);
-        if (s?.cached) {
+        if (s?.cached && (s.percent == null || s.percent >= 100)) {
           pullingDockerImages = { ...pullingDockerImages, [image]: false };
-          // Refresh the catalog so the ✓ appears next to the entry.
           try {
             const cat = await api.catalog();
             dockerCatalogImages = cat.images || [];
           } catch { /* transient */ }
           return;
         }
+        // Store the whole status so the template can render its
+        // percent + done/total bytes into the bar.
+        pullingDockerImages = { ...pullingDockerImages, [image]: {
+          phase: s?.phase || "pulling",
+          percent: s?.percent ?? 0,
+          done: s?.done ?? 0,
+          total: s?.total ?? 0,
+        } };
       } catch { /* transient */ }
-      setTimeout(poll, 2000);
+      setTimeout(poll, 1000);
     };
-    setTimeout(poll, 2000);
+    setTimeout(poll, 1000);
   }
 
   async function pullImage(id) {
@@ -4303,7 +4312,16 @@
             {#if uncached}
               <div class="mono tiny cold">not on this host — first spawn will pull</div>
             {:else if pulling}
-              <div class="mono tiny cold">pulling from registry…</div>
+              {@const p = pullingDockerImages[k.image]}
+              {#if p && typeof p === "object" && p.percent != null}
+                <div class="mono tiny dl">
+                  {p.phase || "pulling"} {p.percent}%
+                  {#if p.total}({Math.round((p.done || 0) / 1048576)}/{Math.round(p.total / 1048576)} MB){/if}
+                </div>
+                <div class="bar"><i style={`width:${p.percent || 0}%`}></i></div>
+              {:else}
+                <div class="mono tiny cold">pulling from registry…</div>
+              {/if}
             {/if}
           </div>
           {#if uncached}
