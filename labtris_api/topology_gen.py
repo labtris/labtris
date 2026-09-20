@@ -321,6 +321,148 @@ line vty
 """
 
 
+def _rail_spine_frr_conf(rail: int, hosts: int) -> str:
+    """FRR config for the spine of one rail in a rail-optimised fabric.
+
+    Each rail is its own iBGP island — same AS across the rail so
+    intra-rail path selection is straightforward. Router-id keyed on
+    rail index so a multi-rail lab reads clearly. Hosts attach on
+    eth0..eth(hosts-1); the spine peers unnumbered iBGP with each,
+    ready to carry EVPN if the operator turns on advertise-all-vni
+    later.
+    """
+    asn = 64700 + rail
+    router_id = f"10.{rail}.0.1"
+    ifaces = "\n".join(
+        f" neighbor eth{i} interface remote-as {asn}" for i in range(hosts)
+    )
+    return f"""\
+frr version 8.4
+frr defaults datacenter
+hostname spine-r{rail}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp {asn}
+ bgp router-id {router_id}
+{ifaces}
+ !
+ address-family l2vpn evpn
+  advertise-all-vni
+ exit-address-family
+!
+line vty
+!
+"""
+
+
+def _rail_host_frr_conf(rail: int, host: int) -> str:
+    """FRR config for a host in a rail-optimised fabric — iBGP peer to
+    its rail's spine, single uplink. The host still gets bgpd so it can
+    advertise its own /32 into the rail; not strictly needed for a
+    ping test but present so the researcher can inject routes without
+    touching a second daemon."""
+    asn = 64700 + rail
+    router_id = f"10.{rail}.{host}.1"
+    return f"""\
+frr version 8.4
+frr defaults datacenter
+hostname h-r{rail}-{host}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp {asn}
+ bgp router-id {router_id}
+ neighbor eth0 interface remote-as {asn}
+!
+line vty
+!
+"""
+
+
+def _fattree_core_frr_conf(idx: int, k: int) -> str:
+    """Core switch in a k-ary fat tree. AS 65000 across all cores;
+    router-id 10.255.0.<idx>. Unnumbered eBGP to every aggregation
+    switch it wires to (half*k ports, one per pod)."""
+    router_id = f"10.255.0.{idx}"
+    ifaces = "\n".join(
+        f" neighbor eth{i} interface remote-as 65100" for i in range(k)
+    )
+    return f"""\
+frr version 8.4
+frr defaults datacenter
+hostname core-{idx}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp 65000
+ bgp router-id {router_id}
+ bgp bestpath as-path multipath-relax
+{ifaces}
+!
+line vty
+!
+"""
+
+
+def _fattree_agg_frr_conf(pod: int, idx: int, k: int) -> str:
+    """Aggregation switch in pod `pod`, position `idx` within pod. Pod
+    AS is 65100+pod; peers upward to cores (half interfaces) and
+    downward to edges (half interfaces)."""
+    half = k // 2
+    asn = 65100 + pod
+    router_id = f"10.{pod}.{idx}.1"
+    up = "\n".join(f" neighbor eth{i} interface remote-as 65000" for i in range(half))
+    down = "\n".join(
+        f" neighbor eth{i} interface remote-as {asn}" for i in range(half, k)
+    )
+    return f"""\
+frr version 8.4
+frr defaults datacenter
+hostname agg-{pod}-{idx}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp {asn}
+ bgp router-id {router_id}
+ bgp bestpath as-path multipath-relax
+{up}
+{down}
+!
+line vty
+!
+"""
+
+
+def _fattree_edge_frr_conf(pod: int, idx: int, k: int) -> str:
+    """Edge switch in pod `pod`, position `idx`. Same pod AS as
+    aggregations; peers upward to aggs (half interfaces) and downward
+    to k/2 hosts."""
+    half = k // 2
+    asn = 65100 + pod
+    router_id = f"10.{pod}.{100 + idx}.1"
+    up = "\n".join(f" neighbor eth{i} interface remote-as {asn}" for i in range(half))
+    return f"""\
+frr version 8.4
+frr defaults datacenter
+hostname edge-{pod}-{idx}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp {asn}
+ bgp router-id {router_id}
+{up}
+!
+line vty
+!
+"""
+
+
 def _leaf_frr_conf(idx: int, spines: int) -> str:
     """FRR config for a leaf in a spine-leaf EVPN underlay.
 
@@ -433,16 +575,28 @@ async def _rail_optimised(b: _Builder, body: GenerateIn) -> None:
     rail keeps this generator honest.
     """
     for r in range(body.rails):
-        spine = await b.add_node(f"spine-r{r+1}", body.spine_kind, row=0, col=r, row_wide=body.rails,
-                                 opts={"p4_program": body.p4_program} if body.spine_kind == "bmv2" else None)
+        spine_cfg = (
+            _frr_installer(_FRR_DAEMONS_EVPN, _rail_spine_frr_conf(r + 1, body.hosts_per_rail))
+            if body.with_bgp_evpn and body.spine_kind == "frr" else None
+        )
+        spine = await b.add_node(
+            f"spine-r{r+1}", body.spine_kind, row=0, col=r, row_wide=body.rails,
+            opts={"p4_program": body.p4_program} if body.spine_kind == "bmv2" else None,
+            startup_config=spine_cfg,
+        )
         await b.flush()
         for h in range(body.hosts_per_rail):
+            host_cfg = (
+                _frr_installer(_FRR_DAEMONS_EVPN, _rail_host_frr_conf(r + 1, h + 1))
+                if body.with_bgp_evpn and body.host_kind == "frr" else None
+            )
             host = await b.add_node(
                 f"h-r{r+1}-{h+1}",
                 body.host_kind,
                 row=1,
                 col=r * body.hosts_per_rail + h,
                 row_wide=body.rails * body.hosts_per_rail,
+                startup_config=host_cfg,
             )
             a = await b.add_interface(spine)
             c = await b.add_interface(host)
@@ -460,9 +614,28 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
         raise bad_request("fat-tree requires k to be even")
     k = body.k
     half = k // 2
+
+    def _core_cfg(i: int) -> str | None:
+        if body.with_bgp_evpn and body.spine_kind == "frr":
+            return _frr_installer(_FRR_DAEMONS_EVPN, _fattree_core_frr_conf(i + 1, k))
+        return None
+
+    def _agg_cfg(pod: int, i: int) -> str | None:
+        if body.with_bgp_evpn and body.leaf_kind == "frr":
+            return _frr_installer(_FRR_DAEMONS_EVPN, _fattree_agg_frr_conf(pod + 1, i + 1, k))
+        return None
+
+    def _edge_cfg(pod: int, i: int) -> str | None:
+        if body.with_bgp_evpn and body.leaf_kind == "frr":
+            return _frr_installer(_FRR_DAEMONS_EVPN, _fattree_edge_frr_conf(pod + 1, i + 1, k))
+        return None
+
     cores = [
-        await b.add_node(f"core-{i+1}", body.spine_kind, row=0, col=i, row_wide=half * half,
-                         opts={"p4_program": body.p4_program} if body.spine_kind == "bmv2" else None)
+        await b.add_node(
+            f"core-{i+1}", body.spine_kind, row=0, col=i, row_wide=half * half,
+            opts={"p4_program": body.p4_program} if body.spine_kind == "bmv2" else None,
+            startup_config=_core_cfg(i),
+        )
         for i in range(half * half)
     ]
     aggs_per_pod = half
@@ -471,13 +644,19 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
     edges: list[list[Node]] = []
     for pod in range(k):
         pod_aggs = [
-            await b.add_node(f"agg-{pod+1}-{a+1}", body.leaf_kind, row=1,
-                             col=pod * aggs_per_pod + a, row_wide=k * aggs_per_pod)
+            await b.add_node(
+                f"agg-{pod+1}-{a+1}", body.leaf_kind, row=1,
+                col=pod * aggs_per_pod + a, row_wide=k * aggs_per_pod,
+                startup_config=_agg_cfg(pod, a),
+            )
             for a in range(aggs_per_pod)
         ]
         pod_edges = [
-            await b.add_node(f"edge-{pod+1}-{e+1}", body.leaf_kind, row=2,
-                             col=pod * edges_per_pod + e, row_wide=k * edges_per_pod)
+            await b.add_node(
+                f"edge-{pod+1}-{e+1}", body.leaf_kind, row=2,
+                col=pod * edges_per_pod + e, row_wide=k * edges_per_pod,
+                startup_config=_edge_cfg(pod, e),
+            )
             for e in range(edges_per_pod)
         ]
         aggs.append(pod_aggs)

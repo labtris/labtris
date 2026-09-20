@@ -141,6 +141,45 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         # docker keeps /proc/sys read-only for every unprivileged container.
         # containerlab runs it privileged for the same reason.
         ContainerImage(
+            id="rdma-host",
+            label="RDMA host (soft-RoCE + perftest)",
+            # Aliased tag on the same image so this profile doesn't
+            # collide with the plain `ubuntu` entry above in
+            # _BY_REFERENCE — palette drops resolve by image ref, and
+            # two profiles claiming ubuntu:24.04 would silently mix
+            # their cmd/caps into one another.
+            image="ubuntu:noble",
+            cap_add=("SYS_ADMIN",),
+            cmd=[
+                "/bin/bash", "-c",
+                # First-boot: install rdma-core + perftest + iproute2 (adds
+                # `rdma`, `ibv_devinfo`, `ib_send_bw`, `ib_write_bw`). If
+                # the host has loaded `rdma_rxe` already (see notes), the
+                # container can add an rxe device on eth0 and the RDMA
+                # verbs are live. Then hand PID 1 to bash-blocked-on-tail
+                # so the container stays up regardless of whether the
+                # rxe attach succeeded — the operator can still shell in.
+                "apt-get update -qq && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+                "rdma-core perftest iproute2 iputils-ping >/dev/null 2>&1; "
+                "rdma link add rxe0 type rxe netdev eth0 2>/dev/null || true; "
+                "echo 'rdma-host ready'; "
+                "exec tail -f /dev/null",
+            ],
+            notes=(
+                "Soft-RoCE (rxe) inside a plain Ubuntu container. First "
+                "spawn takes ~30 s to apt-install rdma-core + perftest. "
+                "The host kernel must load `rdma_rxe` once before the "
+                "container's `rdma link add` succeeds — run "
+                "`sudo modprobe rdma_rxe` on the labtris host (survives "
+                "the container). This is the closest working stand-in "
+                "for Ultra Ethernet's userspace verbs today; when a "
+                "public UET stack lands upstream, a UET preset drops in "
+                "next to this one with the same shape."
+            ),
+            boot_seconds=30,
+        ),
+        ContainerImage(
             id="bmv2",
             label="P4 switch (bmv2)",
             image="p4lang/behavioral-model:latest",

@@ -22,8 +22,8 @@ from labtris_api.routers import (
     hooks,
     hosts,
     images,
-    impair,
-    labs,
+    impair,    labs,
+    link_groups,
     links,
     networks,
     nodes,
@@ -168,6 +168,7 @@ def create_app() -> FastAPI:
     app.include_router(hooks.router, prefix=prefix)
     app.include_router(pods.router, prefix=prefix)
     app.include_router(p4.router, prefix=prefix)
+    app.include_router(link_groups.router, prefix=prefix)
 
     web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
     if web_dist.is_dir():

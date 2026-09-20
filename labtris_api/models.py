@@ -246,19 +246,60 @@ class Interface(Base):
     network: Mapped[Network | None] = relationship(back_populates="interfaces")
 
 
+class LinkGroup(Base):
+    """N parallel Links between the same node pair, grouped for ECMP.
+
+    Each member Link is still a normal two-endpoint p2p wire; the group
+    is metadata that says 'treat these together'. The runtime does not
+    itself install a multipath route across group members — a guest's
+    own control plane (usually FRR + `bgp bestpath as-path multipath-
+    relax`) does the balancing across the parallel uplinks. The group
+    exists so a lab spec can say 'give me 4x25G between spine-1 and
+    leaf-1' declaratively, and so the canvas can render the parallel
+    wires as a bundle instead of overlapping single Beziers.
+    """
+
+    __tablename__ = "link_groups"
+
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    lab_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("labs.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: Hint for future runtime ECMP wiring. `layer3+4` matches Linux
+    #: bond xmit_hash_policy for per-flow ECMP; `per_packet` reserves
+    #: a future round-robin mode. Not enforced today; guests do their
+    #: own ECMP via routing.
+    hash_policy: Mapped[str] = mapped_column(Text, nullable=False, default="layer3+4")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    lab: Mapped[Lab] = relationship()
+
+
 class Link(Base):
     __tablename__ = "links"
     __table_args__ = (CheckConstraint("a_iface_id <> b_iface_id", name="link_ends_distinct"),)
 
     id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
     lab_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("labs.id", ondelete="CASCADE"))
+    # UNIQUE was dropped in 0019_link_groups so parallel Links between
+    # the same pair (grouped for ECMP) become possible. The check that
+    # ungrouped Links stay unique per-interface moves to the API layer
+    # in routers/links.create_link — dropping a DB constraint here is
+    # deliberate; enforcing per-interface uniqueness in DDL blocks the
+    # whole LinkGroup use case for one edge case a router can catch.
     a_iface_id: Mapped[str] = mapped_column(
-        CHAR(26), ForeignKey("interfaces.id", ondelete="CASCADE"), unique=True
+        CHAR(26), ForeignKey("interfaces.id", ondelete="CASCADE")
     )
     b_iface_id: Mapped[str] = mapped_column(
-        CHAR(26), ForeignKey("interfaces.id", ondelete="CASCADE"), unique=True
+        CHAR(26), ForeignKey("interfaces.id", ondelete="CASCADE")
     )
     network_id: Mapped[str] = mapped_column(CHAR(26), ForeignKey("networks.id", ondelete="CASCADE"))
+    #: Nullable FK to link_groups — a NULL means this is a normal
+    #: standalone Link (the shape before 0.9.0).
+    group_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("link_groups.id", ondelete="CASCADE"), nullable=True
+    )
     impair_ab: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     impair_ba: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     admin_up: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -273,6 +314,7 @@ class Link(Base):
     a_iface: Mapped[Interface] = relationship(foreign_keys=[a_iface_id])
     b_iface: Mapped[Interface] = relationship(foreign_keys=[b_iface_id])
     network: Mapped[Network] = relationship()
+    group: Mapped[LinkGroup | None] = relationship()
 
 
 class Geometry(Base):

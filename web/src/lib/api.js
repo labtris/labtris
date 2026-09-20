@@ -3,6 +3,18 @@ export const KIND = [
   { id: "nginx", label: "Nginx", image: "nginx:alpine", cmd: null, color: "#6ee7b7", glyph: "⬢" },
   { id: "redis", label: "Redis", image: "redis:alpine", cmd: null, color: "#f87171", glyph: "◆" },
   { id: "frr", label: "FRRouting", image: "frrouting/frr:v8.4.0", cmd: null, color: "#60a5fa", glyph: "⬡" },
+  // Soft-RoCE host — Ubuntu + rdma-core + perftest + rxe(0). Closest
+  // working stand-in for Ultra Ethernet's RDMA verbs today.
+  {
+    id: "rdma-host",
+    label: "RDMA host (soft-RoCE)",
+    image: "ubuntu:noble",
+    cmd: null,
+    color: "#22d3ee",
+    glyph: "⇌",
+    boot: 30,
+    note: "First spawn takes ~30 s to apt-install rdma-core+perftest. Host must `modprobe rdma_rxe` once beforehand.",
+  },
   // bmv2 — the P4 software switch. Ships with a `/p4` mount defaulted to
   // basic_switch.p4; pick another built-in or upload a custom .p4 from
   // the node inspector (or `labtris node p4 …`). Distinct glyph so a

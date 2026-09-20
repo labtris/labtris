@@ -375,6 +375,18 @@ class PyrouteNet:
         ecn = bool(spec.get("ecn") or False)
         ecn_min = int(spec.get("ecn_min_bytes") or 50_000)
         ecn_max = int(spec.get("ecn_max_bytes") or max(ecn_min * 3, 150_000))
+        # Real 802.1Qbb PFC needs OVS or an eBPF per-priority pause path
+        # neither of which is wired yet. Accepted as a stable schema hint
+        # so a lab spec that names `pfc: true` today does not need
+        # changing when the runtime lands. Logged so an operator watching
+        # journalctl sees why the promise is not being kept.
+        if spec.get("pfc"):
+            import logging as _log
+            _log.getLogger("labtris.netd").info(
+                "tc.set pfc=true requested on %s but not implemented; "
+                "leaving the link with netem+tbf+red only. Track upstream "
+                "OVS / eBPF pause-frame work.", name,
+            )
         with IPRoute() as ipr:
             idx = _lookup(ipr, name)
             netem = delay or jitter or loss or reorder or duplicate or corrupt
