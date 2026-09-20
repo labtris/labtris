@@ -187,6 +187,11 @@ export const api = {
     return text ? JSON.parse(text) : null;
   },
   nodeP4Clear: (id) => req(`/api/v1/nodes/${id}/p4`, { method: "DELETE" }),
+  // Per-link live traffic stats (Phase E2). Batched: one call for the
+  // whole lab, one netd round-trip on the server side. Server caches
+  // last few snapshots per interface and derives bps/pps.
+  linkStats: (id) => req(`/api/v1/links/${id}/stats`),
+  labLinkStats: (id) => req(`/api/v1/labs/${id}/link-stats`),
   geometry: (id) => req(`/api/v1/labs/${id}/geometry`),
   saveGeometry: (id, data) =>
     req(`/api/v1/labs/${id}/geometry`, { method: "PUT", body: JSON.stringify({ data }) }),

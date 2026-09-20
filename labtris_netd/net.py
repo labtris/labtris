@@ -409,6 +409,53 @@ class PyrouteNet:
                 raise _map_nl(exc, name) from exc
         return {"applied": spec}
 
+    def iface_counters(self, names: list[str]) -> dict[str, Any]:
+        """IFLA_STATS64 for every named interface, in one netlink dump.
+
+        Called from the per-link traffic overlay: the browser polls one
+        lab-wide endpoint every ~2 s, that endpoint asks netd for every
+        endpoint interface's counters in one call, netd walks a single
+        `ipr.get_links()` result. A canvas with 100 links needs one
+        round-trip.
+
+        Missing interfaces get `{"exists": false}` so a link whose tap
+        was just wiped does not surface as a zero — the UI can dim the
+        label and leave the last known value visible.
+        """
+        import time
+
+        out: dict[str, Any] = {}
+        as_of = time.time()
+        with IPRoute() as ipr:
+            by_name = {
+                link.get_attr("IFLA_IFNAME"): link
+                for link in ipr.get_links()
+                if link.get_attr("IFLA_IFNAME")
+            }
+            for name in names:
+                link = by_name.get(name)
+                if link is None:
+                    out[name] = {"exists": False}
+                    continue
+                # IFLA_STATS64 is a nested struct (rtnl_link_stats64):
+                # rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors,
+                # tx_errors, rx_dropped, tx_dropped, multicast, collisions,
+                # + a bunch of others. pyroute2 exposes it as a dict.
+                stats = link.get_attr("IFLA_STATS64") or link.get_attr("IFLA_STATS") or {}
+                out[name] = {
+                    "exists": True,
+                    "rx_bytes": int(stats.get("rx_bytes", 0)),
+                    "tx_bytes": int(stats.get("tx_bytes", 0)),
+                    "rx_packets": int(stats.get("rx_packets", 0)),
+                    "tx_packets": int(stats.get("tx_packets", 0)),
+                    "rx_dropped": int(stats.get("rx_dropped", 0)),
+                    "tx_dropped": int(stats.get("tx_dropped", 0)),
+                    "rx_errors": int(stats.get("rx_errors", 0)),
+                    "tx_errors": int(stats.get("tx_errors", 0)),
+                    "as_of": as_of,
+                }
+        return {"counters": out}
+
     def iface_inspect(self, names: list[str]) -> dict[str, Any]:
         """What each named device actually is right now.
 

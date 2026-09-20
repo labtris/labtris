@@ -53,6 +53,10 @@ VERBS = frozenset(
         # container PID the caller supplied.
         "hook.ping",
         "hook.http",
+        # Batched IFLA_STATS64 read for a list of interfaces. Used by
+        # the per-link traffic overlay on the canvas — one call per
+        # lab poll, not one per link.
+        "iface.counters",
     }
 )
 
@@ -129,6 +133,7 @@ class NetOps(Protocol):
         self, pid: int, target: str, count: int, timeout_s: int
     ) -> dict[str, Any]: ...
     def hook_http(self, pid: int, url: str, timeout_s: int) -> dict[str, Any]: ...
+    def iface_counters(self, names: list[str]) -> dict[str, Any]: ...
 
 
 class NetdFault(Exception):
@@ -293,6 +298,11 @@ def _call(verb: str, params: dict[str, Any], net: NetOps) -> dict[str, Any]:
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
             raise NetdFault("EINVAL", "names must be a list of strings")
         return net.iface_inspect([_require_ifname(n) for n in names])
+    if verb == "iface.counters":
+        names = params.get("names")
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise NetdFault("EINVAL", "names must be a list of strings")
+        return net.iface_counters([_require_ifname(n) for n in names])
     if verb == "addr.replace":
         return net.addr_replace(
             _require_ifname(params.get("name")),

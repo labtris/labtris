@@ -719,3 +719,28 @@ def _node_p4_set(api: Api, a: dict[str, Any]) -> Any:
 )
 def _node_p4_clear(api: Api, a: dict[str, Any]) -> Any:
     return api.delete(f"/api/v1/nodes/{a['node_id']}/p4")
+
+
+@tool(
+    "link_stats",
+    "Live traffic stats for one link: rx/tx bytes + packets + drops on "
+    "both endpoints, and derived bps / pps if a previous snapshot is "
+    "cached (call twice ~2s apart for rates). Answers 'what is going "
+    "through this link right now?' with real numbers instead of "
+    "opening a capture.",
+    {"link_id": STR},
+    ["link_id"],
+)
+def _link_stats(api: Api, a: dict[str, Any]) -> Any:
+    return api.get(f"/api/v1/links/{a['link_id']}/stats")
+
+
+@tool(
+    "lab_link_stats",
+    "Live traffic stats for every link in a lab, one round-trip. Use "
+    "this to find the busiest link or the one dropping packets.",
+    {"lab_id": STR},
+    ["lab_id"],
+)
+def _lab_link_stats(api: Api, a: dict[str, Any]) -> Any:
+    return api.get(f"/api/v1/labs/{a['lab_id']}/link-stats")

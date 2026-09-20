@@ -281,6 +281,13 @@
   // Per-image transient pull state so the button flips to "Pulling…"
   // immediately on click without waiting for the next catalog refresh.
   let pullingDockerImages = $state({});
+  // Live per-link traffic stats (Phase E2). Populated by a 2s poll of
+  // /labs/{id}/link-stats when `showLinkStats` is on and a lab is
+  // loaded. Off by default — labs with a hundred links do not want
+  // the label clutter on every render.
+  let linkStats = $state({});
+  let showLinkStats = $state(false);
+  let linkStatsTimer = null;
   //: Bring-your-own image upload. Non-null while the modal is open; carries
   //: form state plus, once the upload starts, the XHR progress fraction.
   let uploadForm = $state(null);
@@ -2648,6 +2655,40 @@
   //: loop off immediately; the next poll will overwrite with real
   //: {phase, done, total, percent} from the server. Errors bubble to the
   //: toast; the row stays in "starting" briefly before the poll clears it.
+  //: Poll /labs/{id}/link-stats every 2 s when the traffic overlay is on
+  //: and a lab is open. One API call fetches every link's stats in the
+  //: lab; server caches previous snapshots for rate computation, so the
+  //: second poll onwards has real bps/pps rather than counters alone.
+  $effect(() => {
+    if (linkStatsTimer) {
+      clearInterval(linkStatsTimer);
+      linkStatsTimer = null;
+    }
+    if (!showLinkStats || !lab?.id) {
+      linkStats = {};
+      return;
+    }
+    const tick = async () => {
+      try {
+        const got = await api.labLinkStats(lab.id);
+        linkStats = got?.links || {};
+      } catch { /* transient; keep last known */ }
+    };
+    tick();
+    linkStatsTimer = setInterval(tick, 2000);
+    return () => { if (linkStatsTimer) { clearInterval(linkStatsTimer); linkStatsTimer = null; } };
+  });
+
+  //: Format bits-per-second for a link label. Compact — the overlay
+  //: sits under a wire, has ~40px to work with. Nothing under 1 kbps
+  //: draws (link is quiet; label would be noise).
+  function fmtBps(bps) {
+    if (!bps || bps < 1000) return "";
+    if (bps < 1_000_000) return `${(bps / 1000).toFixed(0)}k`;
+    if (bps < 1_000_000_000) return `${(bps / 1_000_000).toFixed(1)}M`;
+    return `${(bps / 1_000_000_000).toFixed(1)}G`;
+  }
+
   //: Pull-now for a docker image ref, mirroring the QEMU pullImage()
   //: path. Reuses POST /images/pull which now accepts docker refs too;
   //: polls /images/status until cached, then refreshes the catalog so
@@ -4449,6 +4490,20 @@
                   <text class="iflabel" x={la.x} y={la.y} text-anchor={la.anchor}>{aIf.name}</text>
                   <text class="iflabel" x={lb.x} y={lb.y} text-anchor={lb.anchor}>{bIf.name}</text>
                 {/if}
+                <!-- Live traffic-rate label at the midpoint when the
+                     overlay is on. `linkStats[id]` is populated by a
+                     2s poll of /labs/{id}/link-stats. Nothing draws
+                     under 1 kbps — quiet links stay uncluttered. -->
+                {#if showLinkStats && linkStats[link.id]}
+                  {@const st = linkStats[link.id]}
+                  {@const rxRate = fmtBps(st.a?.rate?.tx_bps || 0)}
+                  {@const txRate = fmtBps(st.b?.rate?.tx_bps || 0)}
+                  {#if rxRate || txRate}
+                    <text class="linkrate" x={(a.x + b.x) / 2} y={(a.y + b.y) / 2 - 4} text-anchor="middle">
+                      {rxRate || "·"} ↔ {txRate || "·"}
+                    </text>
+                  {/if}
+                {/if}
               {/if}
             {/each}
           {/if}
@@ -4673,6 +4728,11 @@
       {/if}
 
       <div class="canvas-ctl">
+        <button
+          class:on={showLinkStats}
+          onclick={() => (showLinkStats = !showLinkStats)}
+          title="live traffic rate on every link, polled every 2 s"
+        >⇋ Traffic</button>
         <button
           class:on={showAddressing}
           onclick={toggleAddressing}
@@ -6548,6 +6608,7 @@
      mass when the canvas is busy. The halo keeps it legible over a wire. */
   .rubber { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4;
     pointer-events: none; opacity: .9; }
+  .linkrate { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--accent); opacity: .9; paint-order: stroke; stroke: var(--halo); stroke-width: 3px; stroke-linejoin: round; }
   .iflabel { font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted);
     paint-order: stroke; stroke: var(--halo); stroke-width: 3px; stroke-linejoin: round;
     pointer-events: none; user-select: none; }

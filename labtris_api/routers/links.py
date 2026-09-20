@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -105,3 +107,105 @@ async def delete_link(
     await session.delete(link)
     await session.commit()
     return Response(status_code=204)
+
+
+@router.get("/links/{link_id}/stats")
+async def link_stats(
+    link_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Live counters + derived bps/pps for both endpoints of a link.
+
+    One netd call fetches both interface counters; `link_stats.record`
+    caches them, `link_stats.rate_for` computes deltas against the
+    previous cached snapshot. First call after a restart returns
+    counters with no rate; second call ~2s later gets rates."""
+    from labtris_api import link_stats as ls
+    from labtris_api.netd_client import NetdError, netd
+
+    link = await session.get(Link, link_id)
+    if link is None:
+        raise not_found(f"link {link_id} not found")
+    a = await session.get(Interface, link.a_iface_id)
+    b = await session.get(Interface, link.b_iface_id)
+    names = [i.host_ifname for i in (a, b) if i and i.host_ifname]
+    if not names:
+        return {"link_id": link_id, "endpoints": {}, "note": "no host interfaces"}
+    try:
+        got = await netd.call("iface.counters", {"names": names})
+    except NetdError as exc:
+        return {"link_id": link_id, "error": exc.message}
+    counters = got.get("counters", {})
+    ls.record(counters)
+    return {
+        "link_id": link_id,
+        "endpoints": {
+            "a": _endpoint_view(a, counters, ls),
+            "b": _endpoint_view(b, counters, ls),
+        },
+    }
+
+
+@router.get("/labs/{lab_id}/link-stats")
+async def lab_link_stats(
+    lab_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """One-shot: every link's counters + rates for a whole lab.
+
+    The canvas overlay polls this every ~2 s. Batches the netd read
+    across all endpoints of every link — a lab with 100 links + 200
+    endpoints still costs one netd round-trip per poll, not 200."""
+    from sqlalchemy import select as _select
+
+    from labtris_api import link_stats as ls
+    from labtris_api.netd_client import NetdError, netd
+
+    links = (
+        await session.execute(_select(Link).where(Link.lab_id == lab_id))
+    ).scalars().all()
+    # Collect every endpoint's host_ifname in one pass.
+    ifaces_by_link: dict[str, tuple[Interface | None, Interface | None]] = {}
+    all_names: list[str] = []
+    for link in links:
+        a = await session.get(Interface, link.a_iface_id)
+        b = await session.get(Interface, link.b_iface_id)
+        ifaces_by_link[link.id] = (a, b)
+        for i in (a, b):
+            if i and i.host_ifname:
+                all_names.append(i.host_ifname)
+    if not all_names:
+        return {"lab_id": lab_id, "links": {}}
+    try:
+        got = await netd.call("iface.counters", {"names": all_names})
+    except NetdError as exc:
+        return {"lab_id": lab_id, "error": exc.message}
+    counters = got.get("counters", {})
+    ls.record(counters)
+    return {
+        "lab_id": lab_id,
+        "links": {
+            link_id: {
+                "a": _endpoint_view(a, counters, ls),
+                "b": _endpoint_view(b, counters, ls),
+            }
+            for link_id, (a, b) in ifaces_by_link.items()
+        },
+    }
+
+
+def _endpoint_view(
+    iface: Interface | None, counters: dict, ls_mod: Any
+) -> dict[str, Any]:
+    """Shape one endpoint's stats + derived rate for the response."""
+    if iface is None or not iface.host_ifname:
+        return {"host_ifname": None, "counters": None, "rate": None}
+    name = iface.host_ifname
+    return {
+        "host_ifname": name,
+        "iface_id": iface.id,
+        "counters": counters.get(name),
+        "rate": ls_mod.rate_for(name),
+    }
