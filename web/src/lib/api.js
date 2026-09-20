@@ -37,12 +37,12 @@ export const KIND = [
   {
     id: "rdma-host",
     label: "RDMA host (soft-RoCE)",
-    image: "ubuntu:noble",
+    image: "labtris/rdma-host:latest",
     cmd: null,
     color: "#22d3ee",
     glyph: "⇌",
-    boot: 30,
-    note: "First spawn takes ~30 s to apt-install rdma-core+perftest. Host must `modprobe rdma_rxe` once beforehand.",
+    boot: 2,
+    note: "Ubuntu + rdma-core + perftest pre-baked. Host must `modprobe rdma_rxe` once first.",
   },
   // bmv2 — the P4 software switch. Ships with a `/p4` mount defaulted to
   // basic_switch.p4; pick another built-in or upload a custom .p4 from
