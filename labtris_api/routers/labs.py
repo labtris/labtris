@@ -25,6 +25,7 @@ from labtris_api.lifecycle import (
 from labtris_api.migrate import Plan, detect, parse_clab, parse_unl
 from labtris_api.models import Geometry, Interface, Lab, Link, Network, Node
 from labtris_api.naming import normalise_folder
+from labtris_api.topology_gen import GenerateIn, GenerateOut
 from labtris_api.schemas import (
     ConfigSetIn,
     FolderRename,
@@ -670,6 +671,20 @@ async def apply_configset(
     lab.active_configset = name
     await session.commit()
     return {"applied": applied, "pushed": pushed, "missing": missing, "active": name}
+
+
+@router.post("/labs/{lab_id}/generate", response_model=GenerateOut)
+async def generate_topology(
+    lab_id: str,
+    body: GenerateIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> GenerateOut:
+    """Materialise a pattern topology (spine-leaf, rail-optimised, fat-tree)
+    into an existing lab. See `labtris_api/topology_gen.py` for the shapes."""
+    from labtris_api.topology_gen import generate
+
+    return await generate(session, lab_id, body)
 
 
 async def _clone_topology(

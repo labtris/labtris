@@ -149,6 +149,53 @@ def cmd_snapshot(
     print_object(fmt, payload)
 
 
+@app.command("generate")
+def cmd_generate(
+    lab_id: str,
+    pattern: str = typer.Option(
+        "spine-leaf", "--pattern",
+        help="spine-leaf | rail-optimised | fat-tree",
+    ),
+    spines: int = typer.Option(2, "--spines"),
+    leaves: int = typer.Option(4, "--leaves"),
+    hosts_per_leaf: int = typer.Option(2, "--hosts-per-leaf"),
+    rails: int = typer.Option(4, "--rails", help="rail-optimised only"),
+    hosts_per_rail: int = typer.Option(2, "--hosts-per-rail", help="rail-optimised only"),
+    k: int = typer.Option(4, "--k", help="fat-tree only (even)"),
+    spine_kind: str = typer.Option("bmv2", "--spine-kind"),
+    leaf_kind: str = typer.Option("frr", "--leaf-kind"),
+    host_kind: str = typer.Option("alpine", "--host-kind"),
+    p4_program: str = typer.Option("basic_switch", "--p4-program"),
+    with_bgp_evpn: bool = typer.Option(False, "--with-bgp-evpn"),
+    fmt: str = format_option(),
+) -> None:
+    """Materialise a pattern topology (spine-leaf / rail-optimised / fat-tree)
+    into an existing lab. Create the lab first (empty) with the UI or API;
+    then generate. Existing nodes are left alone; the pattern is added on top.
+    """
+    api = api_for(require_session())
+    body = {
+        "pattern": pattern,
+        "spines": spines,
+        "leaves": leaves,
+        "hosts_per_leaf": hosts_per_leaf,
+        "rails": rails,
+        "hosts_per_rail": hosts_per_rail,
+        "k": k,
+        "spine_kind": spine_kind,
+        "leaf_kind": leaf_kind,
+        "host_kind": host_kind,
+        "p4_program": p4_program,
+        "with_bgp_evpn": with_bgp_evpn,
+    }
+    try:
+        payload = api.post(f"/api/v1/labs/{lab_id}/generate", body)
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+    print_object(fmt, payload)
+
+
 @app.command("load")
 def cmd_load(
     path: str = typer.Argument(..., help="Path on the SERVER host to a .tar.gz pod."),

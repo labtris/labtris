@@ -744,3 +744,26 @@ def _link_stats(api: Api, a: dict[str, Any]) -> Any:
 )
 def _lab_link_stats(api: Api, a: dict[str, Any]) -> Any:
     return api.get(f"/api/v1/labs/{a['lab_id']}/link-stats")
+
+
+@tool(
+    "lab_generate",
+    "Materialise an AI-fabric pattern topology into an existing lab: "
+    "spine-leaf (spines × leaves × hosts), rail-optimised (GPU-cluster "
+    "shape with one spine per rail), or fat-tree (Al-Fares 2008 k-ary). "
+    "Create an empty lab first, then generate — the pattern lands on "
+    "top of whatever is there. Use spine_kind=bmv2 + p4_program=ecmp "
+    "for a spraying-fabric prototype.",
+    {
+        "lab_id": STR,
+        "pattern": {"type": "string", "enum": ["spine-leaf", "rail-optimised", "fat-tree"]},
+        "spines": INT, "leaves": INT, "hosts_per_leaf": INT,
+        "rails": INT, "hosts_per_rail": INT, "k": INT,
+        "spine_kind": STR, "leaf_kind": STR, "host_kind": STR,
+        "p4_program": STR, "with_bgp_evpn": {"type": "boolean"},
+    },
+    ["lab_id", "pattern"],
+)
+def _lab_generate(api: Api, a: dict[str, Any]) -> Any:
+    body = {k: v for k, v in a.items() if k != "lab_id" and v is not None}
+    return api.post(f"/api/v1/labs/{a['lab_id']}/generate", body)
