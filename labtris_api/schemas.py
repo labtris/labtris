@@ -285,6 +285,15 @@ class ImpairSpec(BaseModel):
     reorder_pct: float = 0
     duplicate_pct: float = 0
     corrupt_pct: float = 0
+    #: ECN CE marking under queue pressure. When true, a RED qdisc sits
+    #: below netem+tbf and marks the ECN bit on packets whose queue-avg
+    #: has crossed `ecn_min_bytes`, dropping only above `ecn_max_bytes`.
+    #: Enables DCTCP / DCQCN / Ultra Ethernet CC testing on plain
+    #: shaped Linux links — combined with the `ecn.p4` bmv2 built-in
+    #: this covers 'ECN marking somewhere in the fabric' end to end.
+    ecn: bool = False
+    ecn_min_bytes: int = 50_000
+    ecn_max_bytes: int = 150_000
 
 
 class LinkPatch(BaseModel):

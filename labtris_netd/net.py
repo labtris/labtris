@@ -365,6 +365,16 @@ class PyrouteNet:
         duplicate = float(spec.get("duplicate_pct") or 0)
         corrupt = float(spec.get("corrupt_pct") or 0)
         rate = spec.get("rate_kbit")
+        # Phase F3: opt-in ECN CE marking under queue pressure. When
+        # `ecn: true` and (delay or rate) is set, the shaping qdisc is
+        # netem-then-RED — RED marks ECN CE above `ecn_min_bytes` up to
+        # `ecn_max_bytes`, drops at max (or tail-drops if ECN is off).
+        # DCTCP / DCQCN / Ultra Ethernet CC all read this signal; the
+        # ecn.p4 built-in on a bmv2 switch produces it upstream, this
+        # gets it on plain shaped Linux links.
+        ecn = bool(spec.get("ecn") or False)
+        ecn_min = int(spec.get("ecn_min_bytes") or 50_000)
+        ecn_max = int(spec.get("ecn_max_bytes") or max(ecn_min * 3, 150_000))
         with IPRoute() as ipr:
             idx = _lookup(ipr, name)
             netem = delay or jitter or loss or reorder or duplicate or corrupt
@@ -404,6 +414,30 @@ class PyrouteNet:
                         rate=_kbit_to_bytes(rate),
                         burst=16000,
                         limit=max(_kbit_to_bytes(rate) // 4, 16000),
+                    )
+                if ecn:
+                    # RED as leaf qdisc: marks ECN when qavg is in
+                    # [ecn_min, ecn_max), drops above. Sits under
+                    # netem+tbf if either exists, else attaches root.
+                    handle = "3:0" if (netem or rate) else "1:0"
+                    parent = (
+                        "2:0" if (netem and rate)
+                        else "1:0" if (netem or rate)
+                        else None
+                    )
+                    ipr.tc(
+                        "add",
+                        "red",
+                        index=idx,
+                        handle=handle,
+                        parent=parent,
+                        limit=ecn_max * 4,
+                        min=ecn_min,
+                        max=ecn_max,
+                        avpkt=1000,
+                        burst=max((2 * ecn_min + ecn_max) // 3000, 1),
+                        probability=0.02,
+                        ecn=True,
                     )
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc

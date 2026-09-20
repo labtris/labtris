@@ -20,6 +20,16 @@ PRESETS: dict[str, dict[str, Any]] = {
     "3g": {"delay_ms": 150, "jitter_ms": 40, "loss_pct": 1.0, "rate_kbit": 384},
     "satellite": {"delay_ms": 550, "jitter_ms": 50, "loss_pct": 0.2, "rate_kbit": 2048},
     "lossy-wan": {"delay_ms": 40, "jitter_ms": 10, "loss_pct": 5.0, "rate_kbit": 10000},
+    # Phase F3: a DC-fabric-shape link that marks ECN under queue depth
+    # instead of dropping. ~5 us delay is closer to a real leaf-to-spine
+    # hop than the "lan" preset's 2 ms; 25 Gbps as the rate; RED marks
+    # ECN in [50KB, 150KB] queue depth. Composes with the ecn.p4 built-in
+    # for end-to-end DCTCP / DCQCN / UET CC prototyping.
+    "datacenter": {
+        "delay_ms": 0, "jitter_ms": 0, "loss_pct": 0,
+        "rate_kbit": 25_000_000,
+        "ecn": True, "ecn_min_bytes": 50_000, "ecn_max_bytes": 150_000,
+    },
 }
 
 
