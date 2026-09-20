@@ -1,0 +1,9 @@
+# Content-type for the install script — some browsers try to render it
+# as HTML otherwise, which is what makes `curl | bash` reads suspicious.
+/install
+  Content-Type: text/x-shellscript
+  Cache-Control: public, max-age=300
+
+# Small max-age on everything else so a bad push rolls back inside minutes.
+/*
+  Cache-Control: public, max-age=300

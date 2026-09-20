@@ -1,0 +1,14 @@
+# Cloudflare Pages routing rules.
+#
+# Serve /install straight from the file above (no rule needed).
+# /docs and /handbook fan out to the two things that live off-site.
+
+/docs           https://docs.labtris.com                                                                    302
+/docs/*         https://docs.labtris.com/:splat                                                             302
+
+# The handbook PDF lives on the current GitHub release. `latest/download`
+# is GitHub's stable per-asset URL — it follows the current release
+# without needing a per-version push here. Cutting a new release
+# automatically updates this link.
+/handbook       https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf            302
+/handbook.pdf   https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf            302

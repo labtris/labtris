@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Labtris — a network lab that runs on your own machine</title>
+  <meta name="description" content="Self-hosted network emulation. Docker and QEMU on the same canvas. One shell command installs it.">
+  <meta property="og:title" content="Labtris">
+  <meta property="og:description" content="Self-hosted network emulation. Docker and QEMU on the same canvas. One shell command installs it.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="/logo.svg">
+  <style>
+    /* Deliberately one file, no framework, no build step. If you land
+       here on a train with no wifi, everything you need to read is in
+       the HTML you already have. */
+    :root {
+      --bg:        #0f1518;
+      --bg-panel:  #1a2226;
+      --bg-term:   #05080a;
+      --fg:        #e7ecf0;
+      --fg-dim:    #93a1ad;
+      --accent:    #00c0ef;
+      --accent-hi: #26c4ff;
+      --border:    #263239;
+      --ok:        #6ee7b7;
+      --warn:      #fbbf24;
+      --danger:    #f87171;
+      --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+              "Liberation Mono", monospace;
+      --body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+              Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--body);
+      font-size: 17px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent-hi); text-decoration: none; }
+    a:hover { color: var(--fg); text-decoration: underline; }
+    main { max-width: 780px; margin: 0 auto; padding: 40px 24px 80px; }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 16px 24px; border-bottom: 1px solid var(--border);
+      max-width: 780px; margin: 0 auto;
+    }
+    header .name { font-weight: 600; letter-spacing: -0.01em; }
+    header nav { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
+    header nav a { color: var(--fg-dim); }
+    header nav a:hover { color: var(--fg); text-decoration: none; }
+    header img { width: 28px; height: 28px; }
+
+    /* Hero: one sentence, then the command. The command is the point. */
+    .hero { padding-top: 24px; padding-bottom: 32px; }
+    .hero h1 {
+      font-size: 40px; line-height: 1.15; letter-spacing: -0.02em;
+      margin: 0 0 12px 0; font-weight: 700;
+    }
+    .hero .sub { color: var(--fg-dim); font-size: 19px; max-width: 620px; }
+
+    .term {
+      background: var(--bg-term);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: var(--mono);
+      font-size: 15px;
+      color: var(--fg);
+      margin: 28px 0 12px;
+      overflow-x: auto;
+      position: relative;
+    }
+    .term .prompt { color: var(--accent); user-select: none; }
+    .term .comment { color: var(--fg-dim); }
+    .term button.copy {
+      position: absolute; top: 8px; right: 8px;
+      background: transparent; border: 1px solid var(--border);
+      color: var(--fg-dim); font-size: 12px; padding: 3px 8px;
+      border-radius: 4px; cursor: pointer;
+      font-family: var(--body);
+    }
+    .term button.copy:hover { color: var(--fg); border-color: var(--accent); }
+    .term button.copy.done { color: var(--ok); border-color: var(--ok); }
+
+    .hero .under { color: var(--fg-dim); font-size: 14px; margin-top: 4px; }
+    .hero .under a { color: var(--fg-dim); text-decoration: underline; }
+    .hero .under a:hover { color: var(--fg); }
+
+    /* Screenshot band. Left as a slot the user drops a real screenshot
+       into; a placeholder tells them what to put there. */
+    .shot {
+      margin: 32px 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-panel);
+      aspect-ratio: 16 / 9;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--fg-dim); font-size: 14px; text-align: center;
+      padding: 24px;
+    }
+    .shot img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+    .shot .placeholder {
+      font-family: var(--mono); line-height: 1.5;
+    }
+
+    /* Body sections. No bullets. Each is a short paragraph with a
+       concrete claim. */
+    section { margin-top: 44px; }
+    section h2 {
+      font-size: 15px; text-transform: uppercase; letter-spacing: 0.09em;
+      color: var(--fg-dim); margin: 0 0 12px 0; font-weight: 600;
+    }
+    section h3 {
+      font-size: 22px; letter-spacing: -0.01em; margin: 0 0 8px 0;
+    }
+    section p { margin: 0 0 12px 0; }
+    section p + h3 { margin-top: 28px; }
+
+    .story .num {
+      display: inline-block;
+      font-family: var(--mono); font-size: 13px; color: var(--accent);
+      margin-right: 6px;
+    }
+
+    /* Links row for grabbing artefacts. Not a "features" grid; four
+       named things. */
+    .grabs {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+      margin-top: 20px;
+    }
+    .grab {
+      display: block;
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-panel);
+      color: var(--fg);
+    }
+    .grab:hover { border-color: var(--accent); text-decoration: none; }
+    .grab .k { font-weight: 600; font-size: 15px; }
+    .grab .v { color: var(--fg-dim); font-size: 13px; margin-top: 2px; }
+
+    /* "Not built yet" — same honesty as the README. */
+    .missing {
+      border-left: 3px solid var(--warn);
+      padding: 12px 16px;
+      background: rgba(251,191,36,0.06);
+      border-radius: 0 4px 4px 0;
+      color: var(--fg-dim);
+    }
+    .missing strong { color: var(--fg); }
+
+    footer {
+      max-width: 780px; margin: 40px auto 24px;
+      padding: 24px; border-top: 1px solid var(--border);
+      color: var(--fg-dim); font-size: 13px;
+      display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+    }
+    footer .sp { flex: 1; }
+
+    @media (max-width: 620px) {
+      .hero h1 { font-size: 32px; }
+      .grabs { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <img src="/logo.svg" alt="">
+  <span class="name">Labtris</span>
+  <nav>
+    <a href="https://docs.labtris.com">Docs</a>
+    <a href="/handbook">Handbook (PDF)</a>
+    <a href="https://github.com/labtris/labtris">GitHub</a>
+    <a href="https://github.com/labtris/labtris/releases/latest">Download</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <h1>A network lab that runs on your own machine.</h1>
+  <p class="sub">
+    Docker containers and QEMU virtual machines on one canvas, wired
+    together the way you would draw them. Real consoles, real capture,
+    real routing. Self-hosted, Apache-2.0, and installed with one
+    command on a fresh Ubuntu box.
+  </p>
+
+  <div class="term">
+    <button class="copy" onclick="copyInstall(this)">Copy</button>
+    <div><span class="prompt">$</span> curl -fsSL https://labtris.com/install | sudo bash</div>
+  </div>
+  <p class="under">
+    Fresh Ubuntu 24.04 host, roughly ten minutes end to end. Refuses to
+    run on anything it hasn't been tested on — set
+    <code>LABTRIS_FORCE_OS=1</code> to skip the check.
+    Prefer bare metal? <a href="https://github.com/labtris/labtris/releases/latest">Grab the ISO</a>.
+  </p>
+
+  <!-- Replace with a real screenshot: web/public/screenshot.png works
+       nicely. Keep the aspect ratio. -->
+  <div class="shot">
+    <div class="placeholder">
+      screenshot.png<br>
+      <span style="opacity:0.5">— a real lab, several nodes, one link with a capture running —</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>What it is</h2>
+  <p>
+    An interactive network topology tool. You draw nodes on a canvas,
+    connect them with links, and the guests come up as real Docker
+    containers or QEMU virtual machines with the wiring you drew.
+    Consoles, packet capture, VLANs, NAT, VXLAN across hosts, netem
+    link impairment — the parts a network person expects to be there.
+  </p>
+  <p>
+    It is the shape of EVE-NG and GNS3 without either's baggage. One
+    process, one Postgres, no license file, no cloud sign-in.
+    You install it on your own machine and you own the result.
+  </p>
+</section>
+
+<section class="story">
+  <h2>Three things that make it different</h2>
+
+  <h3><span class="num">01</span>The container console is a real terminal.</h3>
+  <p>
+    Not a form field that submits a command. A PTY, so <code>cd</code>
+    persists, Ctrl-C interrupts, <code>top</code> redraws, an ssh into a
+    lab node behaves like an ssh. Bash writes its prompt to stderr and
+    the container wrapper used to swallow it — that was fixed in 0.5.0,
+    and the reason we tell you is that "the container prompt looked
+    blank for a week" is the level of care this thing gets when
+    something small breaks.
+  </p>
+
+  <h3><span class="num">02</span>Snapshots of a running lab, portable to another host.</h3>
+  <p>
+    <code>labtris lab snapshot &lt;id&gt; --mode hot</code> writes the
+    entire lab into a <code>.tar.gz</code> — topology, per-node
+    disks, live QEMU memory, and committed container filesystems.
+    <code>labtris lab load &lt;path&gt;</code> on any other Labtris host
+    restores it as a new lab that resumes at the exact moment you
+    captured. Modelled on LocalStack pods.
+    Verified round-trip: write a marker file inside a running container,
+    snapshot, load, start — the marker is still there.
+  </p>
+
+  <h3><span class="num">03</span>An assistant that drives graphical guests too.</h3>
+  <p>
+    The MCP surface exposes VNC screenshots (with an OCR shortcut for
+    reading a login prompt in 15 tokens instead of 1500), typed keys
+    with sendkey combos, and pixel-accurate mouse clicks via QMP. A
+    Claude Code or Cursor session can install Ubuntu Desktop, walk a
+    vendor appliance wizard, or navigate a PC BIOS menu the same way
+    it edits a config file — because these are network guests and they
+    should be first-class targets for the model.
+  </p>
+</section>
+
+<section>
+  <h2>Get it</h2>
+  <div class="grabs">
+    <a class="grab" href="/install">
+      <div class="k">The install command</div>
+      <div class="v">Fresh Ubuntu 24.04. Same URL you copied above.</div>
+    </a>
+    <a class="grab" href="https://github.com/labtris/labtris/releases/latest">
+      <div class="k">The latest release</div>
+      <div class="v">ISO for bare metal, checksum, and the handbook PDF.</div>
+    </a>
+    <a class="grab" href="https://docs.labtris.com">
+      <div class="k">The docs site</div>
+      <div class="v">Handbook chapters, API reference, design notes.</div>
+    </a>
+    <a class="grab" href="https://github.com/labtris/labtris">
+      <div class="k">The source</div>
+      <div class="v">Apache-2.0. Read it, fork it, file issues.</div>
+    </a>
+  </div>
+</section>
+
+<section>
+  <h2>What isn't built yet</h2>
+  <div class="missing">
+    <p>
+      <strong>Configuration generation.</strong> Labtris draws the
+      links; it does not write addresses or bring up OSPF and BGP for
+      you. Ready hooks can tell you when addressing has converged;
+      they will not do the addressing.
+    </p>
+    <p>
+      <strong>A vendor node catalogue.</strong> Docker and QEMU run
+      whatever image you bring, and the bootstrap runner is the
+      framework for one, but the list of vendors with recipes today is
+      small.
+    </p>
+    <p>
+      <strong>Classroom features.</strong> Shared labs, cohorts,
+      per-user quotas, lab instructions — designed, unbuilt.
+      Ownership and lock exist; the class layer on top does not.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <span>Apache-2.0</span>
+  <span>·</span>
+  <span>Built on Ubuntu; not affiliated with Canonical.</span>
+  <span class="sp"></span>
+  <a href="https://github.com/labtris/labtris/issues">File an issue</a>
+</footer>
+
+<script>
+  // Copy-to-clipboard for the install line. Tiny and self-contained;
+  // navigator.clipboard fails on http:// origins but the site is https
+  // via Cloudflare so the fallback is unreachable in practice.
+  function copyInstall(btn) {
+    const cmd = "curl -fsSL https://labtris.com/install | sudo bash";
+    navigator.clipboard.writeText(cmd).then(() => {
+      btn.classList.add("done");
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.classList.remove("done");
+        btn.textContent = "Copy";
+      }, 1400);
+    });
+  }
+</script>
+
+</body>
+</html>

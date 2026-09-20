@@ -1,0 +1,36 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Labtris">
+  <!-- Full mark, for anywhere it gets more than ~64px. Three tetrominoes with
+       a topology laid over them: the name, drawn. Rebuilt as vector rather
+       than traced from the mockup PNG, which was a lit render with a vignette
+       and a navy wordmark that vanished on a dark page. -->
+  <g opacity="0.92">
+    <path d="M4 10 h14 v26 h14 v10 H4 Z" fill="#0a5ca8" opacity="0.88"/>
+    <path d="M28 8 h32 v14 H50 v12 H36 V22 h-8 Z" fill="#fd820b" opacity="0.88"/>
+    <path d="M20 40 h18 v-8 h14 v16 H34 v8 H20 Z" fill="#00b4b9" opacity="0.82"/>
+  </g>
+  <!-- The graph carries a dark casing as well as a white core: over a block it
+       reads as white, and over the gaps between blocks — which are the page,
+       and on twenty of the thirty themes are pale — it still reads at all. -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M11 15 L11 39 M11 15 L26 27 M11 39 L26 27 M26 27 L44 27
+             M44 27 L36 14 M44 27 L57 14 M26 27 L27 46 M27 46 L46 46 M46 46 L44 27"
+          stroke="#0b2d4d" stroke-width="3.4" opacity="0.45"/>
+    <path d="M11 15 L11 39 M11 15 L26 27 M11 39 L26 27 M26 27 L44 27
+             M44 27 L36 14 M44 27 L57 14 M26 27 L27 46 M27 46 L46 46 M46 46 L44 27"
+          stroke="#fff" stroke-width="1.7" opacity="0.97"/>
+  </g>
+  <g>
+    <g fill="#0b2d4d" opacity="0.45">
+      <circle cx="11" cy="15" r="4.4"/><circle cx="11" cy="39" r="4.4"/>
+      <circle cx="26" cy="27" r="4.4"/><circle cx="36" cy="14" r="4.4"/>
+      <circle cx="57" cy="14" r="4.4"/><circle cx="44" cy="27" r="4.4"/>
+      <circle cx="27" cy="46" r="4.4"/><circle cx="46" cy="46" r="4.4"/>
+    </g>
+    <g fill="#fff">
+      <circle cx="11" cy="15" r="3.2"/><circle cx="11" cy="39" r="3.2"/>
+      <circle cx="26" cy="27" r="3.2"/><circle cx="36" cy="14" r="3.2"/>
+      <circle cx="57" cy="14" r="3.2"/><circle cx="44" cy="27" r="3.2"/>
+      <circle cx="27" cy="46" r="3.2"/><circle cx="46" cy="46" r="3.2"/>
+    </g>
+  </g>
+</svg>
