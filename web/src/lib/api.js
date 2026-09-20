@@ -3,6 +3,35 @@ export const KIND = [
   { id: "nginx", label: "Nginx", image: "nginx:alpine", cmd: null, color: "#6ee7b7", glyph: "⬢" },
   { id: "redis", label: "Redis", image: "redis:alpine", cmd: null, color: "#f87171", glyph: "◆" },
   { id: "frr", label: "FRRouting", image: "frrouting/frr:v8.4.0", cmd: null, color: "#60a5fa", glyph: "⬡" },
+  // ue-stack — the real userspace UET wire-format daemon (PoC).
+  // Runs on real Linux, sends real UDP frames over the veth,
+  // interop with the ns-3 UE-Sim node is left to the user's choice
+  // of gluing script. Distinct glyph (⇌) so 'real UET host' reads
+  // differently from 'simulator' (⊛) on the canvas.
+  {
+    id: "ue-stack",
+    label: "ue-stack (real UET, PoC)",
+    image: "labtris/ue-stack:latest",
+    cmd: null,
+    color: "#fb7185",
+    glyph: "⇌",
+    boot: 3,
+    note: "Real UET wire-format daemon. Pairs with another ue-stack node for uestack send↔listen.",
+  },
+  // UE-Sim — Kaima Lab's ns-3-based UEC/UET simulator. Discrete-event
+  // simulation of the Ultra Ethernet spec's SES + PDS + PDC layers.
+  // Distinct glyph (⊛) so a research/simulator node is visually
+  // different from a runs-real-traffic node.
+  {
+    id: "ue-sim",
+    label: "UE-Sim (Ultra Ethernet)",
+    image: "labtris/ue-sim:latest",
+    cmd: null,
+    color: "#f472b6",
+    glyph: "⊛",
+    boot: 3,
+    note: "ns-3-based UEC simulator (see packaging/dockerfiles/ue-sim). Discrete-event, not real packets.",
+  },
   // Soft-RoCE host — Ubuntu + rdma-core + perftest + rxe(0). Closest
   // working stand-in for Ultra Ethernet's RDMA verbs today.
   {
@@ -31,6 +60,9 @@ export const KIND = [
     note: "Programmable data plane. Default program: basic_switch.p4 (L2 forwarding). Swap for ecmp / ecn / trim or upload a custom .p4.",
   },
   { id: "haproxy", label: "HAProxy", image: "haproxy:alpine", cmd: null, color: "#fbbf24", glyph: "▣" },
+  // FreeRADIUS — AAA server for 802.1X / WPA2-Enterprise / device
+  // management labs. Listens on UDP 1812 (auth) + 1813 (accounting).
+  { id: "freeradius", label: "FreeRADIUS", image: "freeradius/freeradius-server:latest", cmd: null, color: "#eab308", glyph: "◈" },
   { id: "ubuntu", label: "Ubuntu", image: "ubuntu:24.04", cmd: ["sleep", "infinity"], color: "#fb923c", glyph: "●" },
   { id: "busybox", label: "BusyBox", image: "busybox:1.36", cmd: ["sleep", "3600"], color: "#a78bfa", glyph: "■" },
   // A real vendor NOS, and the only one that needs no account — Nokia publish

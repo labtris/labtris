@@ -118,6 +118,22 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         ),
         ContainerImage(id="haproxy", label="HAProxy", image="haproxy:alpine"),
         ContainerImage(
+            id="freeradius",
+            label="FreeRADIUS",
+            image="freeradius/freeradius-server:latest",
+            source="Docker Hub (freeradius/freeradius-server)",
+            notes=(
+                "FreeRADIUS AAA server. Listens on UDP 1812 (auth) + "
+                "1813 (accounting). Ships with a default clients.conf "
+                "accepting localhost with secret 'testing123'; edit "
+                "/etc/raddb/clients.conf inside the container to add "
+                "your NAS. Useful for network-device auth labs, "
+                "802.1X / WPA2-Enterprise experiments, and any lab "
+                "that wants a real RADIUS server rather than a stub."
+            ),
+            boot_seconds=2,
+        ),
+        ContainerImage(
             id="ubuntu",
             label="Ubuntu",
             image="ubuntu:24.04",
@@ -140,6 +156,49 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         # net.ipv4.ip_local_port_range and fs.pipe-max-size during boot and
         # docker keeps /proc/sys read-only for every unprivileged container.
         # containerlab runs it privileged for the same reason.
+        ContainerImage(
+            id="ue-stack",
+            label="ue-stack (real userspace UET, PoC)",
+            image="labtris/ue-stack:latest",
+            source=(
+                "Local build — see packaging/dockerfiles/ue-stack/README.md "
+                "(source in this repo's ue_stack/ package)"
+            ),
+            notes=(
+                "The `uestack` PoC — real UET wire-format daemon + CLI, "
+                "sending real UDP packets over the container's veth. "
+                "IPDC (fire-and-forget) works end to end; TPDC (reliable "
+                "with ACK+RTO) is a stub. Not spec-interop-ready; "
+                "wire-format bit widths follow the UEC 1.0 shape but "
+                "exact offsets are TODO. Pair with the ue-sim node "
+                "kind (Kaima Lab's ns-3 simulator) for protocol "
+                "validation and this one for real-packet labs."
+            ),
+            boot_seconds=3,
+        ),
+        ContainerImage(
+            id="ue-sim",
+            label="UE-Sim (Ultra Ethernet simulator on ns-3)",
+            image="labtris/ue-sim:latest",
+            cap_add=("SYS_ADMIN", "NET_BIND_SERVICE"),
+            source=(
+                "Local build — see packaging/dockerfiles/ue-sim/README.md "
+                "(upstream: github.com/kaima2022/UE-Sim)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "Kaima Lab's UE-Sim — end-to-end Ultra Ethernet "
+                "simulation on ns-3 3.44. Discrete-event simulator, "
+                "not a real userspace UET stack; the simulated hosts "
+                "run inside the container's ns-3 process rather than "
+                "on real network interfaces. Use for protocol "
+                "validation + CC-algorithm work; use `ue-stack` when "
+                "the real userspace daemon lands. Image is a ~2 GB "
+                "local build — see packaging/dockerfiles/ue-sim/ "
+                "README.md."
+            ),
+            boot_seconds=3,
+        ),
         ContainerImage(
             id="rdma-host",
             label="RDMA host (soft-RoCE + perftest)",

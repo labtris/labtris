@@ -2,7 +2,7 @@
 name = "labtris"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-version = "0.10.0"
+version = "0.11.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi==0.115.6",
@@ -73,13 +73,17 @@ labtris-mcp = "labtris_mcp.server:main"
 labtris = "labtris_cli.__main__:app"
 labtris-doctor = "labtris_api.diagnose:main"
 labtris-image = "labtris_api.cli.image:main"
+# ue_stack — proof-of-concept userspace UET wire-format daemon +
+# CLI. Runs on any Labtris node with the labtris packages installed
+# (or inside the labtris/ue-stack container that ships with 0.11.0).
+uestack = "ue_stack.__main__:main"
 
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["labtris_api*", "labtris_netd*", "labtris_mcp*", "labtris_client*", "labtris_cli*"]
+include = ["labtris_api*", "labtris_netd*", "labtris_mcp*", "labtris_client*", "labtris_cli*", "ue_stack*"]
 
 [tool.pytest.ini_options]
 markers = [

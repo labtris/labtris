@@ -1,0 +1,103 @@
+---
+title: "Real userspace UET stack (ue-stack) — what shipped, what's stub"
+description: "The PoC that lands the shape of a real Ultra Ethernet Transport in Labtris."
+---
+
+`ue_stack` is a proof-of-concept userspace implementation of the
+Ultra Ethernet Transport wire format, packaged as a Labtris node
+(`labtris/ue-stack:latest`) and a Python CLI (`uestack`). It sits
+alongside `ue-sim` (Kaima Lab's ns-3 simulator packaged as its own
+Labtris node) — different tools for different jobs.
+
+## The two Labtris UEC nodes, side by side
+
+| | `ue-sim` | `ue-stack` |
+|---|---|---|
+| **What it is** | ns-3 3.44 discrete-event simulator | Real userspace daemon speaking UDP-transported UET frames |
+| **Traffic** | Simulated inside the ns-3 process | Real UDP packets on the container's veth |
+| **Determinism** | Full — same seed, same result | Real-network — jitter, drops, real-clock timing |
+| **Speed** | Simulated time, unbounded | Wall-clock |
+| **Best for** | Protocol validation, CC-algorithm design, benchmarks | Real-packet labs, integration with real Linux tools, tcpdump traces |
+
+## What `ue_stack` ships today
+
+- **Wire format** (`ue_stack/packet.py`) — SES, PDS, PDC headers, spec-
+  shaped fields. Bit widths follow the UEC 1.0 spec's described
+  layout; exact-to-the-bit offsets marked TODO until a spec-pinning
+  pass.
+- **IPDC** (`ue_stack/pdc.py:Ipdc`) — Immediate PDC: unreliable
+  fire-and-forget. Fully working — sender packs + emits, receiver
+  unpacks + dispatches on ses.op.
+- **TPDC** (`ue_stack/pdc.py:Tpdc`) — Transactional PDC: reliable
+  with per-packet ACK + RTO retransmit. Wire format works, ACK path
+  works, the RTO loop uses a fixed 500 ms with 3 retries — a real
+  implementation runs a CC-driven RTO estimator and reacts to NACK
+  with fast retransmit.
+- **Async UDP daemon** (`ue_stack/daemon.py`) — bound on a well-known
+  port (4791 today; UEC's own port TBD), dispatches inbound packets
+  to registered contexts.
+- **CLI** — `uestack listen` + `uestack send <host>:<port> <message>`.
+  Two-node smoke test:
+
+    node-a $ uestack listen
+    node-b $ uestack send 10.0.0.10:4791 "hello"
+
+## What's stub
+
+- **Congestion control.** Missing entirely. UEC's CC is a whole
+  chapter of the spec (RTT-based + ECN + per-path); a real
+  implementation would land as `ue_stack/cc/` with pluggable
+  algorithms.
+- **Packet spraying.** Sender picks one path; the whole point of UET
+  is per-packet ECMP across multiple paths. Ships when LinkGroup
+  runtime multipath (deferred) lands — the two features compose.
+- **Exact spec-conformant bit widths.** Fields are shaped correctly
+  (SES has txn_id, MSN, op, endpoints; PDS has PDC type + PSN;
+  PDC has credits + priority) but the wire is not byte-for-byte
+  identical to what a Broadcom Tomahawk 6 emits. Interop with real
+  UEC silicon is not a goal for the PoC.
+- **Delivery-context negotiation.** No PDC-open / PDC-close
+  handshake yet; both ends assume context id 1 exists.
+- **Congestion / trim / INT** — none of the UEC-specific optional
+  behaviors yet.
+
+## Why ship a PoC anyway
+
+Three reasons:
+
+1. **Fabric researchers can iterate on real packets today.** A
+   modified `Ipdc.send` that adds an extra header field is one Python
+   edit + a container restart. Faster than a kernel driver or an
+   FPGA cycle.
+2. **The shape is the load-bearing piece.** When the spec pinning
+   happens (Phase J), everything above the wire format — the
+   daemon, the CLI, the Labtris integration — stays. Only the
+   header byte offsets shift.
+3. **Composes with the ns-3 simulator.** A researcher can validate
+   an idea in `ue-sim` under determinism, then run the same shape
+   on real Linux via `ue-stack`, then A/B against a Broadcom
+   engineering sample — Labtris keeps the topology + hooks + snapshots
+   + assistant integration consistent across all three.
+
+## Roadmap toward real interop
+
+Rough phasing when someone (us or a contributor) picks it up:
+
+- **Phase J1 — Spec-pin the wire format.** Follow UEC 1.0 byte-for-
+  byte; test packets round-trip against the spec's example traces.
+- **Phase J2 — CC algorithm.** RTT-based, ECN-reactive.
+- **Phase J3 — Packet spraying.** Interlock with LinkGroup so a
+  send can be scheduled across N parallel paths.
+- **Phase J4 — Interop testing.** Against a real UEC NIC (probably
+  Broadcom Tomahawk 6 by the time this lands).
+
+None blocks the others. The PoC is intended as the tree that
+future work adds branches to.
+
+## Not a claim we made
+
+`ue_stack` is not "the reference UET implementation" — the UEC
+consortium will pick that. It is "a real userspace stack for
+Labtris users who want to prototype today." When a public reference
+implementation lands, we'll package it as another Labtris node
+kind next to this one, same shape.
