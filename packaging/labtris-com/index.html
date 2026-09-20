@@ -343,16 +343,30 @@
   <p>
     Containerlab is excellent for what it does well: declarative YAML
     topologies, CLI-first workflow, easy to put in CI. If your lab is
-    all containers and you like managing infrastructure as code, use
-    it. Where it gets awkward is QEMU: vendor VMs are packaged as
-    Docker images via vrnetlab, and that <em>works</em>, but "get an
-    IOSv qcow2 wrapped as a container that boots reliably" is not a
-    five-minute job — the wrapper is per-vendor, the images are big,
-    and the debugging happens inside a container that hides the
-    QEMU stderr you actually want to read. Labtris runs QEMU natively
-    alongside Docker on the same canvas — no wrapping, no
-    per-vendor Dockerfile, one process supervising both. It also has
-    a UI, which containerlab does not.
+    all containers and you like infrastructure as code, use it.
+  </p>
+  <p>
+    The reason Labtris was not built on top of it is QEMU.
+    Containerlab supports vendor VMs by wrapping them in Docker
+    images via vrnetlab — an IOSv qcow2 becomes a Docker image with
+    QEMU inside it, and the "container" you run is really a
+    container-around-a-VM. That works, but it is a workaround for a
+    shape mismatch: QEMU is not a container, does not benefit from
+    container isolation (it runs as root with <code>/dev/kvm</code>
+    access anyway), and the double layer of indirection means the
+    QEMU stderr you actually want to read when a VM will not boot is
+    hidden inside a container abstraction that adds nothing.
+  </p>
+  <p>
+    With modern LLM-assisted development, writing a native QEMU
+    runtime alongside a Docker one is a weeks-of-work project, not
+    a years-of-work one. Labtris did it: QEMU processes are
+    supervised directly, disk overlays sit on the host filesystem,
+    HMP and QMP sockets are per-VM, and the same process orchestrates
+    Docker containers on the same canvas. If you are picking between
+    "wrap every vendor VM in a container-around-a-VM" and "just run
+    the VM," pick the second. It also has a UI, which containerlab
+    does not.
   </p>
 
   <h3>&hellip;Cisco CML / VIRL</h3>
