@@ -27,14 +27,20 @@ Locally, make the directory:
     labtris-com/
     ├── index.html          # simple landing page (whatever you want here)
     ├── install             # the get.sh contents, served as text/plain
+    ├── handbook.pdf        # -> proxied from the latest GH release (below)
     └── _redirects          # rewrite rules
 
 `install` is a plain copy of `get.sh` from this repo. `_redirects`
-handles the docs subdomain fallback:
+handles the docs subdomain fallback plus the handbook proxy:
 
     # If someone visits /docs, send them to the docs site.
     /docs           https://docs.labtris.com            302
     /docs/*         https://docs.labtris.com/:splat     302
+    # /handbook and /handbook.pdf serve the current release's PDF.
+    # `latest/download/<name>` is GitHub's stable per-asset URL — it
+    # follows the current release without needing a per-version update.
+    /handbook       https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
+    /handbook.pdf   https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
     # /install is served as a file directly — no rule needed.
 
 Upload the folder. Cloudflare gives you a
@@ -79,6 +85,31 @@ domain → `docs.labtris.com`. Mintlify prints a CNAME record.
     Proxy:  DNS only                    # NOT proxied — Mintlify handles TLS
 
 **4. Wait a minute, then visit `https://docs.labtris.com`.**
+
+## The handbook PDF
+
+The PDF is a release artefact — `packaging/release.sh` builds it
+with `python3 docs/build-pdf.py` and uploads it alongside the ISO
+to every GitHub release. Nothing to host on Cloudflare Pages
+itself; the `_redirects` rule above proxies `labtris.com/handbook`
+straight to GitHub's stable
+`https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf`
+URL, which always points at the current release.
+
+Two consequences worth naming:
+
+- **A fresh release automatically updates the link.** No manual push
+  to Cloudflare after cutting a release.
+- **The URL for a specific version is
+  `https://github.com/labtris/labtris/releases/download/v<VERSION>/labtris-handbook.pdf`.**
+  Deep-link that from the docs when you want a pinned handbook — e.g.
+  a course syllabus that cites a stable version.
+
+If bandwidth to GitHub becomes a concern (unlikely — the file is
+~1 MB and served with the release CDN), the alternative is a nightly
+copy into `labtris-com/handbook.pdf` served directly by Cloudflare
+Pages. The `_redirects` line above would then swap to a same-origin
+rewrite.
 
 ## Updating the install script
 
