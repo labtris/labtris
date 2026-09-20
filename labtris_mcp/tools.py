@@ -622,9 +622,10 @@ def _lab_hooks_clear(api: Api, a: dict[str, Any]) -> Any:
 @tool(
     "lab_snapshot",
     "Snapshot a lab into a portable pod archive (labtris-pod-v1.tar.gz) on "
-    "the server's pod_dir. Cold mode requires the lab to be stopped; a "
-    "future hot mode will capture running state.",
-    {"lab_id": STR, "mode": {"type": "string", "enum": ["cold"]}},
+    "the server's pod_dir. mode=cold requires the lab stopped; mode=hot "
+    "captures live QEMU RAM (savevm) + Docker filesystem (commit+save) so "
+    "the restored lab resumes at the same point.",
+    {"lab_id": STR, "mode": {"type": "string", "enum": ["cold", "hot"]}},
     ["lab_id"],
 )
 def _lab_snapshot(api: Api, a: dict[str, Any]) -> Any:

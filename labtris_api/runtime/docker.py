@@ -229,6 +229,65 @@ class DockerRuntime:
         finally:
             await docker.close()
 
+    async def commit_and_save(
+        self, h: RuntimeHandle, image_tag: str, dst_tar: str
+    ) -> dict[str, Any]:
+        """Snapshot a running container's filesystem: `docker commit` to
+        `image_tag`, then `docker save` to `dst_tar` (raw uncompressed
+        tar — the pod archive wraps it in gzip).
+
+        Used by hot lab snapshots (labtris_api/pods.py Phase D). Not on
+        the DockerRuntime abstract base because only pods use it.
+
+        Dirty-layer commit is normal for Docker: a write in-flight at
+        commit time either lands in the new image or is committed
+        partially. We inherit the same semantics — a hot snapshot of a
+        container mid-write is the container mid-write, matching what
+        `docker commit` on the CLI does. Callers should quiesce the
+        workload themselves if that matters.
+        """
+        import shutil
+        import subprocess
+
+        docker = _docker()
+        try:
+            container = docker.containers.container(h.ref)
+            # aiodocker's .commit() call returns the new image id.
+            commit_info = await container.commit(repository=image_tag)
+            image_id = str(commit_info.get("Id") or "").strip()
+        except DockerError as exc:
+            raise runtime_error(f"docker commit failed: {exc}") from exc
+        finally:
+            await docker.close()
+
+        # aiodocker has no `save` — the endpoint streams a tarball. Shell
+        # out to the docker CLI instead: it is guaranteed to be present
+        # anywhere the API can talk to Docker, and the streaming write
+        # goes straight to disk without buffering multi-GB in memory.
+        if not shutil.which("docker"):
+            raise runtime_error(
+                "the `docker` CLI is not on PATH — required for hot pod snapshots"
+            )
+        with open(dst_tar, "wb") as fh:
+            proc = subprocess.run(
+                ["docker", "save", image_tag],
+                stdout=fh,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        if proc.returncode != 0:
+            raise runtime_error(
+                f"docker save failed: {proc.stderr.decode(errors='replace').strip()}"
+            )
+        import os
+
+        return {
+            "image_tag": image_tag,
+            "image_id": image_id,
+            "bytes": os.path.getsize(dst_tar),
+            "tar_path": dst_tar,
+        }
+
     async def open_shell(self, h: RuntimeHandle, cols: int = 100, rows: int = 30):
         """A real interactive shell in the container, with a TTY behind it.
 

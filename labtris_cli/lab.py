@@ -127,15 +127,19 @@ def hooks_clear(lab_id: str) -> None:
 @app.command("snapshot")
 def cmd_snapshot(
     lab_id: str,
-    mode: str = typer.Option("cold", "--mode", help="cold (v1) or hot (Phase D)."),
+    mode: str = typer.Option(
+        "cold",
+        "--mode",
+        help="cold: lab must be stopped, small archive, boots fresh. "
+        "hot: running nodes accepted; QEMU savevm + docker commit; "
+        "loadvm/docker-load on first start after restore.",
+    ),
     fmt: str = format_option(),
 ) -> None:
-    """Write a cold snapshot of a lab to the server's pod_dir.
+    """Write a snapshot of a lab to the server's pod_dir.
 
-    Cold snapshots require the lab to be stopped — start with
-    `labtris lab stop <id>` if any node is running. The returned `path`
-    is on the SERVER host, not the caller's; use `labtris pod list` +
-    server-side scp to fetch it."""
+    The returned `path` is on the SERVER host, not the caller's; scp it
+    off yourself, or `curl` /api/v1/pods/<id>/download."""
     api = api_for(require_session())
     try:
         payload = api.post(f"/api/v1/labs/{lab_id}/snapshot", {"mode": mode})

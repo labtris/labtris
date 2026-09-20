@@ -25,9 +25,10 @@ router = APIRouter(tags=["pods"])
 
 
 class SnapshotIn(BaseModel):
-    mode: Literal["cold"] = "cold"
-    # Reserved for Phase D: {"cold", "hot"}. Kept restricted for now so the
-    # UI can't pick hot before the writer supports it.
+    mode: Literal["cold", "hot"] = "cold"
+    # cold: lab must be stopped; small archive; nodes boot fresh on load
+    # hot:  running nodes accepted; QEMU savevm + docker commit/save
+    #       into the archive; loadvm/docker-load on first start
 
 
 class SnapshotOut(BaseModel):
@@ -75,7 +76,7 @@ async def snapshot_lab(
 
     Cold mode only in Phase C — the lab must be stopped. Hot mode arrives
     in Phase D with QMP snapshot-save + docker commit + save."""
-    info = await pods.save_cold(session, lab_id)
+    info = await pods.save(session, lab_id, mode=body.mode)
     return SnapshotOut(**info)
 
 

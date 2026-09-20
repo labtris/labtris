@@ -644,6 +644,39 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
         await session.commit()
         await announce(node, "running")
 
+        # Hot-pod restore: if this node carries a pending savevm tag from
+        # a pod load (labtris_api/pods.py), issue `loadvm <tag>` now that
+        # the guest is up. The tag is cleared on success so a subsequent
+        # start does a plain cold boot. On failure we log + clear too —
+        # a hot-restored disk always contains its snapshot, but if the
+        # user has been running the lab past the initial resume, the
+        # snapshot may already be gone (loadvm complained "snapshot X
+        # does not exist"), and a stale marker would keep breaking every
+        # start after that.
+        if (
+            node.runtime == "qemu"
+            and node.runtime_ref
+            and (node.qemu_opts or {}).get("load_snapshot_on_boot")
+        ):
+            tag = str(node.qemu_opts["load_snapshot_on_boot"])
+            try:
+                # RuntimeHandle is imported at module top; re-importing
+                # here would shadow the outer reference and break the
+                # `handle: RuntimeHandle | None = None` annotation
+                # earlier in this function (UnboundLocalError).
+                from labtris_api.runtime.qemu import qemu_runtime
+
+                await qemu_runtime.load_snapshot(
+                    RuntimeHandle(node_id=node.id, ref=node.runtime_ref, pid=None),
+                    tag,
+                )
+            except Exception:  # noqa: BLE001 — best-effort; state stays "running"
+                pass
+            opts = dict(node.qemu_opts or {})
+            opts.pop("load_snapshot_on_boot", None)
+            node.qemu_opts = opts
+            await session.commit()
+
         # If the template carries a `bootstrap` block (list of
         # {wait_for, type} steps) and this node hasn't been through it
         # yet, kick it off as a background task. The node is `running`
