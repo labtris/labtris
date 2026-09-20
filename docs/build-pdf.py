@@ -47,9 +47,10 @@ PAGES = [
     ("p4.mdx",                "10", "P4 programmable switches"),
     ("fabrics.mdx",           "11", "AI fabrics"),
     ("users.mdx",             "12", "Users and access"),
-    ("api/rest.mdx",          "13", "API and the assistant"),
-    ("cli.mdx",               "14", "The labtris CLI"),
-    ("operations.mdx",        "15", "Running the server"),
+    ("api/rest.mdx",                        "13", "API and the assistant"),
+    ("using-with-claude-cursor-vscode.mdx",  "14", "Use with Claude / Cursor / VS Code"),
+    ("cli.mdx",                             "15", "The labtris CLI"),
+    ("operations.mdx",                      "16", "Running the server"),
 ]
 
 CHROME_CANDIDATES = [

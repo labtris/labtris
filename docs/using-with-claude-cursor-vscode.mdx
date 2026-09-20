@@ -1,0 +1,221 @@
+---
+title: "Use with Claude Code, Claude Desktop, Cursor, VS Code"
+description: "Copy-paste MCP configs for every assistant that speaks MCP."
+---
+
+Labtris ships an MCP server (`labtris-mcp`). Every REST endpoint the
+UI uses has a matching MCP tool, so any client that speaks the Model
+Context Protocol drives your lab the same way the browser does —
+create nodes, wire them, capture packets, snapshot pods, apply
+hooks, drive a P4 program onto a bmv2 spine, and so on.
+
+This page has copy-paste configs for four clients. The setup shape
+is identical: point the client at `labtris-mcp` and give it your
+Labtris URL. The MCP server auto-reads the JWT `labtris login`
+stored on disk, so you don't have to duplicate credentials into
+every client's env.
+
+## Once, on every machine
+
+Install Labtris (or just its Python packages) and log in once — the
+`labtris` CLI writes a 7-day JWT to `~/.config/labtris/auth.json`
+that every MCP client below reuses.
+
+```bash
+# On the machine running the MCP client (your laptop, usually).
+pip install labtris    # or: pip install -e /path/to/labtris
+labtris login --url http://<labtris-host>:8081 --user <you>
+```
+
+That's it. Now pick a client below.
+
+## Claude Code (`claude` CLI)
+
+Claude Code's MCP config lives in `~/.claude.json` under
+`mcpServers`, or you can add it interactively:
+
+```bash
+claude mcp add labtris \
+  --scope user \
+  -- labtris-mcp
+```
+
+Manually, in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "labtris": {
+      "command": "labtris-mcp",
+      "env": {
+        "LABTRIS_API_URL": "http://<labtris-host>:8081"
+      }
+    }
+  }
+}
+```
+
+Then in any Claude Code session:
+
+> Build me a spine-leaf lab with 2 spines, 4 leaves, and 8 hosts per
+> leaf, with BGP EVPN and per-packet ECMP on the spines. Then wait
+> for the hooks to say every peer is Established.
+
+The model calls `create_lab`, `lab_generate`, `lab_hooks_apply`,
+`lab_hooks_run`, and so on — every tool the browser's assistant has,
+plus the ones from Phase E–H.
+
+## Claude Desktop
+
+Config file per OS:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "labtris": {
+      "command": "labtris-mcp",
+      "env": {
+        "LABTRIS_API_URL": "http://<labtris-host>:8081"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop. In a chat, click the tools icon and you
+should see `labtris` listed with ~50 tools underneath. Ask it to
+do anything the browser can.
+
+## Cursor
+
+Cursor's MCP config lives in Settings → Cursor Settings → MCP →
+Add new MCP Server, or directly in
+`~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "labtris": {
+      "command": "labtris-mcp",
+      "env": {
+        "LABTRIS_API_URL": "http://<labtris-host>:8081"
+      }
+    }
+  }
+}
+```
+
+In Cursor's chat, the model can call any `labtris_*` tool. Point
+Cursor at your Labtris while working on network code and it can
+drop the code into a lab, run it, and read the result back.
+
+## VS Code — Continue extension
+
+The Continue extension for VS Code supports MCP. In
+`~/.continue/config.json`:
+
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "labtris-mcp",
+          "args": [],
+          "env": {
+            "LABTRIS_API_URL": "http://<labtris-host>:8081"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+## VS Code — GitHub Copilot Chat (with MCP)
+
+Recent Copilot Chat versions accept MCP servers via the workspace
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "labtris": {
+      "command": "labtris-mcp",
+      "env": {
+        "LABTRIS_API_URL": "http://<labtris-host>:8081"
+      }
+    }
+  }
+}
+```
+
+## Overriding the token per-client
+
+The MCP server prefers `LABTRIS_TOKEN` in env if it's set. Useful
+for:
+
+- **CI or service accounts** — mint a long-lived token, drop it in
+  the env, keep the auth.json off the machine.
+- **Multiple Labtris instances from one machine** — point each MCP
+  entry at a different URL + token so a "labtris-prod" and
+  "labtris-dev" both work side by side.
+
+```json
+{
+  "mcpServers": {
+    "labtris-prod": {
+      "command": "labtris-mcp",
+      "env": {
+        "LABTRIS_API_URL": "https://labtris.example.com",
+        "LABTRIS_TOKEN": "<jwt from `labtris login … -o json | jq -r .token`>"
+      }
+    }
+  }
+}
+```
+
+## What the assistant can do
+
+Every tool from the API — around fifty as of 0.10.0:
+
+| Group | Examples |
+|---|---|
+| Looking | `health`, `list_catalog`, `list_labs`, `get_lab` |
+| Building | `create_lab`, `add_node`, `connect_nodes`, `create_network` |
+| Running | `start_node`, `stop_node`, `node_logs`, `console_exec` |
+| Investigating | `impair_link`, `capture_start`, `capture_read` |
+| VNC (assistant-driving graphical guests) | `vnc_screenshot`, `vnc_type`, `vnc_mouse`, `vnc_read` |
+| Ready hooks | `lab_hooks_show`, `lab_hooks_apply`, `lab_hooks_run` |
+| Snapshots | `lab_snapshot`, `pods_list`, `pod_load` |
+| P4 programmable switches | `p4_builtins`, `node_p4_show`, `node_p4_set_builtin` |
+| Live link stats | `link_stats`, `lab_link_stats` |
+| AI-fabric generator | `lab_generate` (spine-leaf, rail-optimised, fat-tree) |
+
+## Consent modal for destructive tools
+
+Only the browser-side chat gates destructive tools behind a consent
+click. The MCP surface (Claude Code, Cursor, VS Code, direct MCP)
+does **not** — a scripted client cannot be asked, so it acts. Every
+tool call goes through the same auth as your session, so nothing an
+MCP client does exceeds what you could do by hand. If you want a
+gate on a specific client, set it up on the client side (Claude
+Code's `--allow` flags, Cursor's tool approval prompts).
+
+## Testing your setup
+
+Ask the model "list labs and health":
+
+```
+The user asks: list every lab on this instance and the current health check.
+```
+
+You should see it call `list_labs` and `health`, then reply with
+the actual lab list. If it says "no tools available" or 401,
+either the login expired (`labtris login` again) or the config file
+has a typo.

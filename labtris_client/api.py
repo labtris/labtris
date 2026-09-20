@@ -8,6 +8,25 @@ import urllib.request
 from typing import Any
 
 
+def _load_auth_token(url: str) -> str | None:
+    """Read the JWT `labtris login` stored at ~/.config/labtris/auth.json.
+
+    Returns the token only if the file's `url` matches the client's
+    resolved base URL — mixing a token minted against instance A with a
+    request to instance B would fail with a confusing 401. Silent on
+    any read or parse error: env-var absence is the caller's problem
+    to notice, not this file's."""
+    try:
+        cfg_dir = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        with open(os.path.join(cfg_dir, "labtris", "auth.json")) as fh:
+            data = json.load(fh)
+        if str(data.get("url", "")).rstrip("/") == url.rstrip("/"):
+            return data.get("token") or None
+    except (OSError, ValueError, KeyError):
+        pass
+    return None
+
+
 class ApiError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
@@ -41,7 +60,18 @@ class Api:
         # in front of the instance may also want. Without it every call is
         # anonymous, which since authentication landed means every call is a
         # 401 — the tools would report success having done nothing.
-        self.token = token if token is not None else os.environ.get("LABTRIS_TOKEN")
+        # Precedence: explicit arg → LABTRIS_TOKEN env → auth.json on disk.
+        # The disk fallback matches where `labtris login` writes the JWT,
+        # so a user who runs `labtris login` once against their instance
+        # doesn't have to duplicate the token in every MCP client's env
+        # config (Claude Desktop, Cursor, VS Code, …). Absent → None,
+        # which surfaces as an "unauthorized" on the first call so the
+        # error is loud rather than silent.
+        self.token = (
+            token
+            if token is not None
+            else os.environ.get("LABTRIS_TOKEN") or _load_auth_token(resolved)
+        )
 
     def call(self, method: str, path: str, body: Any = None) -> Any:
         url = f"{self.base}{path}"
