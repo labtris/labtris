@@ -116,7 +116,34 @@ merging two instances. A restore that silently deletes is not a restore.
 Google Drive is wired up if you want backups off the box; **Settings → Backup**
 walks through linking an account, pushing, and pulling one back.
 
+## Ready hooks
+
+A lab **started** is not the same as a lab **ready**. Every node moves to
+`running` in a few seconds, but the router hasn't converged yet, the app hasn't
+opened its port, the guest VM is still on its first-boot dialogue. Ready hooks
+are a small YAML doc that names what "ready" means for **this** lab — a ping,
+an HTTP probe, a serial-prompt regex, a shell command — and Labtris fires them
+once every node is up.
+
+The **Hooks** dock tab holds the YAML plus a live run log. [Ready
+hooks](/hooks) has the schema, the four hook kinds, and the teaching pattern.
+
+## Portable snapshots
+
+Snapshots ("pods") package a lab into a `.tar.gz` that any Labtris host can
+load as a new lab — topology, hooks, referenced templates, and per-node disk
+state. Two modes: **cold** freezes at power-off (small, boots fresh);
+**hot** freezes running state (bigger, resumes at the moment of capture via
+`loadvm` and `docker load`).
+
+`labtris lab snapshot <id> --mode cold` writes the archive to `settings.pod_dir`
+on the server. `labtris lab load <path>` restores it as a new lab. Full
+walkthrough in [Portable snapshots](/snapshots).
+
+Compared to **backup**, snapshots carry disks; backups are configuration
+only. Different use cases: pods for handing out a specific state, backups
+for disaster recovery.
+
 ## Next
 
-[Users and access](/users) — accounts, the two roles, and what ownership
-actually protects.
+[Ready hooks](/hooks) — YAML checks that fire when the lab is up.

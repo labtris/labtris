@@ -1,0 +1,204 @@
+---
+title: "Portable snapshots"
+description: "Save an entire lab into a file. Load it as a new lab anywhere."
+---
+
+A snapshot ("pod", in the LocalStack sense the shape borrows from) is a
+single `.tar.gz` that reproduces a lab on any Labtris host: topology, hooks,
+templates it references, and — depending on the mode — per-node disk state
+and live memory.
+
+Two things to hand out this way that were otherwise hard: **teaching
+scenarios** ("here is a lab mid-troubleshooting, students pick up from
+this exact state") and **known-good baselines** ("this is the configured
+BGP fabric; if you break yours, load this one and diff").
+
+## Two modes
+
+<CodeGroup>
+
+```bash cold
+# The lab must be stopped. Small archive. Boots fresh on load.
+labtris lab snapshot <lab-id> --mode cold
+```
+
+```bash hot
+# Running nodes accepted. Bigger archive (contains live RAM + container fs).
+# Resumes at the exact moment of capture on load.
+labtris lab snapshot <lab-id> --mode hot
+```
+
+</CodeGroup>
+
+The tradeoff:
+
+| | **Cold** | **Hot** |
+|---|---|---|
+| Lab state at save | must be stopped | may be running |
+| QEMU disk | flattened qcow2 (state at power-off) | flattened qcow2 with an internal `savevm` |
+| Docker filesystem | image reference only (rebuilds from scratch) | `docker commit`+`save` → tar inside the pod |
+| Archive size | 2–8 GB typical | 20–50 GB typical |
+| Restore semantics | boots fresh, disks reproduce power-off state | `loadvm` + `docker load` on first start; resumes |
+| Use for | ready-to-run lab, class handout | mid-scenario capture, "start from this exact point" |
+
+Cold is the default because most handouts want "here is a lab ready to run".
+Hot is for the "here is where I stopped" case — replaying a live
+troubleshooting session, capturing a broken state for a bug report, or
+freezing a converged routing plane so students don't wait for it.
+
+## Save
+
+The pod lands under `settings.pod_dir` on the **server** host (default
+`~/.local/share/labtris/pods/`). Nothing is sent back to the CLI — the
+response is the path plus metadata.
+
+<CodeGroup>
+
+```bash CLI
+labtris lab snapshot <lab-id> --mode cold -o json
+# {
+#   "pod_id": "spine-leaf-20260920-142130-a12a0f",
+#   "path": "/var/lib/labtris/.local/share/labtris/pods/spine-leaf-...",
+#   "bytes": 3020,
+#   "node_count": 6,
+#   "mode": "cold",
+#   "created_at": "2026-09-20T14:21:30.847+00:00"
+# }
+```
+
+```bash curl
+curl -X POST http://<host>:8081/api/v1/labs/<id>/snapshot \
+  -H 'content-type: application/json' \
+  -d '{"mode": "cold"}'
+```
+
+</CodeGroup>
+
+Cold refuses if any node is `running` — the error names the offending nodes
+so you know what to stop:
+
+```
+error: cold snapshot needs the lab stopped — still running: R1, R2, dc1-host (…)
+```
+
+Stop the lab (`labtris node stop <id>` per node) and try again.
+
+## List and download
+
+Every pod on the server host shows up in `labtris pod list`:
+
+```
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃ Pod ID             ┃ Lab         ┃ Mode ┃ Nodes ┃ Bytes ┃ Created           ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ spine-leaf-20260…  │ spine-leaf  │ hot  │ 6     │ 69384257 │ 2026-09-20T14:2…│
+└────────────────────┴─────────────┴──────┴───────┴───────┴───────────────────┘
+```
+
+Download one with the streaming endpoint — that is how you move a pod between
+hosts:
+
+```bash
+curl -o pod.tar.gz http://<src-host>:8081/api/v1/pods/<pod-id>/download
+scp pod.tar.gz labtris@<dst-host>:/var/lib/labtris/.local/share/labtris/pods/
+```
+
+`labtris pod rm <pod-id>` removes it from the server. Pods can be big; the
+list view sorts by creation time so tidying up is one call.
+
+## Load
+
+Loading a pod always creates a **new lab** with fresh ids — never overwrites
+in place. That is deliberate: a pod is a source, an existing lab is a running
+thing, and the safe primitive is "create alongside, then delete the old one
+if you meant to."
+
+<CodeGroup>
+
+```bash CLI
+labtris lab load /path/to/pod.tar.gz --name "restored-<something>"
+```
+
+```bash curl
+curl -X POST http://<host>:8081/api/v1/pods/load \
+  -H 'content-type: application/json' \
+  -d '{"path": "/var/lib/labtris/.../pod.tar.gz", "name": "restored-1"}'
+```
+
+</CodeGroup>
+
+For a remote pod you would rather not stage on the server, `POST
+/pods/upload` accepts a multipart file:
+
+```bash
+curl -X POST http://<host>:8081/api/v1/pods/upload \
+  -F 'file=@pod.tar.gz' -F 'name=restored-1'
+```
+
+`--name` is optional; the loader picks `<original>-1`, `<original>-2`, … if
+the name is taken.
+
+## What happens on restore
+
+**Cold** — each QEMU node's flattened qcow2 is hashed and installed into the
+local `custom-<sha>.qcow2` cache, and the new node's `image` field is
+rewritten to `custom:<sha>`. When the node starts, the runtime creates a
+fresh overlay on top — subsequent edits accumulate there, and the pod itself
+is never modified. Docker nodes are recreated from their original image
+reference; if the pod was made on another host with a private image, that
+host must have the image locally (or be able to pull it).
+
+**Hot** — each QEMU node's disk goes directly into the new node's `vm_dir`
+as `disk.qcow2` (standalone, no backing chain), and a
+`qemu_opts.load_snapshot_on_boot` marker is set. On the very first start, the
+runtime brings the VM up and then issues HMP `loadvm <tag>`; the guest wakes
+at exactly the moment of capture. The marker is cleared after (success or
+failure) so subsequent starts do a plain cold boot from the same disk.
+Docker containers: `docker load` runs during the pod load, and the new
+node's `image` is rewritten to the loaded tag so the first start recreates
+the container from the snapshotted filesystem.
+
+## Format
+
+The archive is `labtris-pod-v1.tar.gz` — a versioned manifest plus everything
+needed to reproduce the lab:
+
+```
+snapshot.json                   # manifest — mode, pod_id, lab_id, node list
+lab.json                        # labtris-lab-v1 export (topology)
+hooks.yml                       # present iff the lab has ready hooks
+templates.json                  # every Template referenced by any node
+nodes/<node_id>/disk.qcow2      # QEMU: flattened image
+nodes/<node_id>/image.tar       # Docker hot: `docker save` output
+```
+
+Cold docker nodes carry no per-node bytes at all — the topology entry names
+the image reference, and the loader recreates them from that. Hot docker
+nodes bring their full image tar.
+
+`snapshot.json` is small and stable enough that
+`tar -xzOf pod.tar.gz snapshot.json | jq` is a fine way to inspect a pod
+without extracting it.
+
+## Non-goals
+
+- **No cross-host transport tool.** `scp` the `.tar.gz` yourself.
+- **No proprietary vendor images in the pod.** Licensing hazard. If
+  `image` is a catalog id (SR Linux, IOSv, etc.) the target host must already
+  have it.
+- **No incremental save.** Every snapshot writes the full state; there is no
+  base-image + diff chain.
+- **Hot commits are dirty-layer.** `docker commit` on a running container
+  captures whatever state is in flight, same as the docker CLI. Quiesce the
+  workload yourself if that matters.
+
+## Compared to backup
+
+`Settings → Backup` (or `GET /api/v1/backup`) writes a `labtris-backup-v1`
+that is **configuration only**: every lab's topology plus instance settings,
+no disks. Backup is for disaster recovery — a small file that fits in email
+or a git repo. Pods are for portable state; the two do not overlap.
+
+## Next
+
+[The labtris CLI](/cli) — every verb this page uses, and how to script them.

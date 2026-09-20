@@ -1,0 +1,214 @@
+---
+title: "Ready hooks"
+description: "YAML checks that fire when the lab is up — ping, HTTP, exec, serial wait."
+---
+
+A lab "started" is not the same as a lab "ready". Every node moves to
+`running` in a few seconds, but the router hasn't converged yet, the app inside
+one of the containers hasn't opened its port, and the guest VM is still on its
+first-boot dialogue. Ready hooks bridge that gap: you name what "ready" means
+for **this** lab, and Labtris tells you when the condition holds.
+
+Modeled on LocalStack's `/etc/localstack/init/ready.d/*.sh`, but declarative:
+YAML lives on the lab, four hook kinds cover the common shapes, and the
+outcome is recorded per hook so a UI or a script can see which check failed
+without re-running the whole set.
+
+## The document
+
+```yaml
+# hooks.yml — the canonical form. Editable in the UI's Hooks tab or via
+# `labtris lab hooks apply <lab-id> hooks.yml`.
+ready_when: all_nodes_running
+
+hooks:
+  - name: "wait for BGP up on R1"
+    kind: serial_wait
+    node: R1
+    wait_for: "% BGP session established"
+    timeout_s: 60
+
+  - name: "ping between DC1 and DC2"
+    kind: ping
+    from_node: dc1-host
+    to: 10.20.0.1
+    count: 3
+    timeout_s: 10
+
+  - name: "validate app health"
+    kind: http
+    from_node: dc1-host
+    url: "http://web.dc1:8080/health"
+    expect_status: 200
+
+  - name: "check BGP session count"
+    kind: command
+    node: dc1-router
+    command: "vtysh -c 'show bgp summary'"
+    expect_rc: 0
+    expect_stdout_regex: "Established"
+```
+
+`ready_when` says when the auto-fire watcher should trip. `all_nodes_running`
+is the only trigger today: every node must be `state: running`, and if a node
+has a bootstrap block, that must have completed too.
+
+Hooks run **sequentially**, and the first failure stops the sequence. Order
+your list so the least-flaky check goes first (a hook that pings will always
+fail if BGP hasn't come up; put the `serial_wait` for BGP before the ping).
+
+## Hook kinds
+
+<CodeGroup>
+
+```yaml serial_wait
+# Wait for a regex to appear on a QEMU node's serial console.
+# Nearly identical to a bootstrap step — same subscribe/regex-match
+# dance — except we do not type anything.
+- name: "wait for BGP"
+  kind: serial_wait
+  node: R1
+  wait_for: "% BGP session established"
+  timeout_s: 60
+```
+
+```yaml command
+# Exec inside a Docker node. Returns (rc, stdout).
+# Passes if rc == expect_rc AND (if given) stdout matches expect_stdout_regex.
+- name: "curl the app"
+  kind: command
+  node: dc1-host
+  command: "curl -s http://web.dc1:8080/status"
+  expect_rc: 0
+  expect_stdout_regex: "OK"
+```
+
+```yaml ping
+# Ping from inside a Docker node's netns via nsenter.
+- name: "cross-DC reachability"
+  kind: ping
+  from_node: dc1-host
+  to: 10.20.0.1
+  count: 3
+  timeout_s: 10
+```
+
+```yaml http
+# GET a URL from inside a Docker node's netns. Passes if HTTP code
+# matches expect_status.
+- name: "app health"
+  kind: http
+  from_node: dc1-host
+  url: "http://web.dc1:8080/health"
+  expect_status: 200
+```
+
+</CodeGroup>
+
+`ping` and `http` are Docker-only in v1 — they run via `nsenter -t <pid> -n
+{ping,curl}` and QEMU guests have no host-visible pid to enter. `command` is
+also Docker-only for the same reason. For QEMU, `serial_wait` is the tool: use
+`type` in a bootstrap step to run the command, then wait for a regex on the
+serial output.
+
+## Running them
+
+<CodeGroup>
+
+```bash CLI
+# Apply YAML from a file. Restarts the auto-fire watcher against the new spec.
+labtris lab hooks apply <lab-id> hooks.yml
+
+# Force a run right now, ignoring the ready_when trigger.
+labtris lab hooks run <lab-id>
+
+# See the parsed form + the per-hook outcome of the last run.
+labtris lab hooks show <lab-id>
+
+# Drop the hooks block entirely.
+labtris lab hooks clear <lab-id>
+```
+
+```bash curl
+# Apply
+curl -X PUT http://<host>:8081/api/v1/labs/<id>/hooks \
+  -H 'content-type: application/json' \
+  -d @<(jq -Rs '{source: .}' hooks.yml)
+
+# Force run
+curl -X POST http://<host>:8081/api/v1/labs/<id>/hooks/run
+
+# Read
+curl http://<host>:8081/api/v1/labs/<id>/hooks
+```
+
+</CodeGroup>
+
+Auto-fire is **one-shot per apply**: the watcher fires the hooks the first
+time `ready_when` holds, then exits. Restarting a node does not re-fire — the
+model is "here is what ready means; tell me when it holds first," not
+"re-check on every state change." Force a re-run with `labtris lab hooks run`
+or the **Run now** button in the Hooks dock tab.
+
+Watchers survive an API restart. On startup Labtris re-spawns a watcher for
+every lab that has a `hooks_source` — nothing hangs waiting for the human to
+press Apply again.
+
+## Reading the state
+
+Every hook run records an outcome:
+
+```json
+{
+  "runs": [
+    {
+      "name": "ping between DC1 and DC2",
+      "phase": "passed",
+      "started_at": 1732103041.9,
+      "finished_at": 1732103043.1,
+      "output": "3 packets transmitted, 3 received, 0% packet loss",
+      "error": null
+    },
+    {
+      "name": "validate app health",
+      "phase": "failed",
+      "started_at": 1732103043.1,
+      "finished_at": 1732103053.2,
+      "output": "HTTP 502",
+      "error": "expected HTTP 200, got 502 (rc=0)"
+    }
+  ]
+}
+```
+
+`phase` is one of `pending`, `running`, `passed`, `failed`. Failed hooks stop
+the sequence but do not fail the lab — the lab keeps running; the state is
+information for a script or a UI to act on.
+
+`hook` events also stream on the lab WebSocket (`/labs/{id}/ws`), one per
+phase transition, so the UI's run log fills in live rather than after each
+poll.
+
+## The teaching pattern
+
+The reason to want any of this: a lab that self-tests. An instructor sets
+`hooks.yml` to describe the pass condition — "BGP peer established on R1",
+"HTTP health check returns 200 from the app node" — and hands the lab to a
+class. Students break something. They run `labtris lab hooks run` (or click
+**Run now**) and get a table naming which check failed and what its output was
+— not a stack trace, a plain sentence about the network. That is the whole
+loop: "here is what should be true; here is what actually is."
+
+## Non-goals
+
+- **No DAG.** Sequential only. A failed hook stops the sequence.
+- **No auto-rerun on node bounce.** The watcher fires once per Apply.
+- **No first-class "lab failed" state.** A failed hook records the outcome;
+  the lab keeps running.
+- **No cross-host.** `ping` and `http` run in netd's own netns view, so the
+  caller and target must be on the same Labtris host.
+
+## Next
+
+[Portable snapshots](/snapshots) — save an entire lab (state + hooks +
+topology) into a file, load it as a new lab anywhere.

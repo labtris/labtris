@@ -58,6 +58,8 @@
         "consoles",
         "observing",
         "labs",
+        "hooks",
+        "snapshots",
         "users"
       ]
     },
@@ -71,6 +73,7 @@
     {
       "group": "Reference",
       "pages": [
+        "cli",
         "reference/install-from-source",
         "reference/building-the-iso"
       ]

@@ -1,0 +1,118 @@
+---
+title: "The labtris CLI"
+description: "One binary that talks to a Labtris instance the way the web UI does."
+---
+
+`labtris` is the second surface on the same API. Everything it prints is what
+the web UI would render for the same request — there is no parallel
+implementation, and there is nothing this can do that a scripted `curl` could
+not. What it adds is ergonomics: nested subcommands, rich tables, and a
+`--format json` you can pipe into `jq`.
+
+The CLI ships in the same wheel as the API. `pip install labtris` gives you
+every server binary plus this one; there is nothing extra to install.
+
+## Signing in
+
+The CLI stores a 7-day JWT under `~/.config/labtris/auth.json` (mode `0600`).
+It is the same token the browser uses; the API returns it in the login response
+body so a non-browser caller does not have to parse `Set-Cookie`.
+
+```bash
+labtris login --url http://<host>:8081 --user admin
+# prompts for the password
+```
+
+For CI or scripting, set `LABTRIS_TOKEN` + `LABTRIS_API_URL` in the environment
+and skip `labtris login` entirely.
+
+```bash
+export LABTRIS_API_URL=http://<host>:8081
+export LABTRIS_TOKEN=<jwt from /api/v1/auth/login>
+labtris lab list
+```
+
+`labtris logout` drops the local file. There is no server-side token
+revocation — the JWT is stateless — so the file itself is the credential.
+
+## Global options
+
+| Flag | What |
+|---|---|
+| `-o table` | Rich table with columns (the default). |
+| `-o json` | Raw API response, `sort_keys` + `indent=2`. Made for `jq`. |
+| `-o yaml` | Pretty YAML. Used for pods and hooks. |
+| `--help` / `-h` | Standard Typer help; every subcommand carries its own. |
+| `--install-completion` | Installs bash/zsh/fish completions. |
+
+Options go **after** the verb: `labtris lab list -o json`, not
+`labtris -o json lab list`.
+
+## The subcommand tree
+
+<CodeGroup>
+
+```bash lab
+# list, inspect, load, snapshot
+labtris lab list
+labtris lab show <lab-id>
+labtris lab snapshot <lab-id> --mode cold|hot
+labtris lab load <path.tar.gz> [--name NAME]
+
+# hook operations
+labtris lab hooks show <lab-id>
+labtris lab hooks apply <lab-id> hooks.yml
+labtris lab hooks run <lab-id>
+labtris lab hooks clear <lab-id>
+```
+
+```bash node
+labtris node list [--lab LAB_ID]
+labtris node start <node-id>
+labtris node stop <node-id> [--mode graceful|force]
+labtris node wipe <node-id>
+```
+
+```bash pod
+labtris pod list
+labtris pod inspect <pod-id>
+labtris pod rm <pod-id>
+```
+
+```bash system
+labtris system status              # /health + who + where
+labtris system doctor              # delegates to labtris-doctor (needs local access)
+```
+
+</CodeGroup>
+
+## Piping into other tools
+
+`--format json` is the whole point. Everything the CLI shows a human, it can
+emit as raw JSON — one call, one response object, no scraping.
+
+```bash
+# every running node in the biggest lab
+labtris lab list -o json |
+  jq -r 'sort_by(.nodes) | last | .id' |
+  xargs -I{} labtris node list --lab {} -o json |
+  jq -r '.[] | select(.state == "running") | .name'
+
+# every hook that failed in the last run of any lab that has hooks
+for lab in $(labtris lab list -o json | jq -r '.[].id'); do
+  labtris lab hooks show "$lab" -o json |
+    jq -r --arg lab "$lab" '.state.runs[]? | select(.phase == "failed") |
+      "\($lab)\t\(.name)\t\(.error)"'
+done
+```
+
+## The old binaries
+
+`labtris-doctor` and `labtris-image` still exist and still work — the CLI
+consolidates them under `labtris system doctor` and `labtris image *`, but the
+old names are console-script shims that delegate. Nothing scripted breaks; the
+new names are what we document going forward.
+
+## Next
+
+[Ready hooks](/hooks) — YAML checks that fire when the lab is up.

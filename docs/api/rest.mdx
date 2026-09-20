@@ -60,8 +60,88 @@ The same signed value is accepted as `Authorization: Bearer <token>`, which is
 what the MCP server uses. The cookie is what the browser sends, because it rides
 along on the WebSocket handshake that a header cannot.
 
+The login response body also includes the token — `{"user": ..., "token":
+"<jwt>", "expires_in": 604800}` — for non-browser callers (the `labtris` CLI,
+the MCP server, any scripted client) that would otherwise be reduced to
+parsing `Set-Cookie`. Browsers ignore the field; their session is the cookie.
+
 A handful of legacy-shaped routes exist alongside the native ones, so scripts
 written against older emulator APIs can be pointed here with less rewriting.
+
+### Ready hooks
+
+Every lab optionally carries a **hooks block** — YAML the user writes,
+parsed and cached on the row — plus a per-run state array. Reading and
+writing both go through `/api/v1/labs/{id}/hooks`; see [Ready
+hooks](/hooks) for the schema.
+
+<CodeGroup>
+
+```bash curl
+# Apply YAML from a file (canonical form; server parses + validates)
+curl -X PUT http://<host>:8081/api/v1/labs/<id>/hooks \
+  -H 'content-type: application/json' \
+  -d @<(jq -Rs '{source: .}' hooks.yml)
+
+# Force a run now, ignoring the ready_when trigger
+curl -X POST http://<host>:8081/api/v1/labs/<id>/hooks/run
+
+# Read state
+curl http://<host>:8081/api/v1/labs/<id>/hooks
+
+# Clear
+curl -X DELETE http://<host>:8081/api/v1/labs/<id>/hooks
+```
+
+```python Python
+import httpx, pathlib
+base = "http://<host>:8081/api/v1"
+httpx.put(f"{base}/labs/<id>/hooks",
+          json={"source": pathlib.Path("hooks.yml").read_text()}).raise_for_status()
+httpx.post(f"{base}/labs/<id>/hooks/run").json()
+```
+
+</CodeGroup>
+
+Hook run progress also streams on the lab websocket
+(`/labs/{id}/ws`) as `{"type": "hook", "state": [...]}` frames — one per
+phase transition.
+
+### Snapshots (pods)
+
+Pods package an entire lab into a `.tar.gz` on the server host. Save +
+list + load + delete all sit under `/api/v1/pods*`; see [Portable
+snapshots](/snapshots) for the format and modes.
+
+<CodeGroup>
+
+```bash curl
+# Save (cold refuses if any node is running; hot accepts running nodes)
+curl -X POST http://<host>:8081/api/v1/labs/<id>/snapshot \
+  -H 'content-type: application/json' \
+  -d '{"mode": "cold"}'
+
+# List local pods on this server
+curl http://<host>:8081/api/v1/pods
+
+# Download for scp'ing to another host
+curl -o pod.tar.gz http://<host>:8081/api/v1/pods/<pod-id>/download
+
+# Load a pod as a NEW lab (never overwrites in place)
+curl -X POST http://<host>:8081/api/v1/pods/load \
+  -H 'content-type: application/json' \
+  -d '{"path": "/var/lib/labtris/.local/share/labtris/pods/pod.tar.gz",
+       "name": "restored-1"}'
+
+# Or upload + load in one shot (multipart)
+curl -X POST http://<host>:8081/api/v1/pods/upload \
+  -F 'file=@pod.tar.gz' -F 'name=restored-1'
+
+# Delete
+curl -X DELETE http://<host>:8081/api/v1/pods/<pod-id>
+```
+
+</CodeGroup>
 
 ## MCP
 
@@ -78,7 +158,8 @@ It speaks JSON-RPC over stdin and stdout, which is what MCP clients expect.
 Point Claude Code, Claude Desktop, or anything else that speaks MCP at that
 command.
 
-Twenty-two tools:
+The tool set grew with the LocalStack-inspired features (ready hooks and
+portable snapshots), so it is a bit longer now:
 
 | | |
 |---|---|
@@ -86,6 +167,8 @@ Twenty-two tools:
 | **Building** | `create_lab`, `add_node`, `connect_nodes`, `create_network`, `join_network`, `set_node_resources` |
 | **Running** | `start_node`, `stop_node`, `node_logs`, `console_exec` |
 | **Investigating** | `impair_link`, `capture_start`, `capture_read`, `capture_stop` |
+| **Ready hooks** | `lab_hooks_show`, `lab_hooks_apply`, `lab_hooks_run`, `lab_hooks_clear` |
+| **Snapshots (pods)** | `lab_snapshot`, `pods_list`, `pod_load`, `pod_delete` |
 | **Removing** | `delete_lab` |
 
 `console_exec` runs one shell command inside a running node — real

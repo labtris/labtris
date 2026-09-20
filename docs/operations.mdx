@@ -159,6 +159,7 @@ backing file, each with its own overlay.
 | `LABTRIS_QEMU_ACCEL` | `kvm` or `tcg`. The default is `tcg` because nested KVM is unreliable on generic cloud VMs — some hang on first vcpu run despite `/dev/kvm` and `kvm-ok` both reporting success. Set `kvm` on a host where you have verified it executes |
 | `LABTRIS_QEMU_IMAGE_CACHE_DIR` | Where downloaded images live. Point it at the big disk |
 | `LABTRIS_QEMU_VM_DIR` | Per-node overlays and state |
+| `LABTRIS_POD_DIR` | Where [snapshots](/snapshots) live. Also point at the big disk — a hot pod for a 6-node lab is tens of GB |
 | `LABTRIS_DATABASE_URL` | Postgres |
 | `LABTRIS_QEMU_ALLOW_EXTRA_ARGS` | Off. Turning it on lets a node pass unrestricted arguments to a process on this host, which is equivalent to shell access |
 

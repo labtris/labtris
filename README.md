@@ -112,6 +112,21 @@ running on the server and streamed to your browser.
 **Labs.** Folders, clone (with fresh MACs and host device names), lock,
 ownership, and several named startup-config sets per lab.
 
+**Ready hooks.** YAML on each lab names what "ready" means for this lab —
+ping, HTTP, exec, or a serial regex — and Labtris fires the checks when
+every node is up. Lets a lab self-test, and turns a handout into "here is
+what should be true; here is what actually is."
+
+**Portable snapshots (pods).** `labtris lab snapshot <id>` writes the whole
+lab into a single `.tar.gz` — topology, hooks, per-node disk state, and (in
+hot mode) live QEMU memory + committed Docker filesystems. `labtris lab load
+<path>` restores it as a new lab on any host. Modeled on LocalStack pods.
+
+**CLI.** `labtris` — nested subcommands (`lab`, `node`, `pod`, `system`),
+rich tables for humans, `--format json` for scripts. Same API surface as
+the web UI; talks to the server over HTTP with a 7-day JWT stored under
+`~/.config/labtris/auth.json`.
+
 **API.** Everything the interface does, the REST API does; the same surface is
 exposed over MCP so an agent can drive a lab.
 
