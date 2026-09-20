@@ -418,38 +418,40 @@ async def ai_chat_ws(websocket: WebSocket, lab_id: str) -> None:
         # Concurrent listener for cancel and confirm-answer messages;
         # runs alongside the generator drain below.
         watcher = asyncio.create_task(_watch_client())
-        async with SessionLocal() as session:
-            try:
-                await _lab_context(session, lab_id)
-            except ApiError as exc:
-                await websocket.send_json({"kind": "error", "message": exc.message})
-                return
-            # Mint a short-lived bearer token for the resolved WS user so
-            # the agent loop's callbacks into our own API (via
-            # settings.self_url) carry an Authorization header. Without
-            # this, every tool the model tried to run returned "sign in
-            # to continue" — the loop was hitting its own API
-            # unauthenticated, because `token=None` was a leftover from
-            # when WS auth was still a TODO.
-            try:
-                async for ev in stream_agent(
-                    lab_id, message, token=_agent_token(user),
-                    cancel=cancel, confirm=_ask_confirm,
-                    attachments=attachments,
-                ):
-                    await websocket.send_json(ev)
-            except StreamCancelled:
-                # Cancel is a first-class outcome, not an error. The UI
-                # discards its growing bubble on receiving `cancelled`
-                # and re-enables Send.
-                await websocket.send_json({"kind": "cancelled"})
-            except LlmUnavailable as exc:
-                log = await local_plan(session, lab_id, message)
-                reply = (
-                    "\n".join(log) if log else "No LLM configured and I could not match that request."
-                ) + f"\n\n({exc})"
-                await websocket.send_json({"kind": "turn", "text": reply, "applied": log})
-            await websocket.send_json({"kind": "done"})
+        # DB session used to sit open for the whole turn — many minutes
+        # if the model ran a lot of tool calls. Every yield point held
+        # a pooled connection, and N concurrent chats or hung
+        # disconnects progressively exhausted the pool (see the QueuePool
+        # timeout error users hit in 0.6.0). Now every DB touch opens
+        # its own short-lived session, so the connection lives only as
+        # long as the query it wraps.
+        try:
+            async with SessionLocal() as _ctx_session:
+                await _lab_context(_ctx_session, lab_id)
+        except ApiError as exc:
+            await websocket.send_json({"kind": "error", "message": exc.message})
+            return
+        # Mint a short-lived bearer token for the resolved WS user so
+        # the agent loop's callbacks into our own API (via
+        # settings.self_url) carry an Authorization header.
+        try:
+            async for ev in stream_agent(
+                lab_id, message, token=_agent_token(user),
+                cancel=cancel, confirm=_ask_confirm,
+                attachments=attachments,
+            ):
+                await websocket.send_json(ev)
+        except StreamCancelled:
+            # Cancel is a first-class outcome, not an error.
+            await websocket.send_json({"kind": "cancelled"})
+        except LlmUnavailable as exc:
+            async with SessionLocal() as _fb_session:
+                log = await local_plan(_fb_session, lab_id, message)
+            reply = (
+                "\n".join(log) if log else "No LLM configured and I could not match that request."
+            ) + f"\n\n({exc})"
+            await websocket.send_json({"kind": "turn", "text": reply, "applied": log})
+        await websocket.send_json({"kind": "done"})
         watcher.cancel()
         try:
             await watcher
