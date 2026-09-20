@@ -96,7 +96,8 @@
         "design/features",
         "design/architecture",
         "design/scaling",
-        "design/phase1-spec"
+        "design/phase1-spec",
+        "design/multipath-deferred"
       ]
     }
   ]

@@ -1,0 +1,69 @@
+---
+title: "Deferred: multipath / LinkGroup"
+description: "Why parallel links between the same pair are not first-class yet, and the plan when they land."
+---
+
+The Link model today enforces one link per interface pair — both
+`Link.a_iface_id` and `Link.b_iface_id` are `UNIQUE` FKs. That is
+what stops a two-endpoint p2p wire from being duplicated by accident.
+It is also what prevents **ECMP-shaped parallel links** between the
+same node pair from being first-class shapes on the canvas.
+
+## Why it did not ship in Phase F
+
+The change is real work, and gets bigger the closer you look:
+
+- **Schema.** New `link_groups` table; nullable `Link.group_id` FK;
+  relax `UNIQUE` on interface FKs when the row carries a group id.
+  Migration is straightforward but touches every existing lab.
+- **Runtime.** ECMP across parallel host taps needs either a multipath
+  route (`ip route add … nexthop … nexthop …`) inside the endpoint's
+  netns, or a Linux `bond` interface in xmit_hash_policy=layer3+4
+  mode, or an OVS bridge with per-flow balancing. Three options,
+  each with different failure modes (route drop vs bond flap vs OVS
+  crash).
+- **UI.** Wire renderer draws one Bezier per link today. A group
+  should draw N parallel Beziers with visual banding + a live
+  per-path distribution overlay (fed by the Phase E2 stats
+  endpoint). Not a small change to `App.svelte`'s SVG loop.
+- **Ports allocation.** Each link consumes one interface index per
+  end. A group needs N interfaces per end, allocated together,
+  released together on group delete.
+
+## What Phase E already covers, functionally
+
+Packet-spraying at a switch is available today via the `ecmp.p4`
+built-in on a bmv2 spine. That produces per-packet ECMP across
+multiple output ports; the CS story ("watch how UET congestion
+control behaves on a fabric that reorders packets") works without
+LinkGroup, because the reordering happens inside the switch, not
+across parallel wires between nodes.
+
+The gap LinkGroup fills is specifically:
+
+- **Dual-homed hosts** — a host attaches to two leaves. Real DC
+  fabrics do this for fault tolerance; a broken leaf shouldn't
+  black-hole the host under it.
+- **Full-BW spine uplinks** — a leaf has 4×100G to each spine, not
+  1×400G. Aggregate bandwidth per pair as an emergent property of
+  the wiring, not a rate limit on a single link.
+
+Both are worth having. Neither is blocking the AI-fabric or Ultra
+Ethernet demo pods that Phase F5 ships.
+
+## Plan when it lands
+
+- **Phase G1 — LinkGroup schema + migration.** New table, FK on Link,
+  API endpoints for group create / list / delete.
+- **Phase G2 — Runtime plumbing.** Pick one primitive (leaning
+  toward Linux `bond` with xmit_hash_policy=layer3+4 — one interface
+  index per node per group, ECMP hash without an external switch,
+  survives leaf failure). Wire allocation logic to create the bond
+  on start, tear down on stop.
+- **Phase G3 — UI.** Wire renderer draws parallel Beziers per group
+  member; live per-path bps overlay uses the same `link_stats` cache
+  as the per-link overlay. Canvas gets a "group these" gesture for
+  selecting N links between the same pair.
+
+Rough estimate two focused weeks end-to-end. Belongs in its own
+plan file before any code lands.
