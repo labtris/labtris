@@ -34,7 +34,7 @@
 
   function askClear() {
     if (chat.length === 0 && !liveTurn) return;
-    if (confirm("Clear the assistant conversation? The lab itself is untouched.")) {
+    if (confirm("Clear the AI assistant conversation? The lab itself is untouched.")) {
       onclear();
     }
   }
@@ -65,7 +65,7 @@
          it's obvious the loop is progressing. -->
     <div class="strip-run">
       <span class="pulse"></span>
-      <span>Assistant is working</span>
+      <span>AI assistant is working</span>
       {#if aiStep}
         <span class="dim">— running <span class="mono">{aiStep}</span></span>
       {/if}
@@ -103,7 +103,7 @@
           No model reachable at <code>{aiStatus.base_url}</code>. Point
           <code>LABTRIS_LLM_BASE_URL</code> at your LiteLLM (and
           <code>LABTRIS_LLM_API_KEY</code> / <code>LABTRIS_LLM_MODEL</code>) and the
-          assistant can drive the lab with the {aiStatus.tools.length} tools it has.
+          AI assistant can drive the lab with the {aiStatus.tools.length} tools it has.
           Until then only a few built-in patterns work.
         </p>
       {:else if aiStatus}

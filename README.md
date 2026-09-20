@@ -23,7 +23,7 @@ on the specific task of reading a running network and telling me what was
 wrong with it.
 
 None of the existing tools (EVE-NG, PNETLab, GNS3, containerlab, CML) let me
-point an assistant at a live topology and iterate on it. So the MCP surface,
+point an AI assistant at a live topology and iterate on it. So the MCP surface,
 the VNC tools that make a graphical guest first-class for the model, and the
 hot lab snapshots that hand a broken state to someone else in a file are here
 because I needed them for my own work. Turned out other people wanted the

@@ -468,7 +468,7 @@
         <select value={prefs?.dock ?? "console"}
           onchange={(e) => onprefs?.({ dock: e.currentTarget.value })}>
           <option value="console">Terminals</option>
-          <option value="ai">Assistant</option>
+          <option value="ai">AI assistant</option>
           <option value="logs">Logs</option>
           <option value="events">Events</option>
         </select>

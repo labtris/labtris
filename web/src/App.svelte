@@ -2403,7 +2403,7 @@
       }
     };
     aiWs.onerror = () => {
-      chat = [...chat, { role: "labtris", text: "assistant connection lost" }];
+      chat = [...chat, { role: "labtris", text: "AI assistant connection lost" }];
     };
     aiWs.onclose = () => {
       aiStep = "";
@@ -2843,7 +2843,7 @@
   // the × on the window closes it. State (chat, chatIn) lives at App
   // level so a close-and-reopen preserves the conversation.
   function toggleChat() {
-    openWindow("chat", "instance", "✦ Assistant", { w: 420, h: 700 });
+    openWindow("chat", "instance", "✦ AI assistant", { w: 420, h: 700 });
   }
 
   // Host meter click: open Settings directly on the Host & diagnostics
@@ -3830,7 +3830,10 @@
   <header class="top">
     <div class="brand">
       <div class="logo">{@html LOGO_MARK}</div>
-      <div class="title">Labtris</div>
+      <div class="wordmark">
+        <div class="title">Labtris</div>
+        <div class="subtitle">the LLM-native network lab</div>
+      </div>
     </div>
 
     <!-- Identity, then state, then the one thing you type into. Everything that
@@ -3915,8 +3918,8 @@
     <!-- Assistant toggles a floating window rather than sharing the bottom
          dock with six other tabs — the chat is the one dock resident that
          benefits from being genuinely resizable and closable. -->
-    <button class="ghost topbar-btn" onclick={toggleChat} title="open the assistant">
-      ✦ Assistant
+    <button class="ghost topbar-btn" onclick={toggleChat} title="open the AI assistant">
+      ✦ AI assistant
     </button>
 
     <!-- Theme picker in the top bar rather than buried in an avatar menu:
@@ -4826,14 +4829,14 @@
     <div class="modal-back fixed">
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="modal">
-        <h3>The assistant wants your permission</h3>
+        <h3>The AI assistant wants your permission</h3>
         <p>
           It is about to run <code class="mono">{aiConfirm.tool}</code> with:
         </p>
         <pre class="mono tiny">{JSON.stringify(aiConfirm.args, null, 2)}</pre>
         <p class="hint tiny">
           This tool changes state that is hard or impossible to undo. Approve if
-          this is what you want; deny to have the assistant explain what it was
+          this is what you want; deny to have the AI assistant explain what it was
           trying to do without doing it.
         </p>
         <div class="modal-actions">
@@ -6152,7 +6155,16 @@
   .brand { display: flex; gap: 10px; align-items: center; }
   .logo { width: 30px; height: 30px; flex: 0 0 30px; line-height: 0; }
   .logo :global(svg) { width: 100%; height: 100%; display: block; }
+  .wordmark { display: flex; flex-direction: column; line-height: 1.15; }
   .title { font-weight: 600; font-size: 16px; letter-spacing: 0.01em; }
+  /* Subtitle is the same string as the landing-page H1 so anyone who
+     ever wondered "what is this thing?" sees the answer next to the
+     logo — no click, no docs trip. Kept small and dim so it does not
+     fight the crumb next to it for attention. Hidden below the width
+     the crumb starts to crowd the title — the crumb is more useful
+     than the tagline once you are actually in a lab. */
+  .subtitle { font-size: 10.5px; color: var(--muted); letter-spacing: 0.02em; margin-top: 1px; }
+  @media (max-width: 900px) { .subtitle { display: none; } }
   .dots { min-height: 30px; padding: 0 8px; color: var(--muted); letter-spacing: 0.05em; }
   /* The command bar is the header's one large target, centred between two
      flexible gaps so it stays put as the chips on either side change width. */

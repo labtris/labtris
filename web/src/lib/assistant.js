@@ -137,8 +137,8 @@ export async function runTurn({
   deps = {},
 }) {
   const cfg = deps.config ?? loadConfig();
-  if (!cfg.apiKey) throw new Error("No API key set. Add one in Settings → Assistant.");
-  if (!cfg.model) throw new Error("No model set. Add one in Settings → Assistant.");
+  if (!cfg.apiKey) throw new Error("No API key set. Add one in Settings → AI assistant.");
+  if (!cfg.model) throw new Error("No model set. Add one in Settings → AI assistant.");
 
   const callProvider = deps.chat ?? chat;
   const execTool = deps.execTool ?? ((body) => api.agentTool(body));
