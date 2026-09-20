@@ -1,11 +1,14 @@
 # Labtris
 
-Network labs you actually own.
+The LLM-native network lab.
 
-Labtris runs on your own Linux server. It boots real containers and virtual
-machines there, wires them together with the kernel's own networking, and gives
-you the canvas and the consoles from any browser on the network. No node limit,
-no licence server, no account — and the installer needs no internet at all.
+Draw a topology in your browser. It boots as real Docker containers and QEMU
+virtual machines on your own Linux server, wired together with the kernel's
+own networking, with the canvas and consoles reachable from any browser on the
+network. Every operation the UI does, the REST API does; every REST endpoint
+has an MCP tool wrapper — so a Claude Code or Cursor session drives your lab
+the way it edits a file. No node limit, no licence server, no account, and
+the installer needs no internet at all.
 
 Apache-2.0. Self-hosted. Installs from a USB stick onto a machine that has never
 been online.
