@@ -91,18 +91,15 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Known-bad
 
-- [ ] **The three demo pods carry no BGP config.** `packaging/demo-pods/*`
-      were generated on a **0.5.0** instance (see `labtris_version` in
-      each `snapshot.json`), which predates `--with-bgp-evpn` entirely.
-      None of the three contains the string `startup_config`, so their
-      README's "BGP EVPN configs pre-populated" is wrong and
-      `packaging/smoke-test.sh` fails against them. Regenerate on 0.11.0.
-- [ ] **`labtris node push` and `labtris node exec` do not exist.** Both
-      are quoted as working commands in `packaging/demo-pods/README.md`,
-      `packaging/dockerfiles/ue-sim/README.md` and the Phase F commit.
-      The REST endpoints are real (`POST /nodes/{id}/console/exec`, the
-      push-config route); only the CLI verbs are missing. Either add them
-      or fix the three READMEs.
+- [ ] **fat-tree does not converge.** spine-leaf and rail-optimised both
+      reach Established on every session through
+      `packaging/smoke-test.sh`. fat-tree does not, and the obvious
+      causes are ruled out: AS numbering is right (core-1 sees
+      `agg-1-1(eth0) AS 65101`, `agg-2-1(eth1) AS 65102`), neighbours are
+      discovered over IPv6 link-local, EVPN neighbours are activated, and
+      OPENs are exchanged (MsgRcvd 12 / MsgSent 8). The sessions still
+      sit in **Idle**. Next step is the last-reset reason out of
+      `show bgp neighbors` on a live core.
 
 ---
 
