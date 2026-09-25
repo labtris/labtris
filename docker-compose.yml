@@ -1,0 +1,82 @@
+# Labtris — one-command self-hosted network lab.
+#
+#   docker compose up -d
+#
+# Then http://localhost:8080. Default login is set on first-run through
+# the web setup wizard.
+#
+# What's here:
+#   * postgres — Labtris state
+#   * netd    — the only process that touches netlink (privileged, host net)
+#   * api     — FastAPI + web UI, spawns QEMU + docker guest containers
+#
+# labstack-aws (LocalStack alternative) is opt-in; uncomment the block
+# at the bottom and it registers itself as a plugin on api boot.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: labtris
+      POSTGRES_USER: labtris
+      POSTGRES_PASSWORD: labtris
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "labtris"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  netd:
+    image: ghcr.io/labtris/labtris:latest
+    command: ["netd"]
+    # netd creates bridges + taps on the host network namespace and
+    # needs to talk netlink — running in host-network + privileged is
+    # the pragmatic path; a locked-down cap-set is a future refinement.
+    network_mode: host
+    privileged: true
+    volumes:
+      - labtris-run:/run/labtris
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/labtris/labtris:latest
+    command: ["api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      netd:
+        condition: service_started
+    environment:
+      LABTRIS_DATABASE_URL: postgresql+asyncpg://labtris:labtris@postgres:5432/labtris
+      LABTRIS_NETD_SOCKET:  /run/labtris/netd.sock
+      LABTRIS_QEMU_ACCEL:   kvm
+    ports:
+      - "8080:8080"    # web + REST + RESTCONF
+      - "2222:2222"    # SSH proxy (Phase K1)
+    devices:
+      - /dev/kvm       # QEMU accel — remove for TCG-only hosts
+    volumes:
+      - labtris-run:/run/labtris
+      - labtris-state:/var/lib/labtris
+      # Labtris spawns Docker-runtime guest containers via the host
+      # daemon; the docker CLI is baked into the image but the socket
+      # has to come from the host.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------
+  # Optional: labstack-aws (LocalStack alternative, 141 AWS services).
+  # Uncomment to enable — it's shipped as a plugin, so no ports on
+  # its own; it just needs to be installed into the api container.
+  # -----------------------------------------------------------------
+  # api-with-aws:
+  #   extends: api
+  #   image: ghcr.io/labtris/labtris:latest-aws
+  #   # ↑ built by the labstack-aws repo, adds the plugin wheel on top.
+
+volumes:
+  postgres-data:
+  labtris-state:
+  labtris-run:
