@@ -56,5 +56,22 @@ class Settings(BaseSettings):
     # "create a node" that drifts from the real one.
     self_url: str = "http://127.0.0.1:8080"
 
+    # SSH proxy (Phase K1). When enabled, labtris-api binds a second port
+    # and terminates SSH sessions itself, proxying to the target node's
+    # serial console (QEMU) or docker exec PTY (K1b). Off by default —
+    # opt in with LABTRIS_SSH_PROXY_ENABLED=true. Port default is 2222
+    # because the host's real sshd already owns 22; users pick their own
+    # if 2222 collides with a devcontainer or docker-desktop.
+    ssh_proxy_enabled: bool = False
+    ssh_proxy_bind: str = "0.0.0.0"
+    ssh_proxy_port: int = 2222
+    ssh_proxy_host_key_path: str = "~/.local/share/labtris/ssh/host_ed25519"
+
+    # RESTCONF endpoint (Phase K3). On by default because it is a
+    # read-mostly, cookie/JWT-authed HTTP surface — same auth model as
+    # /api/v1 — and disabling it removes a documented URL. Flip via
+    # LABTRIS_RESTCONF_ENABLED=false when there is a reason to.
+    restconf_enabled: bool = True
+
 
 settings = Settings()

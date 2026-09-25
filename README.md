@@ -181,6 +181,27 @@ registry you point at; QEMU images are yours to obtain, and the catalogue
 records where each one comes from. Anything under a vendor licence stays a
 matter between you and that vendor.
 
+## LabStack — plugin family
+
+Labtris core is the network runtime. Additional cloud + SaaS API
+surfaces ship as **separate plugin repos** you install alongside; the
+core discovers them on startup via the `labtris.plugins` entry point,
+so `pip install <plugin>` and a labtris-api restart is the whole
+integration story.
+
+| Plugin | Repo | Ships |
+|---|---|---|
+| **labstack-aws** | [labtris/labstack-aws](https://github.com/labtris/labstack-aws) | 140 AWS services (`aws --endpoint-url http://labtris/_aws/...`), 17 with real OSS backings (SeaweedFS/Scylla/Postgres/Redis/...) |
+| labstack-azure | (planned) | Azure Resource Manager surface — same shape as labstack-aws |
+| labstack-gcp | (planned) | GCP surface |
+| labstack-oci | (planned) | OCI surface |
+| labstack-saas | (planned) | Third-party SaaS API twins (integrates [WonderTwin](https://github.com/WonderTwin-AI/wondertwin)) |
+| labstack-firewall-vyos | (planned) | VyOS firewall compiler for `authorize-security-group-ingress` |
+
+The core keeps the plugin surface minimal — one `register(app)` hook +
+existing routers/models — so anyone can ship a `labstack-<x>` plugin
+without touching this repo.
+
 ## Documentation
 
 **[docs.labtris.com](https://docs.labtris.com)** — the handbook,

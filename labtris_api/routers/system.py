@@ -60,6 +60,20 @@ async def apply_tuning(_user: object = Depends(get_current_user)) -> dict[str, A
     return applied
 
 
+@router.get("/system/status")
+async def system_status(_user: object = Depends(get_current_user)) -> dict[str, Any]:
+    """Lightweight facts operators check first when something feels off.
+
+    Currently: the SSH proxy — most-frequently-toggled optional listener
+    on the box, and the one people ask "is it running?" about the moment
+    they enable it. More fields go here as they become check-first
+    troubleshooting signals (never full diagnostics — /system/diagnostics
+    is the dump)."""
+    from labtris_api import ssh_proxy
+
+    return {"ssh_proxy": ssh_proxy.status()}
+
+
 @router.get("/system/diagnostics")
 async def diagnostics(
     fmt: str = "json", _user: object = Depends(get_current_user)

@@ -367,6 +367,37 @@ class User(Base):
     )
 
 
+class SshKey(Base):
+    """OpenSSH-format authorized pubkey for one Labtris user (Phase K1b).
+
+    Checked by labtris_api.ssh_proxy when a client presents a pubkey. The
+    fingerprint column is indexed so the auth callback does one row lookup
+    per connection, not a full-table scan-and-parse. Unique fingerprint
+    also blocks the "someone imported my public key under their account"
+    silent-shadow scenario.
+    """
+
+    __tablename__ = "ssh_keys"
+
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        CHAR(26),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    algorithm: Mapped[str] = mapped_column(Text, nullable=False)
+    key_body: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class MacRegistry(Base):
     """Every MAC this instance has handed out.
 

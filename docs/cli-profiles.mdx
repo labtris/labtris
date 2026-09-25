@@ -1,0 +1,94 @@
+---
+title: aws-CLI-shape — profiles, --query, --output
+description: Named endpoint/credential profiles, JMESPath filters, four output formats. Matches how the aws CLI is wired so users who live in aws land feel at home.
+---
+
+## Profiles
+
+`labtris configure` sets up a named profile (URL + credentials) the same
+way `aws configure` does. Every subcommand accepts `--profile <name>` or
+reads `LABTRIS_PROFILE` from the environment.
+
+```bash
+labtris configure --profile home
+# URL for profile 'home' [http://127.0.0.1:8080]: http://home.lan:8080
+# Username for profile 'home' []: raj
+# Password: ****
+
+labtris configure --profile lab
+# URL: https://labtris.corp.internal
+# Username: raj
+# Password: ****
+
+labtris --profile home labs list
+labtris --profile lab  labs list
+```
+
+Switch which profile is the default:
+
+```bash
+labtris profiles list
+labtris profiles use lab
+```
+
+Profiles live in `~/.config/labtris/profiles.json` (0600). A mirror of
+the current profile is kept at `~/.config/labtris/auth.json` so pre-K2
+scripts that `jq .token` from that file continue to work.
+
+## Output
+
+Every command takes `--output {table,json,text,yaml}` (short: `-o`); the
+root callback's `--output` sets it globally. Default: `table`.
+
+```bash
+labtris --output json labs list
+labtris --output text nodes list | awk '{print $2}'
+labtris --output yaml pod inspect my-pod
+```
+
+`text` is TSV with a header row — cheap to `awk`, doesn't need `jq`.
+
+## Query
+
+`--query <jmespath>` filters or reshapes the raw JSON response BEFORE it
+hits the formatter — same shape aws-cli users know:
+
+```bash
+# Names of running nodes
+labtris --query '[?state==`running`].name' --output text nodes list
+
+# Names + labs, as {name: lab}
+labtris --query '[].{node: name, lab: lab}' -o json nodes list
+```
+
+Combines with `-o table` — a reshaped list of dicts renders with
+auto-detected columns.
+
+## `labtrislocal`
+
+Ships as a shim binary the way `awslocal` ships. Runs `labtris --profile
+local <args>` after you set up a `local` profile — one-liner for people
+who set up multiple deployments and want a distinct verb for "this
+laptop".
+
+```bash
+labtris configure --profile local     # once
+labtrislocal labs list                # every day after
+```
+
+## Tab completion
+
+Typer ships its own completion generator:
+
+```bash
+labtris --install-completion bash   # or zsh, fish
+```
+
+## Environment overrides
+
+- `LABTRIS_PROFILE` — profile name (same effect as `--profile`)
+- `LABTRIS_OUTPUT` — output format (same as `--output`)
+- `LABTRIS_QUERY`  — JMESPath (same as `--query`)
+- `LABTRIS_TOKEN` + `LABTRIS_API_URL` — service-account bypass: profiles
+  are ignored when both are set, useful for CI where no profile store
+  exists.

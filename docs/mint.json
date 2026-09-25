@@ -75,13 +75,17 @@
       "pages": [
         "api/rest",
         "api/assistant",
-        "using-with-claude-cursor-vscode"
+        "using-with-claude-cursor-vscode",
+        "vendor-cli-ssh-proxy",
+        "restconf-api",
+        "aws-compat"
       ]
     },
     {
       "group": "Reference",
       "pages": [
         "cli",
+        "cli-profiles",
         "reference/install-from-source",
         "reference/building-the-iso"
       ]

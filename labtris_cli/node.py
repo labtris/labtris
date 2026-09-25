@@ -99,6 +99,64 @@ def cmd_wipe(node_id: str) -> None:
         raise typer.Exit(1) from None
 
 
+@app.command("ssh")
+def cmd_ssh(
+    name: str = typer.Argument(
+        ...,
+        help="Node name. Use lab-slug:node-name when the same name exists in more than one lab.",
+    ),
+    port: int = typer.Option(
+        2222, "--port", "-p", help="SSH proxy port on the labtris host (LABTRIS_SSH_PROXY_PORT)."
+    ),
+    host: str | None = typer.Option(
+        None, "--host", help="Override labtris host — defaults to the one from your session."
+    ),
+) -> None:
+    """Open an SSH session to a running node.
+
+    Uses the Labtris SSH proxy: username = node name, password = your JWT.
+    This is a thin wrapper over the ssh(1) binary, so all of your usual
+    ssh options (-l, -o StrictHostKeyChecking=no, -oUserKnownHostsFile=...)
+    can be added on the command line after `--`."""
+    import os
+    import shutil
+    import sys
+    from urllib.parse import urlparse
+
+    if shutil.which("ssh") is None:
+        error("ssh(1) is not on your PATH — install openssh-client")
+        raise typer.Exit(1)
+    sess = require_session()
+    target_host = host or urlparse(sess.url).hostname or "localhost"
+    env = os.environ.copy()
+    env["SSHPASS"] = sess.token
+    if shutil.which("sshpass") is None:
+        # sshpass gives us "paste JWT invisibly"; without it we tell the
+        # user they'll get the SSH prompt and to paste the token there.
+        console().print(
+            "[yellow]sshpass not installed — you'll be prompted for a password; "
+            "paste the JWT printed below.[/yellow]"
+        )
+        console().print(f"[dim]{sess.token}[/dim]")
+        argv = ["ssh", "-p", str(port), f"{name}@{target_host}"]
+    else:
+        argv = [
+            "sshpass",
+            "-e",
+            "ssh",
+            "-p",
+            str(port),
+            # A fresh install's host key differs from every user's known_hosts —
+            # accept-new is the "match ssh's UX for new hosts" default.
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            f"{name}@{target_host}",
+        ]
+    os.execvpe(argv[0], argv, env)
+    # os.execvpe replaces the process; if it returns we fell through.
+    sys.exit(1)
+
+
 @p4_app.command("show")
 def p4_show(node_id: str, fmt: str = format_option()) -> None:
     """Show the P4 program currently mounted on a bmv2 node."""

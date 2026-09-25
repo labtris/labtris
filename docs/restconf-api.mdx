@@ -1,0 +1,124 @@
+---
+title: RESTCONF endpoint (RFC 8040)
+description: Labtris speaks RESTCONF on behalf of every node. Tools written for real network devices — curl scripts, telemetry collectors, ncclient — work against Labtris nodes with only a URL change.
+---
+
+## Why this exists
+
+RESTCONF (RFC 8040) is what a NETCONF-shaped world uses when JSON is
+preferable to XML: same YANG models, same datastores, HTTP as the
+transport. Every mainstream NOS speaks it — NX-OS, IOS-XE, IOS-XR,
+Junos, EOS. Labtris exposes the same surface across the nodes it manages
+so tooling written for real devices works against lab devices unchanged.
+
+Ships with one YANG model in the first cut — `ietf-interfaces` (RFC
+8343) — enough to read every interface's counters and toggle admin
+state. More models bolt on with ~50 lines each; the framework is in
+`labtris_api/restconf/yang/`.
+
+## Enable it (it's on by default)
+
+RESTCONF ships enabled. To turn it off:
+
+```bash
+sudo tee -a /etc/labtris/labtris-api.env <<'EOF'
+LABTRIS_RESTCONF_ENABLED=false
+EOF
+sudo systemctl restart labtris-api
+```
+
+## Auth
+
+Same as the rest of the API — JWT bearer token or session cookie.
+
+```bash
+export TOK=$(jq -r .token < ~/.config/labtris/auth.json)
+```
+
+## URL shape
+
+Labtris fronts N devices where standard RESTCONF assumes you're talking
+to ONE. We namespace under `labtris:nodes/node={name}`:
+
+```
+/restconf/                                              -- root
+/restconf/data/labtris:nodes                            -- every node
+/restconf/data/labtris:nodes/node={name}                -- one node
+/restconf/data/labtris:nodes/node={name}/ietf-interfaces:interfaces
+/restconf/data/labtris:nodes/node={name}/ietf-interfaces:interfaces-state
+/restconf/data/labtris:nodes/node={name}/ietf-interfaces:interfaces/interface={ifname}
+```
+
+## Read every interface's counters
+
+```bash
+curl -sS \
+  -H "authorization: Bearer $TOK" \
+  -H "accept: application/yang-data+json" \
+  http://my-labtris:8080/restconf/data/labtris:nodes/node=custom-wdx4/ietf-interfaces:interfaces-state
+```
+
+Returns:
+
+```json
+{
+  "ietf-interfaces:interfaces-state": {
+    "interface": [
+      { "name": "Mgmt0",
+        "type": "iana-if-type:ethernetCsmacd",
+        "admin-status": "up",
+        "oper-status": "up",
+        "statistics": {
+          "in-octets": 12345678, "out-octets": 87654321,
+          "in-unicast-pkts": 1234, "out-unicast-pkts": 2345,
+          "in-discards": 0, "out-discards": 3,
+          "in-errors": 0, "out-errors": 0
+        }
+      },
+      { "name": "E1/1", ... }
+    ]
+  }
+}
+```
+
+## Turn an interface up or down
+
+```bash
+curl -sS -X PUT \
+  -H "authorization: Bearer $TOK" \
+  -H "content-type: application/yang-data+json" \
+  -d '{"ietf-interfaces:enabled": false}' \
+  http://my-labtris:8080/restconf/data/labtris:nodes/node=custom-wdx4/ietf-interfaces:interfaces/interface=E1/1/enabled
+```
+
+`204 No Content` on success. Under the hood this hits the same
+`iface.set_state` netd verb the web UI's link-state toggle uses.
+
+## Errors
+
+RFC 8040 §7.1 shape:
+
+```json
+{
+  "ietf-restconf:errors": {
+    "error": [{
+      "error-type": "application",
+      "error-tag": "invalid-value",
+      "error-message": "no such interface 'E9/1' on 'custom-wdx4'",
+      "error-path": "/labtris:nodes/node=custom-wdx4/ietf-interfaces:interfaces/interface=E9/1"
+    }]
+  }
+}
+```
+
+## Scope + non-goals
+
+- **JSON only.** XML variant of RESTCONF is legal but unused; not shipped.
+- **`ietf-interfaces` only.** `openconfig-interfaces`, `ietf-routing`,
+  `openconfig-network-instance` are all one file away; PR welcome. The
+  serializer in `restconf/serialize.py` handles any module the same way.
+- **No `content=config|nonconfig|all` query parameter.** Reads split by
+  path (`/interfaces` vs `/interfaces-state`) as they do in the spec.
+- **No NETCONF port 830** — same-shape work but different transport. If
+  someone wants NETCONF, the asyncssh server from K1 can grow a
+  `netconf` subsystem handler that answers the same YANG surface.

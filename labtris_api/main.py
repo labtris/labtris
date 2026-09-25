@@ -29,6 +29,8 @@ from labtris_api.routers import (
     nodes,
     p4,
     pods,
+    ssh_endpoints,
+    ssh_keys,
     system,
     tasks,
     templates,
@@ -71,6 +73,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
         await resume_watchers()
     except Exception:  # noqa: BLE001 — hooks are opt-in; don't fail boot
+        pass
+    # Phase K1 SSH proxy — off unless LABTRIS_SSH_PROXY_ENABLED. Failures
+    # log and skip; the port belongs to an optional feature and must not
+    # take the API down with it.
+    try:
+        from labtris_api import ssh_proxy
+
+        await ssh_proxy.start()
+    except Exception:  # noqa: BLE001
         pass
     yield
     # Wireshark sessions are deliberately started in their own process session
@@ -129,6 +140,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         with contextlib.suppress(Exception):
             await drop_cached_client(vm_dir)
 
+    # SSH proxy — close the listener before uvicorn tears down the loop
+    # or the asyncssh.SSHAcceptor's own cleanup races the shutdown.
+    with contextlib.suppress(Exception):
+        from labtris_api import ssh_proxy
+
+        await ssh_proxy.stop()
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="labtris", version=__version__, lifespan=lifespan)
@@ -169,6 +187,23 @@ def create_app() -> FastAPI:
     app.include_router(pods.router, prefix=prefix)
     app.include_router(p4.router, prefix=prefix)
     app.include_router(link_groups.router, prefix=prefix)
+    app.include_router(ssh_keys.router, prefix=prefix)
+    app.include_router(ssh_endpoints.router, prefix=prefix)
+
+    # Phase K3 — RESTCONF (RFC 8040) sub-app. Distinct top-level URL
+    # (`/restconf/...`) because the spec pins its own path scheme; not
+    # nested under /api/v1. Off with LABTRIS_RESTCONF_ENABLED=false.
+    if settings.restconf_enabled:
+        from labtris_api.restconf.router import router as restconf_router
+
+        app.include_router(restconf_router)
+
+    # Third-party plugins (Phase L cloud-compat and future) attach here,
+    # BEFORE the SPA static mount below — otherwise a plugin route that
+    # collides with an SPA path would be shadowed by index.html.
+    from labtris_api.plugins import load_plugins
+
+    load_plugins(app)
 
     web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
     if web_dist.is_dir():

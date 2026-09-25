@@ -1,0 +1,164 @@
+---
+title: SSH proxy — connect to any node with the tools you already use
+description: One SSH port on the labtris host makes every running node look like a real device. Netmiko, scrapli, ansible-network, napalm, ncclient and plain OpenSSH clients all work unchanged.
+---
+
+## Why this exists
+
+Every network engineer already lives inside a tool ecosystem — netmiko or
+scrapli scripts, ansible-network roles, napalm code, `ssh admin@r1.corp`
+muscle memory. Labtris used to make those tools irrelevant: the way to
+talk to a node was to open a browser console tab and paste commands into
+a textarea.
+
+The SSH proxy fixes that. Labtris terminates SSH on one port, resolves
+the SSH username to a lab node, and bridges the channel to that node's
+existing serial console. Nothing in your automation stack cares — the
+Cisco/Junos/Arista/FRR CLI on the other end is real, the transport is
+real, only the fact that this is a lab is different.
+
+## Enable it
+
+Off by default. Turn it on:
+
+```bash
+sudo tee -a /etc/labtris/labtris-api.env <<'EOF'
+LABTRIS_SSH_PROXY_ENABLED=true
+LABTRIS_SSH_PROXY_PORT=2222
+EOF
+sudo systemctl restart labtris-api
+```
+
+Verify:
+
+```bash
+curl -sS -H "authorization: Bearer $LABTRIS_TOKEN" \
+  http://localhost:8080/api/v1/system/status | jq .ssh_proxy
+# { "enabled": true, "port": 2222, "bind": "0.0.0.0",
+#   "listening": true, "host_key_path": "~/.local/share/labtris/ssh/host_ed25519" }
+```
+
+If `listening` is false and `enabled` is true, another process holds the
+port — check `sudo ss -ltnp | grep 2222` and either free it or set a
+different `LABTRIS_SSH_PROXY_PORT`.
+
+## Connect
+
+**Username** = the Labtris node name.
+**Password** = a Labtris JWT (get one with `labtris login`).
+
+```bash
+# From your workstation
+LABTRIS_TOKEN=$(jq -r .token < ~/.config/labtris/auth.json)
+
+sshpass -p "$LABTRIS_TOKEN" \
+  ssh -p 2222 -o StrictHostKeyChecking=accept-new \
+  custom-wdx4@my-labtris-host
+```
+
+Or via the built-in CLI, which resolves the host from your session and
+uses sshpass automatically when it's installed:
+
+```bash
+labtris node ssh custom-wdx4
+```
+
+**Same node name in two labs?** Prefix with the lab slug:
+
+```bash
+labtris node ssh gpu-lab:leaf1
+```
+
+## Skip the password with an SSH key
+
+```bash
+labtris ssh-keys add ~/.ssh/id_ed25519.pub --name laptop
+labtris ssh-keys list
+```
+
+Now `ssh -p 2222 custom-wdx4@my-labtris-host` uses your agent key and
+never prompts. `labtris node ssh <name>` works the same way — without
+sshpass in the mix.
+
+## Emit an OpenSSH config for a whole lab
+
+```bash
+curl -sS -H "authorization: Bearer $LABTRIS_TOKEN" \
+  http://my-labtris-host:8080/api/v1/ssh-endpoints \
+  | jq -r '.entries[].ssh_config' >> ~/.ssh/config
+```
+
+Now every node is reachable by name: `ssh custom-wdx4`, `ssh leaf1`, etc.
+No `-p 2222`, no `-l`, no `@host`.
+
+## Netmiko
+
+```python
+from netmiko import ConnectHandler
+import os
+
+d = ConnectHandler(
+    device_type="cisco_nxos",
+    host="my-labtris-host",
+    port=2222,
+    username="custom-wdx4",       # the labtris node name
+    password=os.environ["LABTRIS_TOKEN"],
+)
+print(d.send_command("show ip interface brief"))
+```
+
+## scrapli
+
+```python
+from scrapli.driver.core import NXOSDriver
+
+with NXOSDriver(
+    host="my-labtris-host",
+    port=2222,
+    auth_username="custom-wdx4",
+    auth_password=os.environ["LABTRIS_TOKEN"],
+    auth_strict_key=False,
+    transport="paramiko",
+) as conn:
+    print(conn.send_command("show version").result)
+```
+
+## Ansible
+
+```yaml
+# inventory.yml
+all:
+  hosts:
+    custom-wdx4:
+      ansible_host: my-labtris-host
+      ansible_port: 2222
+      ansible_user: custom-wdx4                     # SSH username = node name
+      ansible_password: "{{ lookup('env', 'LABTRIS_TOKEN') }}"
+      ansible_network_os: cisco.nxos.nxos
+      ansible_connection: network_cli
+```
+
+```bash
+ansible custom-wdx4 -m cisco.nxos.nxos_command -a 'commands="show ver"'
+```
+
+## Scope and non-goals
+
+- **Interactive shell only in K1a.** The `ssh <node> "show version"`
+  one-shot form is rejected: scripted CLI over serial needs
+  vendor-specific prompt detection, and the honest answer is "use the
+  RESTCONF endpoint (Phase K3) for structured commands, or run your
+  netmiko/scrapli code which knows how to drive the CLI properly."
+- **JWT-as-password AND SSH pubkey (K1b).** Register your pubkey with
+  `labtris ssh-keys add ~/.ssh/id_ed25519.pub` — once done, `ssh -p 2222
+  <node>@<host>` uses the agent key transparently. JWT password still
+  works as a fallback (useful for CI where you paste `$LABTRIS_TOKEN`
+  into `ansible_ssh_pass`).
+- **QEMU + Docker nodes (K1b).** FRR, srlinux, bmv2, rdma-host — every
+  container node also has a shell now, opened via the same `docker exec
+  -it sh` path the browser terminal uses. PTY resize is forwarded.
+- **No SFTP, no SCP, no NETCONF subsystem.** Nothing here today to
+  transfer files to; NETCONF is the RESTCONF phase's job (K3), possibly
+  bolted onto this same asyncssh server.
+- **No multi-tenant isolation.** Any authenticated Labtris user can SSH
+  to any node — same access model as the browser console today.

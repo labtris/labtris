@@ -51,7 +51,20 @@ dependencies = [
   "typer==0.15.1",
   "click==8.1.8",
   "rich==13.9.4",
+  # SSH proxy (Phase K1) — terminates SSH inside labtris-api and bridges to
+  # the target node's serial console. Async-native (works inside the same
+  # event loop as FastAPI), permissively licensed, and only loaded when
+  # LABTRIS_SSH_PROXY_ENABLED is true — so a machine that never turns the
+  # proxy on doesn't pay the import cost.
+  "asyncssh==2.18.0",
+  # Phase K2 — client-side query filter for `labtris --query ...`. Same
+  # shape as aws-cli's `--query`; small pure-Python wheel.
+  "jmespath==1.0.1",
 ]
+
+# `botocore` is no longer a core dep — moved to `labstack-aws` which is
+# where the AWS SigV4 re-signing lives. Users who want AWS emulation:
+# `pip install labstack-aws`.
 
 [project.optional-dependencies]
 dev = [
@@ -71,6 +84,11 @@ labtris-mcp = "labtris_mcp.server:main"
 # `labtris-doctor` and `labtris-image` remain as deprecation shims that
 # delegate — nothing scripted breaks, but the new tree is what we document.
 labtris = "labtris_cli.__main__:app"
+# Phase K2 shim — awslocal-shape convenience wrapper. `labtrislocal <args>`
+# runs `labtris --profile local <args>`, matching how `awslocal` runs
+# `aws --endpoint-url=http://localhost:4566 <args>`. Users define what
+# `local` means via `labtris configure --profile local`.
+labtrislocal = "labtris_cli.__main__:labtrislocal"
 labtris-doctor = "labtris_api.diagnose:main"
 labtris-image = "labtris_api.cli.image:main"
 # ue_stack — proof-of-concept userspace UET wire-format daemon +
@@ -84,6 +102,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["labtris_api*", "labtris_netd*", "labtris_mcp*", "labtris_client*", "labtris_cli*", "ue_stack*"]
+
+# Plugin declarations moved out. The AWS surface now lives in the
+# separate `labstack-aws` repo (github.com/labtris/labstack-aws) and
+# registers itself via its own `labtris.plugins` entry point when
+# `pip install labstack-aws` runs. The core discovers plugins at
+# labtris-api startup via `labtris_api/plugins.py:load_plugins`;
+# no core-side changes are needed to add or remove plugins.
 
 [tool.pytest.ini_options]
 markers = [
