@@ -6,67 +6,47 @@ Two things need URLs:
   `curl -fsSL https://labtris.com/install | sudo bash` works.
 - **`https://docs.labtris.com`** points at the Mintlify site.
 
-Cheapest way to both is Cloudflare Pages — free tier is generous
-enough, HTTPS is automatic, and both live behind one nameserver
-setting. Everything below is 5–10 minutes of clicks once.
+Both are on Cloudflare Pages today, and both are live.
 
-## `labtris.com` on Cloudflare Pages
+## `labtris.com` is a separate repo
 
-**1. Register at Cloudflare.** If DNS for `labtris.com` is not
-already on Cloudflare, add the domain to your account and change
-the registrar's nameservers to what Cloudflare gives you. Wait for
-propagation (usually minutes).
+**The site is not in this repo.** It is a Next.js 16 app that lives
+in `github.com/rajeshgangam/labtris.com` and builds to a static
+export (`output: "export"` in `next.config.ts`) that Cloudflare
+Pages serves. Pages, content, styling — all of it is over there.
 
-**2. Create a Pages project.** Cloudflare dashboard → Workers &
-Pages → Create → Pages → Direct upload. This is a one-shot upload
-of a tiny site — you can wire it to a repo later if you grow it
-into a marketing site.
+Nothing in this repo is deployed to labtris.com. If you change a
+page, you change it in that repo.
 
-Locally, make the directory:
+Two files in that repo's `public/` do the work this section used to
+describe by hand:
 
-    labtris-com/
-    ├── index.html          # simple landing page (whatever you want here)
-    ├── install             # the get.sh contents, served as text/plain
-    ├── handbook.pdf        # -> proxied from the latest GH release (below)
-    └── _redirects          # rewrite rules
+    public/get.sh        # copy of this repo's get.sh (see below)
+    public/_redirects    # /install    /get.sh    200
+    public/_headers      # Content-Type: text/x-shellscript on both paths
 
-`install` is a plain copy of `get.sh` from this repo. `_redirects`
-handles the docs subdomain fallback plus the handbook proxy:
+The `200` makes `/install` a rewrite rather than a bounce, so
+`curl -fsSL https://labtris.com/install` gets the script body
+directly. Verify any time with:
 
-    # If someone visits /docs, send them to the docs site.
-    /docs           https://docs.labtris.com            302
-    /docs/*         https://docs.labtris.com/:splat     302
-    # /handbook and /handbook.pdf serve the current release's PDF.
-    # `latest/download/<name>` is GitHub's stable per-asset URL — it
-    # follows the current release without needing a per-version update.
-    /handbook       https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
-    /handbook.pdf   https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
-    # /install is served as a file directly — no rule needed.
-
-Upload the folder. Cloudflare gives you a
-`<project>.pages.dev` URL. Test:
-
-    curl -fsSL https://<project>.pages.dev/install | head -3
+    curl -fsSL https://labtris.com/install | head -3
     # #!/usr/bin/env bash
     # #
     # # Fetch Labtris and hand off to the real installer.
 
-**3. Attach the domain.** Pages project → Custom domains → Add.
-Type `labtris.com`. Cloudflare adds the DNS record itself if the
-domain is on Cloudflare DNS; otherwise it prints a CNAME to paste
-into your DNS provider.
+### What is not wired up
 
-Also add `www.labtris.com` if you want the `www` variant to work.
+`/docs`, `/handbook` and `/handbook.pdf` return **404** on the live
+site — the rewrite rules for them were never deployed. Nothing
+links to those paths today (the site's "Read the handbook" buttons
+point straight at `https://docs.labtris.com`), so this is a missing
+convenience, not a broken link. To add them, put this in the site
+repo's `public/_redirects`:
 
-**4. Content-type for `install`.** Some browsers try to render it
-as HTML. Add to `_headers`:
-
-    /install
-      Content-Type: text/x-shellscript
-      Cache-Control: public, max-age=300
-
-The 5-minute cache limits how long a bad push stays on the CDN
-before rolling out.
+    /docs           https://docs.labtris.com            302
+    /docs/*         https://docs.labtris.com/:splat     302
+    /handbook       https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
+    /handbook.pdf   https://github.com/labtris/labtris/releases/latest/download/labtris-handbook.pdf  302
 
 ## `docs.labtris.com` on Mintlify
 
@@ -107,25 +87,30 @@ Two consequences worth naming:
 
 If bandwidth to GitHub becomes a concern (unlikely — the file is
 ~1 MB and served with the release CDN), the alternative is a nightly
-copy into `labtris-com/handbook.pdf` served directly by Cloudflare
-Pages. The `_redirects` line above would then swap to a same-origin
-rewrite.
+copy into the site repo's `public/handbook.pdf` served directly by
+Cloudflare Pages. The `_redirects` line above would then swap to a
+same-origin rewrite.
 
-## Updating the install script
+## `get.sh` lives in two places
 
-`get.sh` is served from the Cloudflare Pages upload, not from
-GitHub, so a change to `get.sh` in this repo does not deploy
-automatically. Two options:
+This is the one piece of real coupling between the two repos, and
+it is worth knowing about because nothing enforces it.
 
-1. **Manual push after `get.sh` changes.** Re-upload the
-   `labtris-com/` folder. Simple, but easy to forget.
-2. **Wire Pages to this repo.** Change the project from Direct
-   upload to a GitHub connection, point at this repo, set the
-   build command to `cp get.sh labtris-com/install`. Then every
-   `main` push redeploys.
+`get.sh` in this repo is the source of truth. The copy that
+`curl https://labtris.com/install` actually returns is
+`public/get.sh` in the **site** repo. They are byte-identical right
+now, but a fix here does not reach the installer URL until someone
+copies it across:
 
-Option 2 is one more click at setup and zero maintenance after.
-Recommended.
+    cp get.sh ../labtris.com/public/get.sh   # then commit + deploy the site
+
+Check for drift without cloning anything:
+
+    curl -fsSL https://labtris.com/install | diff - get.sh && echo in-sync
+
+Worth running after any `get.sh` change, because the failure is
+silent: the repo looks right, and users keep getting the old
+installer.
 
 ## Testing before DNS lands
 

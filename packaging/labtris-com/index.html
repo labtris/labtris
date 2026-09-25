@@ -90,8 +90,8 @@
     .hero .under a { color: var(--fg-dim); text-decoration: underline; }
     .hero .under a:hover { color: var(--fg); }
 
-    /* Screenshot band. Left as a slot the user drops a real screenshot
-       into; a placeholder tells them what to put there. */
+    /* Screenshot band. A 16:9 image fills this exactly; anything else
+       letterboxes against the panel rather than stretching. */
     .shot {
       margin: 32px 0 12px;
       border: 1px solid var(--border);
@@ -100,11 +100,12 @@
       aspect-ratio: 16 / 9;
       display: flex; align-items: center; justify-content: center;
       color: var(--fg-dim); font-size: 14px; text-align: center;
-      padding: 24px;
+      overflow: hidden;
     }
-    .shot img { max-width: 100%; max-height: 100%; border-radius: 6px; }
-    .shot .placeholder {
-      font-family: var(--mono); line-height: 1.5;
+    .shot img {
+      max-width: 100%; max-height: 100%;
+      width: auto; height: auto;
+      border-radius: 6px;
     }
 
     /* Body sections. No bullets. Each is a short paragraph with a
@@ -206,13 +207,12 @@
     Prefer bare metal? <a href="https://github.com/labtris/labtris/releases/latest">Grab the ISO</a>.
   </p>
 
-  <!-- Replace with a real screenshot: web/public/screenshot.png works
-       nicely. Keep the aspect ratio. -->
+  <!-- screenshot.png ships as an empty 1600x900 panel the colour of the
+       page. Drop a real capture over that file to fill it in — 16:9, and
+       no edit here. -->
   <div class="shot">
-    <div class="placeholder">
-      screenshot.png<br>
-      <span style="opacity:0.5">— a real lab, several nodes, one link with a capture running —</span>
-    </div>
+    <img src="/screenshot.png" width="1600" height="900"
+         alt="A Labtris lab: several nodes on the canvas, one link with a capture running.">
   </div>
 </section>
 
