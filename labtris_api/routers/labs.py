@@ -258,9 +258,29 @@ async def export_lab_payload(session: AsyncSession, lab_id: str) -> dict[str, An
     two cannot describe a lab differently."""
     detail = await get_lab_detail(lab_id, session, None)
     geom = await session.get(Geometry, lab_id)
+    payload = detail.model_dump()
+
+    # NodeOut is the *list* shape and deliberately omits startup_config —
+    # a generated EVPN config is kilobytes, and nobody wants it in every
+    # node listing. An export is the one place it has to be there, or a
+    # pod and a backup both silently lose every node's config: the lab
+    # round-trips with its wiring intact and its configuration gone.
+    # qemu_opts is missing from NodeOut for no particular reason, and a
+    # node restored without it boots differently, so carry that too.
+    rows = (
+        await session.execute(select(Node).where(Node.lab_id == lab_id))
+    ).scalars().all()
+    extra = {n.id: n for n in rows}
+    for node in payload.get("nodes") or []:
+        row = extra.get(node.get("id"))
+        if row is None:
+            continue
+        node["startup_config"] = row.startup_config
+        node["qemu_opts"] = dict(row.qemu_opts or {})
+
     return {
         "format": "labtris-lab-v1",
-        "lab": detail.model_dump(),
+        "lab": payload,
         "geometry": geom.data if geom else {},
     }
 
@@ -709,6 +729,15 @@ async def _clone_topology(
             cpu_limit=n.get("cpu_limit"),
             ram_mb=n.get("ram_mb"),
             style=n.get("style") or {},
+            # These four were dropped on the way in, which is the other
+            # half of the same bug: `clone_lab` carries them and this
+            # path did not, so a lab that went out through a pod or an
+            # export came back without its configs, its NIC model, its
+            # console settings or its hypervisor options.
+            console=n.get("console") or {},
+            nic_model=n.get("nic_model"),
+            qemu_opts=n.get("qemu_opts") or {},
+            startup_config=n.get("startup_config"),
             state="defined",
         )
         session.add(node)

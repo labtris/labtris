@@ -10,6 +10,10 @@ running instance, cold-snapshotted, and checked in here.
 | `rail-optimised-2x2.pod.tar.gz` | 6 | 2 rails × 2 hosts, per-rail iBGP island (AS 64701 / 64702) |
 | `fat-tree-k2.pod.tar.gz` | 7 | k=2 Al-Fares fat tree: 1 core + 2 pods × (1 agg + 1 edge) + 2 hosts, per-pod eBGP up to core |
 
+Regenerated on 0.11.0. The versions before that were built on a 0.5.0
+instance, which predates `--with-bgp-evpn` entirely, so they carried no
+`startup_config` at all despite this file promising populated configs.
+
 Load one with:
 
 ```bash
@@ -24,6 +28,17 @@ per node with:
 labtris node push <node-id>
 labtris node exec <node-id> -- sh /config/startup-config
 ```
+
+Or just run `packaging/smoke-test.sh`, which does the whole sequence and
+then waits for BGP to converge.
+
+**Known-bad: the fat-tree pod does not converge.** spine-leaf and
+rail-optimised both reach Established on every session. On fat-tree the
+AS numbering and neighbour discovery are right — core-1 sees
+`agg-1-1(eth0) AS 65101` and `agg-2-1(eth1) AS 65102` over IPv6
+link-local — but the sessions sit in Idle after exchanging OPENs. Being
+chased; the pod is shipped because it is still a valid topology to load
+and inspect.
 
 ## What these pods are for
 

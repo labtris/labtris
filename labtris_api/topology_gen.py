@@ -337,6 +337,11 @@ def _rail_spine_frr_conf(rail: int, hosts: int) -> str:
     ifaces = "\n".join(
         f" neighbor eth{i} interface remote-as {asn}" for i in range(hosts)
     )
+    # A neighbour declared under `router bgp` exchanges nothing for an
+    # address family until it is activated inside it. Without these the
+    # EVPN block is inert and `show bgp l2vpn evpn summary` reports no
+    # neighbours at all, which looks like a session that never came up.
+    ifaces_evpn = "\n".join(f"  neighbor eth{i} activate" for i in range(hosts))
     return f"""\
 frr version 8.4
 frr defaults datacenter
@@ -350,6 +355,7 @@ router bgp {asn}
 {ifaces}
  !
  address-family l2vpn evpn
+{ifaces_evpn}
   advertise-all-vni
  exit-address-family
 !
@@ -377,6 +383,10 @@ interface lo
 router bgp {asn}
  bgp router-id {router_id}
  neighbor eth0 interface remote-as {asn}
+ !
+ address-family l2vpn evpn
+  neighbor eth0 activate
+ exit-address-family
 !
 line vty
 !
@@ -388,9 +398,15 @@ def _fattree_core_frr_conf(idx: int, k: int) -> str:
     router-id 10.255.0.<idx>. Unnumbered eBGP to every aggregation
     switch it wires to (half*k ports, one per pod)."""
     router_id = f"10.255.0.{idx}"
+    # Each core port lands in a different pod, and a pod's AS is
+    # 65100+pod with pods numbered from 1 — so the peer on eth{i} is
+    # 65101+i, not a flat 65100. Declaring one AS for all of them meant
+    # the eBGP OPEN carried the wrong AS and no session ever came up,
+    # which reads downstream as "No BGP neighbors found".
     ifaces = "\n".join(
-        f" neighbor eth{i} interface remote-as 65100" for i in range(k)
+        f" neighbor eth{i} interface remote-as {65101 + i}" for i in range(k)
     )
+    ifaces_evpn = "\n".join(f"  neighbor eth{i} activate" for i in range(k))
     return f"""\
 frr version 8.4
 frr defaults datacenter
@@ -403,6 +419,11 @@ router bgp 65000
  bgp router-id {router_id}
  bgp bestpath as-path multipath-relax
 {ifaces}
+ !
+ address-family l2vpn evpn
+{ifaces_evpn}
+  advertise-all-vni
+ exit-address-family
 !
 line vty
 !
@@ -420,6 +441,7 @@ def _fattree_agg_frr_conf(pod: int, idx: int, k: int) -> str:
     down = "\n".join(
         f" neighbor eth{i} interface remote-as {asn}" for i in range(half, k)
     )
+    ifaces_evpn = "\n".join(f"  neighbor eth{i} activate" for i in range(k))
     return f"""\
 frr version 8.4
 frr defaults datacenter
@@ -433,6 +455,11 @@ router bgp {asn}
  bgp bestpath as-path multipath-relax
 {up}
 {down}
+ !
+ address-family l2vpn evpn
+{ifaces_evpn}
+  advertise-all-vni
+ exit-address-family
 !
 line vty
 !
