@@ -91,15 +91,11 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Known-bad
 
-- [ ] **fat-tree does not converge.** spine-leaf and rail-optimised both
-      reach Established on every session through
-      `packaging/smoke-test.sh`. fat-tree does not, and the obvious
-      causes are ruled out: AS numbering is right (core-1 sees
-      `agg-1-1(eth0) AS 65101`, `agg-2-1(eth1) AS 65102`), neighbours are
-      discovered over IPv6 link-local, EVPN neighbours are activated, and
-      OPENs are exchanged (MsgRcvd 12 / MsgSent 8). The sessions still
-      sit in **Idle**. Next step is the last-reset reason out of
-      `show bgp neighbors` on a live core.
+- [ ] **rail spine sometimes shows one peer, not two.** `spine-r2=1`
+      where `spine-r1=2` on the same run. Both hosts in the rail are
+      configured and the smoke test passes on >=1, so this is a
+      convergence-timing question rather than a config one — worth a
+      look before anyone quotes rail-optimised timings.
 
 ---
 

@@ -32,13 +32,8 @@ labtris node exec <node-id> -- sh /config/startup-config
 Or just run `packaging/smoke-test.sh`, which does the whole sequence and
 then waits for BGP to converge.
 
-**Known-bad: the fat-tree pod does not converge.** spine-leaf and
-rail-optimised both reach Established on every session. On fat-tree the
-AS numbering and neighbour discovery are right — core-1 sees
-`agg-1-1(eth0) AS 65101` and `agg-2-1(eth1) AS 65102` over IPv6
-link-local — but the sessions sit in Idle after exchanging OPENs. Being
-chased; the pod is shipped because it is still a valid topology to load
-and inspect.
+All three converge: `packaging/smoke-test.sh` takes each pod from load
+to Established on every session.
 
 ## What these pods are for
 

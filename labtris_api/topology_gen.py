@@ -437,9 +437,18 @@ def _fattree_agg_frr_conf(pod: int, idx: int, k: int) -> str:
     half = k // 2
     asn = 65100 + pod
     router_id = f"10.{pod}.{idx}.1"
-    up = "\n".join(f" neighbor eth{i} interface remote-as 65000" for i in range(half))
+    # Interface order follows the order links are created, and the
+    # builder wires agg↔edge before agg↔core — so the low interfaces
+    # face DOWN to the edges and the high ones face UP to the cores.
+    # Having these the other way round pointed the core-facing port at
+    # the pod's own AS, and the core's OPEN came back rejected with
+    # "OPEN Message Error/Bad Peer AS": correct AS numbering on both
+    # ends, wired to the wrong ports.
     down = "\n".join(
-        f" neighbor eth{i} interface remote-as {asn}" for i in range(half, k)
+        f" neighbor eth{i} interface remote-as {asn}" for i in range(half)
+    )
+    up = "\n".join(
+        f" neighbor eth{i} interface remote-as 65000" for i in range(half, k)
     )
     ifaces_evpn = "\n".join(f"  neighbor eth{i} activate" for i in range(k))
     return f"""\
@@ -474,6 +483,13 @@ def _fattree_edge_frr_conf(pod: int, idx: int, k: int) -> str:
     asn = 65100 + pod
     router_id = f"10.{pod}.{100 + idx}.1"
     up = "\n".join(f" neighbor eth{i} interface remote-as {asn}" for i in range(half))
+    # Same omission the core and agg had: without an EVPN family and an
+    # activate per uplink, the session comes up carrying ipv4 unicast
+    # only and `show bgp l2vpn evpn summary` reports nothing — which
+    # looks identical to a peer that never connected. Hosts hang off the
+    # remaining ports and do not speak BGP, so only the agg uplinks are
+    # activated.
+    up_evpn = "\n".join(f"  neighbor eth{i} activate" for i in range(half))
     return f"""\
 frr version 8.4
 frr defaults datacenter
@@ -485,6 +501,11 @@ interface lo
 router bgp {asn}
  bgp router-id {router_id}
 {up}
+ !
+ address-family l2vpn evpn
+{up_evpn}
+  advertise-all-vni
+ exit-address-family
 !
 line vty
 !
