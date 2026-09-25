@@ -249,13 +249,14 @@ cat > /etc/frr/frr.conf <<'EOF_FRR'
 {frr_conf}
 EOF_FRR
 chown -R frr:frr /etc/frr 2>/dev/null || true
-# Reload without dropping the routing plane if watchfrr is already
-# running; otherwise cold-start it via frrinit.
-if pkill -HUP watchfrr 2>/dev/null; then
-    echo 'watchfrr reloaded'
-else
-    /usr/lib/frr/frrinit.sh start
-fi
+# Restart rather than reload, and unconditionally. The frrouting/frr image
+# runs `frrinit.sh start` as its entrypoint, so by the time this script
+# lands zebra is already up — started from a daemons file that still said
+# bgpd=no. Against that half-running FRR `start` is a no-op and bgpd never
+# launches, which looks like a fabric that generates correct config and
+# then never converges. There is no watchfrr in this image to HUP either.
+# Only restart re-reads the daemons file.
+/usr/lib/frr/frrinit.sh restart
 """
 
 
