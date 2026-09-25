@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import typer
@@ -86,6 +87,78 @@ def cmd_stop(
     except ApiError as exc:
         error(exc.message)
         raise typer.Exit(1) from None
+
+
+@app.command("push")
+def cmd_push(node_id: str) -> None:
+    """Write the node's saved startup-config into the running container.
+
+    Lands it at /config/startup-config. It is not applied by writing it —
+    the generated configs are self-installing shell scripts, so follow
+    this with `labtris node exec <id> -- sh /config/startup-config`.
+    """
+    api = api_for(require_session())
+    try:
+        payload = api.post(f"/api/v1/nodes/{node_id}/config/push")
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+    console().print(f"pushed startup-config to {payload.get('path', '/config/startup-config')}")
+
+
+@app.command(
+    "exec",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def cmd_exec(
+    ctx: typer.Context,
+    node_id: str,
+    timeout_s: int = typer.Option(15, "--timeout", help="Wall-clock budget, 1-30s."),
+) -> None:
+    """Run one command inside a running node and print its output.
+
+    Everything after `--` is the command:
+
+        labtris node exec <id> -- sh /config/startup-config
+
+    Docker nodes get a real exit code, stdout and stderr. QEMU nodes are
+    best-effort: the command is written to the serial console and
+    whatever accumulates within the timeout comes back, with a warning
+    saying so — there is no prompt detection, so read the output rather
+    than trusting the absence of one.
+    """
+    # shlex.join, not " ".join: the API takes one command string, and a
+    # plain join drops the quoting argv already carried — `-- sh -c 'exit
+    # 3'` arrives as `sh -c exit 3`, which runs a different thing and
+    # succeeds. Re-quoting each arg makes the remote shell see the argv
+    # the caller typed.
+    command = shlex.join(ctx.args).strip()
+    if not command:
+        error("nothing to run — put the command after `--`")
+        raise typer.Exit(2)
+    api = api_for(require_session())
+    try:
+        payload = api.post(
+            f"/api/v1/nodes/{node_id}/console/exec",
+            {"command": command, "timeout_s": timeout_s},
+        )
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+    out = payload.get("stdout") or ""
+    err = payload.get("stderr") or ""
+    if out:
+        console().print(out, end="" if out.endswith("\n") else "\n")
+    if err:
+        error(err.rstrip())
+    for w in payload.get("warnings") or []:
+        error(w)
+    # Mirror the guest's exit code so a script can branch on it. QEMU
+    # returns None — there is no code to mirror, so treat it as success
+    # and let the warning above carry the ambiguity.
+    rc = payload.get("exit_code")
+    if isinstance(rc, int) and rc != 0:
+        raise typer.Exit(rc)
 
 
 @app.command("wipe")
