@@ -8,44 +8,77 @@ Sibling roadmaps:
 
 ---
 
-## In flight (uncommitted, on this checkout)
+## In flight
 
-The `git status` on this branch has a full Phase K1/K2/K3 landing sitting
-un-pushed. Split into three focused PRs before merging:
+Nothing uncommitted. Phase K1/K2/K3 landed as a single commit
+(`3f6e33e`) rather than the five PRs this section used to propose
+splitting it into.
 
-- [ ] **PR-A · Phase K1 SSH proxy** — asyncssh server, JWT-as-password + pubkey auth
-  - `labtris_api/ssh_proxy.py`, `labtris_api/routers/ssh_endpoints.py`,
-    `labtris_api/routers/ssh_keys.py`, `labtris_api/models.py` (+SshKey),
-    `migrations/versions/0020_ssh_keys.py`, `tests/unit/test_ssh_proxy.py`,
-    `docs/vendor-cli-ssh-proxy.mdx`
-  - Verify on `.77`: `sshpass -p $JWT ssh -p 2222 <node>@10.124.133.77`
-- [ ] **PR-B · Phase K2 aws-CLI-shape** — profiles, `--output`, `--query`
-  - `labtris_cli/profiles.py`, `labtris_cli/query.py`, `labtris_cli/format.py`,
-    `labtris_cli/__main__.py`, `labtris_cli/auth.py`, `labtris_cli/node.py`,
-    `docs/cli-profiles.mdx`
-  - Verify: `labtris --profile home nodes list --output json --query '[?state==\`running\`].name'`
-- [ ] **PR-C · Phase K3 RESTCONF** — `/restconf` sub-app, `ietf-interfaces` model
-  - `labtris_api/restconf/`, `labtris_api/main.py`, `labtris_api/config.py`,
-    `docs/restconf-api.mdx`
-  - Verify: `curl -H 'accept: application/yang-data+json' -H "authorization: Bearer $TOK" .../restconf/data/ietf-interfaces:interfaces-state/interface=Gi0-0`
-- [ ] **PR-D · Plugin loader** — `labtris_api/plugins.py`, entry-point discovery
-  - Verify: `pip install labstack-aws` → api restart → `_aws/` mount works
-- [ ] **PR-E · Docs** — the 4 `.mdx` files + `docs/mint.json` menu entries
+- [ ] **Split verification** — the K work went in unverified as one
+      commit. Each of the three needs its acceptance check run:
+      `sshpass -p $JWT ssh -p 2222 <node>@<host>`;
+      `labtris --profile home nodes list --output json --query ...`;
+      `curl -H 'accept: application/yang-data+json' .../restconf/data/...`
 
 ---
 
 ## Recently landed
 
+- [x] **Phase K** (`3f6e33e`) — SSH proxy (asyncssh + JWT/pubkey),
+      aws-CLI-shape CLI (profiles, `--output`, `--query`), RESTCONF
+      (`ietf-interfaces`), plugin loader. 29 files, ~3,050 lines.
+- [x] **Canvas wire rendering** (`cc0390c`) — wires were clipped at the
+      SVG origin, so a generated fabric with nodes at negative
+      coordinates lost whole links; anchors also used a hardcoded 176px
+      against a 150px card, putting every right-hand wire 26px clear of
+      its border. Width now lives once, as `--node-w`.
+- [x] **`--with-bgp-evpn` actually converges** (`024a915`) — the
+      generated config was correct and bgpd never started: the container
+      entrypoint runs `frrinit.sh start` at boot with `bgpd=no`, and
+      `start` against a half-running FRR is a no-op. Now restarts.
+      Verified: a fresh spine-leaf converges in 10s.
+- [x] **Cumulus Linux VX 5.10 in the catalog** (`26ff806`) — plus
+      tar.gz extraction (Vagrant `.box` files) and an `swp` iface
+      scheme. First real switch NOS in the catalog, and legally clean.
+- [x] **`packaging/smoke-test.sh`** (`6308dc5`) — loads the demo pods,
+      starts every node, installs the FRR config, waits for BGP EVPN to
+      reach Established. Found both bugs above on its first real run.
+- [x] **Wire-routing design note** (`f5af34b`) — why generated fabrics
+      look tangled, the relevant literature, and the order to fix it in.
+- [x] **Hosting docs corrected** (`1d2b9e7`) — labtris.com is a separate
+      Next.js repo, nothing here deploys to it, and `get.sh` lives in
+      both repos with nothing enforcing the match.
 - [x] **Docker-pull for labtris core** (`a8e020a`, 2026-09-26)
   - `Dockerfile`, `docker-compose.yml`, `packaging/docker/entrypoint.sh`,
     `.github/workflows/docker-image.yml`
   - `ghcr.io/labtris/labtris:latest` publishes on push to main
-  - **Follow-up:** flip GHCR package visibility to public (org owner action)
+  - **BLOCKED:** the GHCR package is private, so
+    `docker pull ghcr.io/labtris/labtris` fails with `unauthorized` for
+    everyone — confirmed against the live registry. The workflow has
+    published successfully on every push; only visibility is missing.
+    Needs an org owner: Packages → labtris → Change visibility → Public.
   - **Follow-up:** multi-arch (add `linux/arm64` to buildx) — someone needs to ask first
 - [x] **rdma-host build-time image** (`3645159`)
 - [x] **Palette Docker Pull-now progress** (`6229a64`)
 - [x] **Ultra Ethernet suite** (`0ecf5f4`)
 - [x] **MCP setup docs** (`066c9c5`)
+
+---
+
+## Known-bad
+
+- [ ] **The three demo pods carry no BGP config.** `packaging/demo-pods/*`
+      were generated on a **0.5.0** instance (see `labtris_version` in
+      each `snapshot.json`), which predates `--with-bgp-evpn` entirely.
+      None of the three contains the string `startup_config`, so their
+      README's "BGP EVPN configs pre-populated" is wrong and
+      `packaging/smoke-test.sh` fails against them. Regenerate on 0.11.0.
+- [ ] **`labtris node push` and `labtris node exec` do not exist.** Both
+      are quoted as working commands in `packaging/demo-pods/README.md`,
+      `packaging/dockerfiles/ue-sim/README.md` and the Phase F commit.
+      The REST endpoints are real (`POST /nodes/{id}/console/exec`, the
+      push-config route); only the CLI verbs are missing. Either add them
+      or fix the three READMEs.
 
 ---
 
@@ -108,7 +141,9 @@ Each is a separate repo under `github.com/labtris/`:
       /api/v1/system/status` in the workflow (currently manual)
 - [ ] **Integration tests against real KVM** — needs a runner with
       `/dev/kvm`; GitHub-hosted runners don't have it. Options: self-hosted
-      runner, or Firecracker-in-CI, or just document "manually verified on .77"
+      runner, or Firecracker-in-CI, or just document "manually verified".
+      `packaging/smoke-test.sh` is the test; what is missing is somewhere
+      to run it. A nested-KVM guest works — verified on the Hetzner box.
 - [ ] **Migration round-trip test** — every `alembic upgrade` also has
       a working `downgrade`. Some don't today.
 

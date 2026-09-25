@@ -18,8 +18,24 @@ picked. Same API surface, real behavior underneath.
 
 ## Services shipped
 
-**140 AWS services** are wire-adapter-registered, verified end-to-end with
-real `aws` CLI v2. Full coverage matrix (Phase L1 + L2 + L3):
+**141 AWS services are registered**, which is not the same as 141
+services working. The number that matters is the tier:
+
+| Tier | Count | What it means |
+|---|---|---|
+| **A** verified real | 18 | Round-tripped with a real client tool |
+| **C** persistent state | ~18 | SDK works, state survives a restart, no real backend |
+| **D** façade | ~99 | SDK-shaped empty responses. No state, no work done |
+
+Tier A today: STS, IAM (read), EC2, SSM, KMS, S3, DynamoDB, RDS,
+ElastiCache, SQS, Route 53, Lambda, OpenSearch, DocumentDB, Redshift,
+MQ, MSK and Neptune. Everything else answers in the right shape and
+does not yet do the work. The live tier accounting, with test evidence
+per service, is in
+[labstack-aws/TODO.md](https://github.com/labtris/labstack-aws/blob/master/TODO.md);
+`tier-b-smoke.sh` in that repo is what stamps a service as verified.
+
+Full registered surface (Phase L1 + L2 + L3):
 
 **Identity & auth**
 - STS — GetCallerIdentity, AssumeRole, GetSessionToken, GetAccessKeyInfo
@@ -109,23 +125,38 @@ DynamoDB Streams, S3 Control, CloudSearch.
 **Coverage note.** For each service the "core" operations that appear in
 tutorials and quickstarts return SDK-compatible responses. Less-common
 operations return `NotImplementedException` with a clear message — no
-silent failures. The wrapper strategy means the wire compatibility is
-now, and the real backing runtime (MinIO for S3, Scylla for DynamoDB,
-Vault for KMS, OpenFaaS for Lambda, etc.) lands per-service in follow-up
-work without changing the API users see.
+silent failures.
+
+The deliberate trade is that wire compatibility comes first and the real
+backing runtime lands per-service afterwards, without changing the API
+you write against. That is a real advantage for anyone building against
+the SDK shape, and a real limitation if you expected the work to happen:
+for a Tier C or D service, a create call returns a plausible response and
+nothing runs. Check the tier before you rely on one.
+
+One known gap of that kind worth naming: Timestream spawns a real
+VictoriaMetrics container, but `WriteRecords` returns a `RecordsIngested`
+count without posting to it.
 
 ## Coverage vs LocalStack
 
+LocalStack implements ~90 services at roughly 85% behavioural fidelity
+each. Labtris registers 141 and genuinely implements 18. Comparing 141
+against 90 would be comparing a menu to a kitchen, so the honest framing
+is: **broader surface, narrower fidelity per service, and real
+infrastructure underneath the ones that work.**
+
 | Category | LocalStack Community | Labtris cloud-compat |
 |---|---|---|
-| Services | ~90 | **140** |
+| Services registered | ~90 | 141 |
+| Services actually working | ~90 | **18** |
 | Real workloads (VMs) | No | **Yes (QEMU KVM)** |
 | Real network (bridges, packets, tc) | No | **Yes** |
 | Real firewall integration | No | **Yes (VyOS + others)** |
 | Multi-cloud (Azure/GCP/OCI) | No | Planned |
-| S3 fidelity | ~95% (own impl) | Pending (MinIO backing) |
-| DynamoDB fidelity | ~85% (own impl) | Pending (Scylla backing) |
-| Lambda runtime | Yes | Pending (OpenFaaS backing) |
+| S3 | ~95% (own impl) | Real backing (SeaweedFS), verified |
+| DynamoDB | ~85% (own impl) | Real backing (Scylla Alternator), verified |
+| Lambda runtime | Yes | Real backing (AWS RIE), verified |
 | P4 / RoCE / Ultra Ethernet | No | **Yes** |
 
 ## Point the AWS CLI at Labtris
