@@ -14,16 +14,40 @@ Nothing uncommitted. Phase K1/K2/K3 landed as a single commit
 (`3f6e33e`) rather than the five PRs this section used to propose
 splitting it into.
 
-- [ ] **Split verification** — the K work went in unverified as one
-      commit. Each of the three needs its acceptance check run:
-      `sshpass -p $JWT ssh -p 2222 <node>@<host>`;
-      `labtris --profile home nodes list --output json --query ...`;
-      `curl -H 'accept: application/yang-data+json' .../restconf/data/...`
+Phase K has now been driven end-to-end on a real 0.11.0 instance. All
+three surfaces work; what follows is what the verification turned up.
+
+- [ ] **`--query` is global-only, `--output` is not.** `labtris --query
+      ... node list` works; `labtris node list --query ...` fails with
+      "No such option", because `--query` lives on the root callback
+      while `node list` has its own `-o/--output`. Anyone with aws-cli
+      habits writes the second form. Either accept `--query` per-command
+      or reject `--output` there too — the asymmetry is the problem.
+- [ ] **`/restconf` without a trailing slash 404s.** `/restconf/` is
+      fine. FastAPI would normally 307 between them; worth a redirect so
+      a hand-typed URL works.
+- [ ] **SSH proxy rejects `exec` requests.** `ssh <node>@host 'cmd'`
+      fails with "exec request failed on channel 0"; only an interactive
+      shell works. Reasonable for a console bridge, but it should say so
+      on the channel rather than failing opaquely, and
+      `docs/vendor-cli-ssh-proxy.mdx` should state it.
+- [ ] **SSH proxy startup failure is silent.** `main.py` wraps
+      `ssh_proxy.start()` in a bare `except Exception: pass`. Keeping the
+      API up is right; swallowing the reason is not — log it.
+- [ ] **Pubkey auth is still unverified.** Only JWT-as-password was
+      exercised. `labtris_cli/ssh_keys.py` and the `SshKey` model need
+      their own pass.
 
 ---
 
 ## Recently landed
 
+- [x] **Phase K verified** — SSH proxy: JWT-as-password authenticates and
+      lands a real shell (`root@leaf-1:/#`); a bad token, an empty
+      password and a valid token for a non-existent node are all
+      rejected. RESTCONF: `/restconf/` returns the `ietf-restconf` root
+      and node-scoped `ietf-interfaces` data in proper YANG shape. CLI:
+      JMESPath filtering and projection both work.
 - [x] **Phase K** (`3f6e33e`) — SSH proxy (asyncssh + JWT/pubkey),
       aws-CLI-shape CLI (profiles, `--output`, `--query`), RESTCONF
       (`ietf-interfaces`), plugin loader. 29 files, ~3,050 lines.
