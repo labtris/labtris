@@ -44,6 +44,11 @@
   --ctl-h: 34px;
   --r-ctl: 10px;
   --r-node: 12px;
+  /* The node card's width lives here because two things need it: the card
+     itself, and the wire-anchor maths in App.svelte. They drifted once —
+     the anchors assumed 176px against a 150px card, which put every
+     right-hand wire 26px clear of the border it was supposed to touch. */
+  --node-w: 150px;
   --r-card: 14px;
   --r-tab: 8px;
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;

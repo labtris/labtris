@@ -501,7 +501,21 @@
   let tcEdit = $state(null);
   let sizeForm = $state(null);
 
-  const W = 176;
+  //: Read the card width from the --node-w token rather than restating it,
+  //: so the wire anchors and the card cannot disagree again. Lazy + memoised
+  //: because the stylesheet has not necessarily applied at module init.
+  let _nodeW = 0;
+  function nodeW() {
+    if (!_nodeW) {
+      const v = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--node-w"),
+      );
+      _nodeW = Number.isFinite(v) && v > 0 ? v : 150;
+    }
+    return _nodeW;
+  }
+  //: Vertical spread for the port anchors, not a measured card height — the
+  //: card is content-sized (min-height 76px). See portPos.
   const H = 92;
   const GRID = 24;
 
@@ -545,6 +559,7 @@
     // looped back over its own box.
     const p = pos(node.id, iNode);
     const n = Math.max(node.interfaces.length, 1);
+    const W = nodeW();
     const y = p.y + 28 + (index * (H - 40)) / n;
     const left = towards === undefined ? iface.idx % 2 === 0 : towards < p.x + W / 2;
     return { x: left ? p.x : p.x + W, y, left };
@@ -6835,7 +6850,13 @@
      get occluded by a body. `pointer-events: none` on the container
      keeps clicks passing through to the node divs; `.link-hit` opts
      back in on the stroke area so a wire can still be selected. */
-  .wires { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+  /* `overflow: visible` because an SVG clips to its own viewport by default,
+     and this one is a fixed 4000x3000 anchored at the grid origin. A node
+     dragged (or generated) to a negative coordinate draws its wires at x<0,
+     which the default clip swallows whole — links vanished entirely, and
+     links with one end past the origin appeared to start in mid-air at x=0.
+     The canvas still clips at the viewport, which is what panning is for. */
+  .wires { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: visible; }
   /* Thinner and calmer: a 3px glowing cable per link turned a dense lab into
      soup. The glow is kept for the selected one, where it means something. */
   .link { fill: none; stroke: var(--wire); stroke-width: 1.75; stroke-linecap: round; opacity: .85; pointer-events: none; transition: stroke .15s, opacity .15s; }
@@ -6853,7 +6874,7 @@
      176px, 16px radius, a 24px coloured halo on every running node — is most
      of why a dense lab looked like a light show rather than a diagram. */
   .node {
-    touch-action: none; position: absolute; width: 150px; min-height: 76px;
+    touch-action: none; position: absolute; width: var(--node-w); min-height: 76px;
     border-radius: var(--r-node); border: 1px solid var(--stroke);
     background: var(--node-a); padding: 10px 12px; user-select: none;
   }
