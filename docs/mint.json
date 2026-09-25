@@ -99,6 +99,7 @@
         "design/scaling",
         "design/phase1-spec",
         "design/multipath-deferred",
+        "design/wire-routing",
         "design/pfc-implementation",
         "design/ue-stack-poc"
       ]

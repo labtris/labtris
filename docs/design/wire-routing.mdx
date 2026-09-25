@@ -1,0 +1,100 @@
+---
+title: "Deferred: wire routing"
+description: "Why generated fabrics look tangled, what the graph-drawing literature says to do about it, and the order to do it in."
+---
+
+A generated spine-leaf reads worse than it should. Wires cross where
+they do not need to, swing wide of the cards they connect, and pass
+straight over node boxes on the way. None of that is a bug in the
+sense of something being wrong — every wire connects the right two
+ports. It is that the routing makes three decisions greedily and
+locally, and none of the three can see the other two.
+
+## What the renderer does today
+
+All of it lives in `web/src/App.svelte`:
+
+- **`portPos`** assigns the anchor slot by **interface index** —
+  `y = p.y + 28 + (index * (H - 40)) / n`. eth0 always takes the top
+  slot whether or not its peer is above or below. If eth0's peer sits
+  below-right and eth1's above-right, those two wires cross each
+  other immediately, at the card.
+- **`portPos`** also picks the exit side one link at a time —
+  `left = towards < p.x + W / 2` — with no view of the node's other
+  links, so a node's wires can fan to opposite sides where grouping
+  them would read better.
+- **`wirePath`** draws a fixed-shape cubic with
+  `reach = clamp(48, 200, dx * 0.5 + dy * 0.25)` and no awareness of
+  obstacles. A mostly-vertical link still gets a large reach, which
+  is where the wide arcs come from, and nothing keeps a wire off a
+  card it happens to pass over.
+
+The first of those is responsible for most of the visible mess, and
+is also the cheapest to fix.
+
+## What the literature says
+
+Layered graph drawing is a solved-enough problem and a spine-leaf,
+rail-optimised or fat-tree fabric is exactly a layered graph.
+
+- **Sugiyama (1981)** is the canonical framework and what Graphviz
+  `dot` implements: cycle removal, layer assignment, **crossing
+  reduction**, coordinate assignment. `topology_gen.py` already does
+  layer assignment — spines row 0, leaves row 1, hosts row 2 — and
+  then skips crossing reduction entirely.
+- **Brandes–Köpf (2002)** is the standard coordinate-assignment pass:
+  linear time, straight vertical runs, balanced result.
+- Exact crossing minimisation is NP-hard, so the practical move is
+  the per-layer median/barycenter heuristic. The parallel with
+  Knuth–Plass is real — replace greedy local choices with a global
+  objective, then accept a tractable approximation of it.
+- **Tamassia's Topology-Shape-Metrics (1987)** covers orthogonal
+  right-angle routing, the conventional network-diagram look.
+  `libavoid` (Adaptagrams, used by Inkscape and Dia) is the
+  battle-tested implementation of obstacle-avoiding connectors.
+- **Holten (2006)** and **Holten & van Wijk (2009)** on edge bundling
+  are what make a dense Clos legible at all — bundles read as cable
+  trunks rather than 32 individual wires.
+- **Force-directed** layouts (Fruchterman–Reingold, Kamada–Kawai) are
+  the wrong tool here. They suit organic graphs and would wobble a
+  structured fabric into a blob.
+- **elkjs** (JS port of the Eclipse Layout Kernel) is the most
+  directly usable library: Sugiyama plus Brandes–Köpf plus orthogonal
+  edge routing, and — the part that matters — **port constraints**,
+  so ports can be pinned to a side and ordered. dagre is the older JS
+  Sugiyama implementation and is effectively unmaintained.
+
+## The order to do it in
+
+**1. Order anchor slots by peer position, not interface index.**
+Leave the curve alone; sort each node's links by the peer's `y` (or
+by angle) and hand out slots in that order. Kills the crossings that
+happen at the card, which is most of what is visible. Roughly 30
+lines in `portPos`, no new dependency. This is the one worth doing
+first by a wide margin.
+
+**2. Reorder within each layer** with the barycenter heuristic before
+`topology_gen.py` writes geometry. Sugiyama's missing phase 3, and
+close to free because the generator already owns the coordinates.
+
+**3. Obstacle-aware or orthogonal routing** via elkjs or libavoid.
+A real project, and the point at which the canvas stops being
+hand-rolled SVG. Worth it for the conventional right-angle look.
+
+**4. Edge bundling**, once fabrics get dense enough to need it — a
+k=4 fat-tree with 16 hosts is about where individual wires stop
+being readable.
+
+## The caveat that interacts with all of it
+
+The anchors do not sit on the `eth` chips. `.ports` is a wrapping
+flex row at the bottom of the card, not a column down its edge, so
+there is no per-port position on the border to anchor to. Even
+perfect routing will not make a wire visually terminate at the port
+it represents. Steps 1 and 2 are still worth doing as they stand,
+but "wires emerge from the chips" is a change to the card's own
+layout and should be decided on purpose rather than fallen into.
+
+Related: `H = 92` in `App.svelte` is a spread parameter, not a
+measured height — the card actually renders 98px tall. It only
+matters if the anchors ever become real measurements.
