@@ -157,6 +157,17 @@ IFACE_SCHEMES: dict[str, IfaceScheme] = {
         # names the user sees on the canvas. Starts at 1 because bmv2
         # rejects port 0 as reserved.
         IfaceScheme("s", "s1, s2 — bmv2 P4 switch ports", "s{n}", start=1),
+        # Cumulus Linux: eth0 is the out-of-band management port and the
+        # front-panel switch ports are swp1..swpN. Getting this wrong is
+        # especially confusing on Cumulus because its own documentation,
+        # `net show interface`, and every FRR example all say swp.
+        IfaceScheme(
+            "swp",
+            "eth0, swp1, swp2 — Cumulus Linux",
+            "swp{n}",
+            start=1,
+            first_names=("eth0",),
+        ),
     ]
 }
 

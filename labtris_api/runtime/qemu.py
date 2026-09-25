@@ -99,6 +99,28 @@ class QemuImage:
 QEMU_CATALOG: dict[str, QemuImage] = {
     image.id: image
     for image in [
+        # A real NOS in the catalog, and a legally clean one: Cumulus VX is
+        # NVIDIA's freely redistributable VX build, published as a Vagrant
+        # libvirt box (a tar.gz around box.img). No account, no licence file,
+        # no vendor image we are not allowed to fetch.
+        QemuImage(
+            id="cumulus-vx-5.10",
+            label="Cumulus Linux VX 5.10 (switch NOS)",
+            url=(
+                "https://d2cd9e7ca6hntp.cloudfront.net/public/CumulusLinux-5.10.0/"
+                "cumulus-linux-5.10.0-vx-amd64-libvirt.box"
+            ),
+            archive="tar.gz",
+            iface_scheme="swp",
+            ram_mb=2048,
+            cpus=2,
+            credentials="cumulus / cumulus (forced change on first login)",
+            source="nvidia.com",
+            family="cumulus-vx",
+            family_label="Cumulus Linux VX",
+            version="5.10",
+            default_version=True,
+        ),
         QemuImage(
             id="cirros",
             label="CirrOS 0.6.2 (tiny serial test VM)",
@@ -452,6 +474,12 @@ async def _extract(archive: Path, kind: str, into: Path) -> Path:
         rc, out = await _run(_seven_zip(), "x", "-y", f"-o{into}", str(archive))
     elif kind == "zip":
         rc, out = await _run("unzip", "-o", "-q", str(archive), "-d", str(into))
+    elif kind in ("tar.gz", "tgz"):
+        # Vendor images that ship as a tarball, and Vagrant `.box` files —
+        # which are a gzipped tar holding box.img next to a Vagrantfile and
+        # metadata.json. _find_disk takes the largest disk-suffixed file, so
+        # the descriptors alongside it are ignored.
+        rc, out = await _run("tar", "-xzf", str(archive), "-C", str(into))
     else:
         raise unprocessable(f"unsupported archive format {kind!r}")
     if rc != 0:
