@@ -96,6 +96,15 @@ which act on a host device Labtris created, are not available on an adopted
 link. Consoles, `exec` and everything that acts on the *container* work
 normally.
 
+## Bringing vrnetlab images across
+
+containerlab runs VM-based kinds through vrnetlab, which packages a vendor
+qcow2 inside a container. Labtris runs QEMU natively and wants the disk
+without the wrapper, which `labtris-image from-vrnetlab` extracts from an
+image you built — along with the RAM, vCPU and NIC settings that image's
+`launch.py` specifies. See
+[bringing your own images](/nodes-and-images#from-a-vrnetlab-image-you-already-built).
+
 ## Turning it off
 
 ```bash

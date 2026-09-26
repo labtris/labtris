@@ -29,6 +29,43 @@ differs is only how much help you get finding the file.
 **QEMU images** are files you provide. The catalogue records, per image, where
 it came from and what it needs.
 
+### From a vrnetlab image you already built
+
+If you came from containerlab you have probably built vrnetlab images, which
+is the hard part: a licensed qcow2, a per-platform makefile, and somebody
+having already worked out how much RAM the thing needs and which NIC model it
+tolerates. Labtris runs QEMU directly, so it wants the disk without the
+container around it — and that disk is sitting at the root of the image you
+built, because vrnetlab's Dockerfile is `COPY $IMAGE* /`.
+
+```bash
+labtris-image from-vrnetlab vrnetlab/cisco_csr1000v:17.03.06 --dry-run
+```
+
+```
+read vrnetlab/cisco_csr1000v:17.03.06:
+  RAM           4096 MB  [vrnetlab default]
+  vCPUs         1  [vrnetlab default]
+  NIC model     vmxnet3  [launch.py]
+  Disk bus      ide  [vrnetlab default]
+  Iface scheme  ios  [guessed from the image name]
+```
+
+Every value says where it came from, because the ones read out of the
+image's `launch.py` are worth trusting and the ones that fell back to
+vrnetlab's defaults are worth a second look. Drop `--dry-run` and add
+`--name` to register it; any value can be overridden with a flag.
+
+Nothing is downloaded and nothing is redistributed — this reads an image you
+built on your own machine from a disk you are licensed to have.
+
+Two things it cannot do. Where `launch.py` computes a value at runtime
+(Nokia's SR OS derives RAM from the chassis type, Cisco's CSR reads its NIC
+count from an argument) there is nothing to read, so vrnetlab's default is
+used and you should set the flag yourself. And a platform that is two virtual
+machines — Juniper's vMX is a control plane plus a forwarding plane — does
+not map onto one template; the import warns and reads the first.
+
 ### Importing the GNS3 registry
 
 The GNS3 project maintains 228 appliance definitions — how to run a device, not

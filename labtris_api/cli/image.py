@@ -132,6 +132,116 @@ async def _add(args: argparse.Namespace) -> None:
     )
 
 
+async def _from_vrnetlab(args: argparse.Namespace) -> None:
+    """Register the vendor disk inside a vrnetlab image as a template.
+
+    The point is to reuse work rather than repeat it. Building a vrnetlab
+    image is the painful part of running a vendor NOS — a licensed qcow2, a
+    per-platform makefile, and somebody having already worked out how much
+    RAM it needs and which NIC model it tolerates. Anyone arriving from
+    containerlab has done all of that. This takes the disk back out and
+    keeps the numbers.
+
+    Nothing is downloaded and nothing is redistributed: the image is one the
+    user built on their own machine from a disk they are licensed to have.
+    """
+    from labtris_api import vrnetlab
+
+    # --name is required to register, but pointless for the two read-only
+    # modes — inspecting an image to decide whether to import it should not
+    # need you to have named it yet.
+    if not args.name and not (args.dry_run or args.json):
+        _die("--name is required (or use --dry-run / --json to inspect first)")
+
+    try:
+        cache = _cache_dir()
+    except PermissionError:
+        _permissions_hint()
+
+    try:
+        found = vrnetlab.extract(args.image, cache)
+    except vrnetlab.VrnetlabError as exc:
+        _die(str(exc))
+
+    for warning in found.warnings:
+        print(f"labtris-image: warning: {warning}", file=sys.stderr)
+
+    if args.json:
+        print(vrnetlab.to_json(found))
+        found.disk.unlink(missing_ok=True)
+        return
+
+    # Explicit flags beat anything read out of the image. Someone who knows
+    # the platform needs more RAM than vrnetlab asks for should not have to
+    # edit a row afterwards.
+    ram_mb = args.ram_mb if args.ram_mb is not None else found.ram_mb
+    cpus = args.cpus if args.cpus is not None else found.cpus
+    nic_model = args.nic_model or found.nic_model
+    disk_bus = args.disk_bus or found.disk_bus
+    iface_scheme = args.iface_scheme or found.iface_scheme or "eth"
+
+    print(f"read {args.image}:")
+    print(vrnetlab.describe(found))
+
+    if args.dry_run:
+        found.disk.unlink(missing_ok=True)
+        print("dry run — nothing registered")
+        return
+
+    normalised_tmp = cache / f"cli-{new_id()}.qcow2"
+    try:
+        await _ensure_qcow2(found.disk, normalised_tmp)
+        stored = await _install_custom(normalised_tmp)
+    except Exception as exc:  # noqa: BLE001 — CLI top-level cleanup
+        for stray in (found.disk, normalised_tmp):
+            stray.unlink(missing_ok=True)
+        _die(str(exc))
+    finally:
+        found.disk.unlink(missing_ok=True)
+
+    spec: dict[str, Any] = {
+        "origin": "vrnetlab",
+        "vrnetlab_image": args.image,
+        "bytes": stored["bytes"],
+        "ram_mb": ram_mb,
+        "cpus": cpus,
+        "nic_model": nic_model,
+        "disk_bus": disk_bus,
+        "iface_scheme": iface_scheme,
+        "graphical": False,
+        "detected": found.source,
+    }
+    if found.num_nics:
+        spec["max_nics"] = found.num_nics
+    if args.description:
+        spec["description"] = args.description
+
+    async with SessionLocal() as session:
+        tmpl = Template(
+            id=new_id(),
+            name=args.name,
+            runtime="qemu",
+            image=stored["image"],
+            cmd=None,
+            env={},
+            icon=None,
+            spec=spec,
+            description=args.description,
+        )
+        session.add(tmpl)
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            _die(f"template name {args.name!r} already exists")
+
+    print(
+        f"added {args.name!r} -> {stored['image']} "
+        f"({stored['bytes'] // (1024 * 1024)} MiB), "
+        f"{ram_mb} MB RAM, {cpus} vCPU, {nic_model}, {disk_bus} disk"
+    )
+
+
 async def _list(_args: argparse.Namespace) -> None:
     async with SessionLocal() as session:
         rows = list(
@@ -280,6 +390,31 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--graphical", action="store_true", help="console is framebuffer (VNC)")
     add.add_argument("--description", default=None)
     add.set_defaults(func=_add)
+
+    vrl = subs.add_parser(
+        "from-vrnetlab",
+        help="register the vendor disk inside a vrnetlab image as a template",
+        description="Extract the vendor qcow2 from a vrnetlab container image you "
+                    "built, and register it as a Labtris template with the RAM, "
+                    "vCPU and NIC settings that image's launch.py specifies.",
+    )
+    vrl.add_argument("image", help="vrnetlab image, e.g. vrnetlab/cisco_csr1000v:17.03.06")
+    vrl.add_argument("--name", help="display name for the new template")
+    vrl.add_argument("--ram-mb", type=int, default=None, help="override the detected RAM")
+    vrl.add_argument("--cpus", type=int, default=None, help="override the detected vCPU count")
+    vrl.add_argument("--nic-model", default=None, help="override the detected NIC model")
+    vrl.add_argument("--disk-bus", default=None, help="override the detected disk bus")
+    vrl.add_argument("--iface-scheme", default=None, help="override the guessed naming scheme")
+    vrl.add_argument("--description", default=None)
+    vrl.add_argument(
+        "--dry-run", action="store_true",
+        help="report what would be imported without extracting or registering",
+    )
+    vrl.add_argument(
+        "--json", action="store_true",
+        help="print the detected settings as JSON and stop",
+    )
+    vrl.set_defaults(func=_from_vrnetlab)
 
     lst = subs.add_parser("list", help="list templates")
     lst.set_defaults(func=_list)
