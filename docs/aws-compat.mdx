@@ -18,18 +18,19 @@ picked. Same API surface, real behavior underneath.
 
 ## Services shipped
 
-**141 AWS services are registered**, which is not the same as 141
+**191 AWS services are registered**, which is not the same as 191
 services working. The number that matters is the tier:
 
 | Tier | Count | What it means |
 |---|---|---|
-| **A** verified real | 18 | Round-tripped with a real client tool |
+| **A** verified real | 24 | Round-tripped with a real client tool |
 | **C** persistent state | ~18 | SDK works, state survives a restart, no real backend |
-| **D** façade | ~99 | SDK-shaped empty responses. No state, no work done |
+| **D** façade | ~149 | SDK-shaped empty responses. No state, no work done |
 
 Tier A today: STS, IAM (read), EC2, SSM, KMS, S3, DynamoDB, RDS,
-ElastiCache, SQS, Route 53, Lambda, OpenSearch, DocumentDB, Redshift,
-MQ, MSK and Neptune. Everything else answers in the right shape and
+ElastiCache, SQS, SNS, Route 53, Lambda, OpenSearch, DocumentDB,
+Redshift, MQ, MSK, Neptune, Timestream, CloudWatch Logs, CloudWatch
+metrics, Kinesis Data Streams and Secrets Manager. Everything else answers in the right shape and
 does not yet do the work. The live tier accounting, with test evidence
 per service, is in
 [labstack-aws/TODO.md](https://github.com/labtris/labstack-aws/blob/master/TODO.md);
@@ -148,7 +149,7 @@ infrastructure underneath the ones that work.**
 
 | Category | LocalStack Community | Labtris cloud-compat |
 |---|---|---|
-| Services registered | ~90 | 141 |
+| Services registered | ~90 | 191 |
 | Services actually working | ~90 | **18** |
 | Real workloads (VMs) | No | **Yes (QEMU KVM)** |
 | Real network (bridges, packets, tc) | No | **Yes** |
