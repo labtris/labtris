@@ -83,6 +83,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await ssh_proxy.start()
     except Exception:  # noqa: BLE001
         pass
+    # Watch for labs deployed by containerlab so they appear in the UI
+    # without an import step. Includes a sweep, so a lab deployed while the
+    # API was down is picked up here rather than never.
+    try:
+        from labtris_api import clab_watch
+
+        await clab_watch.start()
+    except Exception:  # noqa: BLE001 — observing clab is a convenience
+        pass
     yield
     # Wireshark sessions are deliberately started in their own process session
     # so they survive a reload — which is exactly what makes them leak if
@@ -90,6 +99,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from labtris_api import wireshark as ws
 
     await ws.stop_all()
+
+    # The clab watcher holds an open Docker /events stream, which uvicorn
+    # will otherwise wait on for the full shutdown timeout.
+    try:
+        from labtris_api import clab_watch
+
+        await clab_watch.stop()
+    except Exception:  # noqa: BLE001
+        pass
 
     # Cancel every long-lived background task we spawned via
     # asyncio.create_task from a request handler. Uvicorn's shutdown

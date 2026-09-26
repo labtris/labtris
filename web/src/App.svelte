@@ -3073,6 +3073,29 @@
     headerMenu = { x: r.left, y: r.bottom + 4, items, filter };
   }
 
+  //: The lab list is fetched once on load, so a lab created since then is
+  //: missing from this menu until a page reload — including one the
+  //: containerlab watcher imported after a `containerlab deploy` on the
+  //: box, which is the whole point of that feature. Refetch as the menu
+  //: opens: one request at the exact moment the user is asking "what labs
+  //: are there", which is when a stale answer is worst.
+  async function openLabSwitcher(e) {
+    //: Read the rect before awaiting — currentTarget is nulled once the
+    //: event finishes dispatching, so doing this after the fetch throws.
+    const r = e.currentTarget.getBoundingClientRect();
+    try {
+      await refreshLabs();
+    } catch {
+      //: An unreachable API should still open the menu on what we have.
+    }
+    headerMenu = {
+      x: r.left,
+      y: r.bottom + 4,
+      items: labSwitcherMenu(),
+      filter: "Find a lab…",
+    };
+  }
+
   //: Every lab on the instance, grouped the way the folders are, each one
   //: labelled with what is actually in it. "demo" and "demo" tell you nothing;
   //: "demo · 3 running" and "demo · empty" tell you which one you meant.
@@ -4026,7 +4049,7 @@
     <!-- Identity, then state, then the one thing you type into. Everything that
          is not one of those three moved behind the overflow: the header used to
          carry sixteen controls, which is a control panel, not a header. -->
-    <button class="crumb" onclick={(e) => openHeaderMenu(e, labSwitcherMenu(), "Find a lab…")}>
+    <button class="crumb" onclick={openLabSwitcher}>
       {#if lab}
         {#if lab.folder}<span class="crumb-folder">{lab.folder}</span><span class="crumb-sep">/</span>{/if}
         <span class="crumb-name">{lab.name}</span>

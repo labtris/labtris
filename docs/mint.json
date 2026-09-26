@@ -87,6 +87,7 @@
         "cli",
         "cli-profiles",
         "reference/docker",
+        "reference/containerlab",
         "reference/install-from-source",
         "reference/building-the-iso"
       ]

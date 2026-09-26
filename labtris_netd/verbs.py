@@ -18,6 +18,7 @@ VERBS = frozenset(
         "iface.delete",
         "veth.create",
         "netns.move",
+        "netns.links",
         "iface.inspect",
         "tc.set",
         "tc.read",
@@ -99,6 +100,7 @@ class NetOps(Protocol):
         mac: str | None = None,
         up: bool = True,
     ) -> dict[str, Any]: ...
+    def netns_links(self, pids: dict[str, int]) -> dict[str, Any]: ...
     def tc_set(self, name: str, spec: dict[str, Any]) -> dict[str, Any]: ...
     def tc_read(self, name: str) -> dict[str, Any]: ...
     def iface_inspect(self, names: list[str]) -> dict[str, Any]: ...
@@ -365,6 +367,20 @@ def _call(verb: str, params: dict[str, Any], net: NetOps) -> dict[str, Any]:
             _require_ifname(params.get("name")),
             _require_ifname(params.get("peer"), "peer"),
         )
+    if verb == "netns.links":
+        pids = params.get("pids")
+        if not isinstance(pids, dict) or not pids:
+            raise NetdFault("EINVAL", "pids must be a non-empty object")
+        if len(pids) > 512:
+            raise NetdFault("EINVAL", "pids must name at most 512 namespaces")
+        clean: dict[str, int] = {}
+        for key, value in pids.items():
+            if not isinstance(key, str) or not key:
+                raise NetdFault("EINVAL", "pids keys must be non-empty strings")
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise NetdFault("EINVAL", f"pid for {key!r} must be a positive int")
+            clean[key] = value
+        return net.netns_links(clean)
     if verb == "netns.move":
         pid = params.get("pid")
         if not isinstance(pid, int) or pid <= 0:

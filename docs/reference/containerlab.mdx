@@ -1,0 +1,127 @@
+---
+title: "containerlab"
+description: "Deploy with the containerlab CLI and have the lab appear in Labtris by itself — no import step."
+---
+
+You keep running `containerlab` exactly as you do now. Labtris watches the
+Docker daemon it drives, notices the containers containerlab created, works
+out how they are wired, and builds the matching lab. Open the UI and it is
+on the canvas.
+
+Nothing is intercepted and nothing is wrapped. There is no
+`labtris clab deploy`, no `DOCKER_HOST` pointed at a Labtris shim, and no
+import to remember.
+
+## What you get
+
+* Every node on the canvas, bound to the container containerlab started —
+  so consoles, `exec`, packet capture and the assistant all work on it.
+* The links drawn correctly, including which interface is on which end.
+* A redeploy repoints the lab at the new containers instead of making a
+  second one.
+* A `containerlab destroy` marks the nodes stopped and **keeps the lab**.
+
+## Requirements
+
+containerlab and Labtris must use **the same Docker daemon**, because that
+is what Labtris can see.
+
+<Tabs>
+<Tab title="Source or ISO install">
+
+Labtris uses the host's Docker, so just run containerlab on the box:
+
+```bash
+containerlab deploy -t topo.clab.yml
+```
+
+</Tab>
+<Tab title="Container install">
+
+Labtris runs its own daemon inside the instance, and containerlab has to
+join that namespace — otherwise its veths are built somewhere Labtris
+cannot reach, which makes the lab unusable from Labtris whether or not it
+is discovered. Substitute your compose project name for `labtris`:
+
+```bash
+docker run --rm --privileged \
+  --network container:labtris-labnet-1 \
+  --pid container:labtris-labnet-1 \
+  -v labtris_dind-sock:/dockersock \
+  -v "$PWD":/work -w /work \
+  -e DOCKER_HOST=unix:///dockersock/docker.sock \
+  ghcr.io/srl-labs/clab:latest containerlab deploy -t topo.clab.yml
+```
+
+</Tab>
+</Tabs>
+
+## How the topology is worked out
+
+Two sources, in order.
+
+**The `.clab.yml`, when it is readable.** containerlab labels every
+container with `clab-topo-file`. If that path resolves for the Labtris API
+process, the file is parsed the same way `POST /labs/import/topology` parses
+an uploaded one, so you get kinds, images and startup config.
+
+**The running veths, otherwise.** On the container install the path usually
+does *not* resolve — the deploy ran inside a throwaway clab container and
+`/work` went with it. Labtris then reads the topology out of the dataplane:
+every veth end reports its peer's ifindex, so two interfaces in two
+different node namespaces that name each other are the two ends of one
+cable. containerlab's `eth0` never pairs, because its other half is on the
+management bridge, which is how the management network stays out of the
+topology.
+
+This is a weaker source in one direction and a stronger one in another. It
+cannot recover anything that exists only in the file — kinds, startup
+config, labels, node groups — and the lab carries a warning saying so. But
+it describes what is actually running rather than what was requested, so
+where the two disagree, this is the one that is right.
+
+In the rare case where two nodes number an interface identically and both
+appear to point back at the same peer, the link is left undrawn and named
+in a warning rather than guessed at.
+
+## What Labtris does not touch
+
+The dataplane. containerlab built it; Labtris reads it and writes database
+rows. Adopted interfaces are recorded with no host device name, so netd is
+never asked to manage `vethc9f7a85` or `br-3f03464b7aff` — names that would
+not pass the gate that stops it deleting `docker0` or a host NIC.
+
+The practical consequence is that impairment, capture and per-link stats,
+which act on a host device Labtris created, are not available on an adopted
+link. Consoles, `exec` and everything that acts on the *container* work
+normally.
+
+## Turning it off
+
+```bash
+LABTRIS_CLAB_WATCH=false
+```
+
+Labtris then ignores containerlab entirely. You can still import a topology
+by hand, which also covers the case where the file is unreadable and you
+would rather paste it than accept the dataplane's account of it:
+
+```bash
+curl -X POST "$LABTRIS/api/v1/labs/import/topology" \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d "$(jq -n --rawfile c topo.clab.yml \
+        '{content:$c, filename:"topo.clab.yml", adopt_clab:"mylab"}')"
+```
+
+`adopt_clab` is the `name:` from the `.clab.yml`.
+
+## Limits
+
+* Only labs on the daemon Labtris drives are seen. A containerlab
+  deployment against a different host is invisible, by design.
+* Labs are discovered at API startup and on Docker events. A lab deployed
+  while Labtris is down is picked up on the next start.
+* The lab list in the browser refreshes when you open the lab switcher, so
+  a deploy made while the page was already open appears there rather than
+  needing a reload.

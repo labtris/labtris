@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     #: the mount is skipped silently — an API with no UI and no error.
     #: The container image sets this explicitly.
     web_dist: str = ""
+    #: Watch the Docker event stream for containers containerlab deployed
+    #: and build the matching Labtris lab, so `containerlab deploy` run by
+    #: hand shows up on the canvas without an import step. Reads the event
+    #: stream and writes rows; it never touches clab's dataplane. Off makes
+    #: Labtris ignore clab entirely — the manual
+    #: `POST /labs/import/topology` with `adopt_clab` still works.
+    clab_watch: bool = True
     qemu_vm_dir: str = "~/.local/share/labtris/qemu-vms"
     qemu_image_cache_dir: str = "~/.cache/labtris/qemu-images"
     #: Where lab snapshots (`labtris-pod-v1.tar.gz`) are written on save

@@ -722,6 +722,64 @@ class PyrouteNet:
                 }
         return {"interfaces": out}
 
+    def netns_links(self, pids: dict[str, int]) -> dict[str, Any]:
+        """Enumerate the interfaces inside each given process's netns.
+
+        Exists so Labtris can work out how somebody else wired a set of
+        containers. containerlab builds its veths over netlink and records
+        the topology only in its .clab.yml, which the API may have no way to
+        read — a deploy run inside an ephemeral clab container puts the file
+        on a filesystem nothing else shares. The wiring itself is never
+        ambiguous though: each veth end reports its peer's ifindex, so two
+        interfaces that name each other are the two ends of one link.
+
+        Read-only. Nothing here creates, renames or deletes a device, which
+        is why it is safe to point at containers Labtris does not own and
+        whose interface names would never pass IFNAME_RE.
+
+        `pids` maps a caller-chosen key (a node name) to a pid; the API side
+        resolves containers to pids because netd has no Docker socket. A pid
+        that has exited yields an `error` for that key rather than failing
+        the batch — reading a lab of 40 nodes should not be all-or-nothing.
+        """
+        out: dict[str, Any] = {}
+        for key, pid in pids.items():
+            rows: list[dict[str, Any]] = []
+
+            def collect(rows: list[dict[str, Any]] = rows) -> None:
+                with IPRoute() as ipr:
+                    for link in ipr.get_links():
+                        info = link.get_attr("IFLA_LINKINFO")
+                        rows.append(
+                            {
+                                "index": link["index"],
+                                "name": link.get_attr("IFLA_IFNAME"),
+                                "kind": info.get_attr("IFLA_INFO_KIND")
+                                if info is not None
+                                else None,
+                                "mac": link.get_attr("IFLA_ADDRESS"),
+                                "mtu": link.get_attr("IFLA_MTU"),
+                                "up": bool(link["flags"] & 1),
+                                # The peer's ifindex, as numbered in the peer's
+                                # own namespace. Meaningless on its own; it is
+                                # the mutual pairing that identifies a link.
+                                "peer_index": link.get_attr("IFLA_LINK"),
+                                # 0 means the netns this process's namespace
+                                # calls "the one netd is in" — i.e. an end that
+                                # landed on a bridge rather than in another
+                                # node. Only used to tell those apart.
+                                "peer_netnsid": link.get_attr("IFLA_LINK_NETNSID"),
+                            }
+                        )
+
+            try:
+                _in_netns(pid, collect)
+                out[key] = {"interfaces": rows}
+            except Exception as exc:  # noqa: BLE001 - one dead node, not a dead batch
+                log.warning("netns.links_failed", key=key, pid=pid, error=str(exc))
+                out[key] = {"error": str(exc)}
+        return {"nodes": out}
+
     def tc_read(self, name: str) -> dict[str, Any]:
         """The impairment actually in the kernel, in the units tc_set takes.
 

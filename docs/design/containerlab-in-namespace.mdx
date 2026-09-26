@@ -99,10 +99,63 @@ another container's network namespace gets `/sys` mounted read-only no
 matter how privileged it is — and a reminder that the fix netd uses
 (`IPRoute.brport()` over netlink) is the one that works here.
 
-## Recommendation
+## What shipped instead of the recommendation
 
-Ship it as `labtris clab deploy`, which runs the real binary inside the
-namespace and then imports the result through the existing `parse_clab`
-path. Describe it as "Labtris runs your containerlab topology", not "your
-containerlab CLI now drives Labtris" — the user still runs it through
-Labtris, and claiming otherwise sets up a disappointment.
+The spike recommended a `labtris clab deploy` wrapper, on the reasoning
+that Labtris has to be the one invoking containerlab in order to know a
+deploy happened. That reasoning was wrong, and the wrapper was not built.
+
+Labtris does not need to invoke containerlab to know about it, because
+containerlab labels every container it creates — `containerlab=<lab>`,
+`clab-node-name`, `clab-topo-file` — and the Docker daemon publishes
+container events. Watching that stream gets the same information with none
+of the wrapping, so the user runs the real CLI, unwrapped, and the lab
+appears. `labtris_api/clab_watch.py`, and
+[the containerlab reference](/reference/containerlab) for the user-facing
+version.
+
+An eBPF trace of `execve` was also considered and rejected: it would have
+to reconstruct from argv what the labels already state, and it would still
+miss a deploy that happened while the API was down, which a sweep at
+startup does not.
+
+### The wiring survives without the topology file
+
+The one thing the spike did not anticipate. `clab-topo-file` points at
+`/work/spike.clab.yml` — a path inside the throwaway container the deploy
+ran in, which the API cannot read. Verified on the instance:
+
+```
+$ docker exec ...-api-1 ls -l /work/
+ls: cannot access '/work/': No such file or directory
+```
+
+The links are recoverable anyway, because each veth end reports its peer's
+ifindex. Reading both node namespaces through the new `netns.links` verb:
+
+```
+n1: eth1 ifindex=9  peer_index=10
+n2: eth1 ifindex=10 peer_index=9     -> one link
+n1: eth0 ifindex=7  peer_index=8     -> peer is on the mgmt bridge, not a node
+```
+
+Two interfaces in different namespaces that name each other are the two
+ends of one cable; `eth0` never pairs, so clab's management network stays
+out of the topology without being special-cased.
+
+Measured against a three-node triangle, with the topology file
+deliberately unreachable:
+
+```
+clab:    a:eth1 ▪┄┄▪ b:eth1    b:eth2 ▪┄┄▪ c:eth1    c:eth2 ▪┄┄▪ a:eth2
+labtris: a eth1 <-> b eth1     b eth2 <-> c eth1     a eth2 <-> c eth2
+```
+
+All three, from the dataplane alone. `console/exec` on node `b` returns `b`
+and shows `eth2@if35` up at MTU 9500, so the binding is live.
+
+This makes the dataplane the better source in one respect: it reports what
+is running rather than what was requested. It is the worse source in
+another — kinds, startup config and labels exist only in the file — so the
+file is preferred when readable and the lab carries a warning when it is
+not.
