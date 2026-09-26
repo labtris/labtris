@@ -878,7 +878,14 @@ async def realize_plan(session: AsyncSession, plan: Plan) -> tuple[Lab, list[str
     await session.flush()
 
     for planned_net in plan.networks:
-        session.add(Network(id=new_id(), lab_id=lab.id, name=planned_net, kind="bridge"))
+        session.add(
+            Network(
+                id=new_id(),
+                lab_id=lab.id,
+                name=planned_net,
+                kind=plan.network_kinds.get(planned_net, "bridge"),
+            )
+        )
 
     for link in plan.links:
         a = iface_of.get((link.a_node, link.a_iface or ""))

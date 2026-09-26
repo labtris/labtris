@@ -52,6 +52,11 @@ RUN npm run build
 FROM python:3.12-slim AS runtime
 
 # System packages the Labtris ISO installs (see docs/reference/install-from-source.mdx).
+# openvswitch-switch backs the `ovs` network kind. ~15 MB, and it is the
+# only way to give a lab OpenFlow or OVSDB, which a plain Linux bridge has
+# no concept of. netd starts ovsdb-server and ovs-vswitchd on demand; if
+# they are not running, creating an ovs network fails with that reason
+# rather than producing a segment that never forwards.
 # We keep the list tight — qemu + docker-cli + tcpdump are the load-bearing ones;
 # guacd is optional (only needed for VNC/RDP consoles) and can be added later.
 # Every binary the code actually shells out to. The original list was
@@ -71,6 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       cloud-image-utils \
       docker-cli \
       iproute2 iptables nftables \
+      openvswitch-switch \
       dnsmasq-base conntrack ethtool iputils-ping \
       tcpdump p7zip-full \
       curl ca-certificates \

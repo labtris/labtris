@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import re
+import signal
 import shutil
 import subprocess
 import threading
@@ -348,6 +350,229 @@ class PyrouteNet:
             # stay swallowed, so this is a warning and not a failed create.
             log.warning("bridge.group_fwd_mask_failed", bridge=name, error=str(exc))
 
+    # ------------------------------------------------------------------
+    # Open vSwitch
+    # ------------------------------------------------------------------
+    # A second kind of segment, for labs that need OpenFlow, OVSDB, or the
+    # per-port QoS a Linux bridge has no concept of. Deliberately a
+    # separate set of verbs rather than a flag on bridge.create: the
+    # Linux-bridge path carries every existing lab and must not acquire a
+    # branch it did not have before.
+    #
+    # Everything goes through ovs-vsctl rather than OVSDB's socket
+    # directly. It is the supported interface, it is idempotent with
+    # --may-exist / --if-exists, and it is what a user typing into the
+    # node's shell will use, so the lab and the docs agree.
+
+    OVS_TIMEOUT = "5"
+
+    def _ovs(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run ovs-vsctl with a timeout.
+
+        The timeout matters: with ovs-vswitchd stopped, ovs-vsctl blocks
+        forever waiting for the database rather than failing, which would
+        hang netd's single request loop and take every lab with it.
+        """
+        return subprocess.run(
+            ["ovs-vsctl", f"--timeout={self.OVS_TIMEOUT}", *args],
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    #: The init script openvswitch-common ships. Starting the daemons this
+    #: way handles the database create-or-upgrade for us.
+    OVS_CTL = "/usr/share/openvswitch/scripts/ovs-ctl"
+
+    def _ovs_start(self) -> str | None:
+        """Start ovsdb-server and ovs-vswitchd. Returns an error, or None.
+
+        The container image has no init system, so nothing brings these up
+        the way systemd does on a source or ISO install. Rather than make
+        the user exec in and start them, netd does it the first time a lab
+        asks for an OVS segment. Idempotent — ovs-ctl no-ops if they run.
+        """
+        if not Path(self.OVS_CTL).exists():
+            return "openvswitch is installed but ovs-ctl is missing"
+        self._ovs_reset_unreachable_daemons()
+        try:
+            started = subprocess.run(
+                [self.OVS_CTL, "--system-id=random", "start"],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:  # noqa: BLE001
+            return f"could not start openvswitch: {exc}"
+        if started.returncode != 0:
+            return (started.stderr or started.stdout or "ovs-ctl start failed").strip()[:200]
+        # ovs-ctl exits 0 even when it could not insert the kernel module and
+        # therefore never started the switch daemon. ovsdb-server alone is
+        # worse than nothing: `add-br` writes the bridge into the database,
+        # then blocks waiting for a datapath that will never appear, so the
+        # symptom is a timeout rather than a missing module.
+        if not self._vswitchd_running():
+            return (
+                "ovs-vswitchd did not start — the openvswitch kernel module is "
+                "not loaded. Run `sudo modprobe openvswitch` on the host "
+                "(netd cannot: a container has no /lib/modules), and "
+                "`echo openvswitch | sudo tee /etc/modules-load.d/openvswitch.conf` "
+                "to make it survive a reboot."
+            )
+        return None
+
+    #: Where the daemons keep their pidfiles and control sockets.
+    OVS_RUNDIR = Path("/var/run/openvswitch")
+
+    #: The two daemons, by the name they report in /proc/<pid>/comm.
+    OVS_DAEMONS = frozenset({"ovsdb-server", "ovs-vswitchd"})
+
+    def _ovs_reset_unreachable_daemons(self) -> None:
+        """Clear out any OVS daemon we cannot talk to, then let ovs-ctl start.
+
+        Only ever called once `ovs-vsctl` has already failed, so by
+        definition nothing reachable is running and anything still alive is
+        in the way.
+
+        Two states get us here. The simple one is a dead process with a
+        pidfile left behind, which ovs-ctl reads and reports as "already
+        running" before starting nothing.
+
+        The subtle one only happens in the container image. netd shares
+        labnet's PID namespace, so the daemons — started detached — are
+        reparented to labnet's PID 1 and SURVIVE a netd restart. But netd
+        comes back with a fresh mount of its rootfs, so it sees a new
+        /var/run/openvswitch while those daemons are still listening on the
+        old one. The pidfile is valid, the process is alive, the socket file
+        exists, and connecting to it gives ECONNREFUSED forever. Killing
+        them is the only way back, and it is safe: a lab's OVS bridges live
+        in the kernel datapath and are re-created from the database, and we
+        only signal processes whose comm is one of ours.
+        """
+        if not self.OVS_RUNDIR.is_dir():
+            return
+        for pidfile in sorted(self.OVS_RUNDIR.glob("*.pid")):
+            try:
+                pid = int(pidfile.read_text().strip())
+            except (OSError, ValueError):
+                with contextlib.suppress(OSError):
+                    pidfile.unlink()
+                continue
+            comm = Path(f"/proc/{pid}/comm")
+            try:
+                alive_as = comm.read_text().strip()
+            except OSError:
+                alive_as = ""
+            if alive_as in self.OVS_DAEMONS:
+                log.warning("ovs.killing_unreachable_daemon", pid=pid, comm=alive_as)
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                pidfile.unlink()
+        # Sockets named after a pid that is gone, plus the database socket
+        # itself — ovsdb-server refuses to bind over a leftover one.
+        for sock in list(self.OVS_RUNDIR.glob("*.ctl")) + list(self.OVS_RUNDIR.glob("db.sock")):
+            with contextlib.suppress(OSError):
+                sock.unlink()
+
+    @staticmethod
+    def _vswitchd_running() -> bool:
+        """Is ovs-vswitchd alive?
+
+        Read from /proc rather than shelling out to pgrep, which the image
+        does not ship.
+        """
+        for comm in Path("/proc").glob("[0-9]*/comm"):
+            try:
+                if comm.read_text().strip() == "ovs-vswitchd":
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def ovs_available(self) -> dict[str, Any]:
+        """Whether this host can serve OVS segments, and why not if it cannot.
+
+        Called by the API before it offers the kind, so a user gets a
+        reason at create time instead of a broken lab. Starts the daemons
+        if they are installed but not running, which is the normal state
+        in the container image.
+        """
+        if shutil.which("ovs-vsctl") is None:
+            return {"available": False, "reason": "ovs-vsctl is not installed"}
+        try:
+            probe = self._ovs("show", check=False)
+        except OSError as exc:  # noqa: BLE001
+            return {"available": False, "reason": str(exc)}
+        if probe.returncode != 0:
+            failed_to_start = self._ovs_start()
+            if failed_to_start:
+                return {"available": False, "reason": failed_to_start}
+            log.info("ovs.started")
+            probe = self._ovs("show", check=False)
+        if probe.returncode != 0:
+            return {
+                "available": False,
+                "reason": (probe.stderr or probe.stdout or "ovs-vsctl failed").strip()[:200],
+            }
+        version = self._ovs("--version", check=False).stdout.splitlines()
+        return {"available": True, "version": version[0].strip() if version else ""}
+
+    def ovs_bridge_create(self, name: str) -> dict[str, Any]:
+        """Create an OVS bridge, idempotently.
+
+        `fail-mode=standalone` is set explicitly. OVS defaults a bridge
+        with no controller to standalone (it behaves like a learning
+        switch), but a bridge that HAS had a controller set and lost it
+        falls back to secure and drops everything — a lab that silently
+        stops forwarding after someone experiments with ovs-ofctl. Being
+        explicit means the default is the one a lab wants.
+        """
+        if shutil.which("ovs-vsctl") is None:
+            raise NetdFault("EINVAL", "ovs-vsctl is not installed on this host")
+        # The link-realise path reaches here without going through
+        # ovs_available, so bring the daemons up here too rather than
+        # failing on a lab that is merely starting for the first time.
+        if self._ovs("show", check=False).returncode != 0:
+            failed = self._ovs_start()
+            if failed:
+                raise NetdFault("EINTERNAL", failed)
+        try:
+            self._ovs("--may-exist", "add-br", name)
+            self._ovs("set", "bridge", name, "fail-mode=standalone")
+        except FileNotFoundError as exc:
+            raise NetdFault("EINVAL", "ovs-vsctl is not installed on this host") from exc
+        except subprocess.CalledProcessError as exc:
+            raise NetdFault("EINTERNAL", (exc.stderr or "").strip()[:200] or "ovs add-br failed")
+        # Bring the internal port up; OVS creates it down, and a down
+        # bridge forwards nothing while looking entirely healthy.
+        with contextlib.suppress(Exception):
+            with IPRoute() as ipr:
+                ipr.link("set", index=_lookup(ipr, name), state="up")
+        return {"name": name}
+
+    def ovs_bridge_delete(self, name: str) -> dict[str, Any]:
+        try:
+            self._ovs("--if-exists", "del-br", name)
+        except FileNotFoundError:
+            # Nothing to delete if OVS was never here.
+            return {}
+        except subprocess.CalledProcessError as exc:
+            raise NetdFault("EINTERNAL", (exc.stderr or "").strip()[:200] or "ovs del-br failed")
+        return {}
+
+    def _is_ovs_bridge(self, name: str) -> bool:
+        """Does OVS own this bridge?
+
+        Used to route iface.attach to the right mechanism. Returns False
+        whenever OVS is absent or unhealthy rather than raising, so a host
+        without OVS behaves exactly as it did before this existed.
+        """
+        if shutil.which("ovs-vsctl") is None:
+            return False
+        try:
+            return self._ovs("br-exists", name, check=False).returncode == 0
+        except OSError:
+            return False
+
     def bridge_delete(self, name: str) -> dict[str, Any]:
         return self.iface_delete(name)
 
@@ -445,6 +670,29 @@ class PyrouteNet:
         return {"bridges": fixed_bridges, "ports": fixed_ports}
 
     def iface_attach(self, name: str, bridge: str) -> dict[str, Any]:
+        # Which mechanism depends on who owns the bridge, and netd can just
+        # ask. Deciding here rather than passing the network kind down from
+        # the API keeps attach_iface's signature — and every runtime that
+        # calls it — exactly as it was.
+        if self._is_ovs_bridge(bridge):
+            try:
+                self._ovs("--may-exist", "add-port", bridge, name)
+            except subprocess.CalledProcessError as exc:
+                raise NetdFault(
+                    "EINTERNAL", (exc.stderr or "").strip()[:200] or "ovs add-port failed"
+                )
+            # A port added to an OVS bridge stays down until told otherwise,
+            # and an admin-down port is the single most confusing way for a
+            # lab link to not work.
+            with contextlib.suppress(Exception):
+                with IPRoute() as ipr:
+                    ipr.link("set", index=_lookup(ipr, name), state="up")
+            # No group_fwd_mask here: that is a Linux-bridge attribute. OVS
+            # has no equivalent knob and does not swallow the reserved range
+            # the way a Linux bridge does, so link-local frames already
+            # cross an OVS segment without help.
+            return {"ovs": True}
+
         with IPRoute() as ipr:
             try:
                 ipr.link("set", index=_lookup(ipr, name), master=_lookup(ipr, bridge))
@@ -456,6 +704,16 @@ class PyrouteNet:
         return {}
 
     def iface_detach(self, name: str) -> dict[str, Any]:
+        # An OVS port is not a netlink master relationship, so clearing
+        # master would succeed and change nothing while OVS kept forwarding.
+        # Ask OVS which bridge holds it, if any.
+        if shutil.which("ovs-vsctl") is not None:
+            holder = self._ovs("port-to-br", name, check=False)
+            if holder.returncode == 0 and holder.stdout.strip():
+                with contextlib.suppress(subprocess.CalledProcessError):
+                    self._ovs("--if-exists", "del-port", holder.stdout.strip(), name)
+                return {"ovs": True}
+
         with IPRoute() as ipr:
             try:
                 ipr.link("set", index=_lookup(ipr, name), master=0)

@@ -99,7 +99,7 @@ class NodeDetail(NodeOut):
 
 class NetworkCreate(BaseModel):
     name: str
-    kind: Literal["bridge", "cloud", "vxlan", "nat"] = "bridge"
+    kind: Literal["bridge", "cloud", "vxlan", "nat", "ovs"] = "bridge"
     #: For `cloud`, the host NIC to enslave (see GET /system/host-interfaces).
     cloud_ref: str | None = None
     #: Required to bind a cloud to the NIC carrying the host's default route,

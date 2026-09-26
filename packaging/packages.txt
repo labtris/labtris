@@ -84,3 +84,6 @@ traceroute
 dnsutils
 ethtool
 tshark
+# openvswitch-switch: backs the `ovs` network kind — OpenFlow and OVSDB in
+#   a lab, which a Linux bridge cannot do. Inert until a lab asks for it.
+openvswitch-switch

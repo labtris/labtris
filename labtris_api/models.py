@@ -34,7 +34,7 @@ node_state_enum = ENUM(
     create_type=False,
 )
 network_kind_enum = ENUM(
-    "bridge", "cloud", "vxlan", "nat", name="network_kind", create_type=False
+    "bridge", "cloud", "vxlan", "nat", "ovs", name="network_kind", create_type=False
 )
 runtime_kind_enum = ENUM(
     "docker",

@@ -176,6 +176,33 @@ async def create_network(
             net.host_ifname = body.cloud_ref
             await session.commit()
 
+    if body.kind == "ovs":
+        # Refuse early and explain, rather than creating a row whose segment
+        # silently never forwards. ovs-vswitchd not running is by far the
+        # most common cause and is not obvious from a dead link.
+        probe_ovs = await netd.call("ovs.available", {})
+        if not probe_ovs.get("available"):
+            await session.delete(net)
+            await session.commit()
+            raise runtime_error(
+                "Open vSwitch is not usable on this host: "
+                f"{probe_ovs.get('reason') or 'unknown'}. "
+                "Install openvswitch-switch and make sure ovs-vswitchd is running."
+            )
+        net.host_ifname = await try_allocate_ifname(
+            session, "bridge", net.id, device_hint(net.name)
+        )
+        await session.commit()
+        try:
+            await netd.call("ovs.bridge_create", {"name": net.host_ifname})
+        except NetdError as exc:
+            await session.delete(net)
+            await session.commit()
+            raise runtime_error(
+                f"creating OVS bridge for {net.name!r}: {exc.message}"
+            ) from exc
+        await session.commit()
+
     if body.kind in ("bridge", "nat") or (body.kind == "cloud" and not is_reuse):
         # Build the bridge up front so the object on the canvas corresponds to
         # something real, and a cloud is actually wired to its host NIC before
@@ -411,6 +438,13 @@ async def delete_network(
                     await netd.call("bridge.delete", {"name": net.host_ifname})
                 except NetdError:
                     pass
+    elif net.kind == "ovs" and net.host_ifname:
+        try:
+            # del-br takes the ports with it. The veths are reclaimed by the
+            # ifname registry, exactly as on the Linux-bridge path.
+            await netd.call("ovs.bridge_delete", {"name": net.host_ifname})
+        except NetdError:
+            pass
     elif net.host_ifname:
         try:
             await netd.call("bridge.delete", {"name": net.host_ifname})

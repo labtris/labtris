@@ -28,6 +28,53 @@ the private network — nothing reaches it that is not attached to it.
 Use it for a switch fabric, a shared LAN, anything where "three nodes on one
 wire" is the point.
 
+### Open vSwitch
+
+An OVS bridge instead of a Linux one. Everything an internal bridge does, plus
+the two things a Linux bridge has no concept of: an OpenFlow table you can
+program, and OVSDB.
+
+```
+labtris network create $LAB --name fabric --kind ovs
+```
+
+The bridge comes up in `standalone` fail-mode, so it behaves like a learning
+switch until you say otherwise. That is set explicitly rather than left to
+default: a bridge that has had a controller and lost one falls back to `secure`
+and drops every packet, which looks exactly like a broken lab.
+
+From any shell on the Labtris host, the usual tools work on it:
+
+```
+ovs-vsctl show                                   # bridges and ports
+ovs-ofctl dump-flows <bridge>                    # the flow table
+ovs-ofctl dump-ports <bridge>                    # per-port counters
+ovs-ofctl add-flow <bridge> "priority=100,icmp,actions=drop"
+ovs-ofctl del-flows <bridge> icmp
+```
+
+Point it at a controller — Faucet, Ryu, ONOS, whatever you are learning — with
+`ovs-vsctl set-controller <bridge> tcp:10.0.0.5:6653`.
+
+<Note>
+**One host prerequisite.** OVS needs the `openvswitch` kernel module. On a
+source or ISO install the package's service loads it for you. In the container
+install netd cannot — a container has no `/lib/modules` — so load it once on
+the host:
+
+```
+sudo modprobe openvswitch
+echo openvswitch | sudo tee /etc/modules-load.d/openvswitch.conf
+```
+
+Without it, creating an `ovs` network fails and tells you this. It does not
+half-work.
+</Note>
+
+Impairment, capture and VLANs are not wired to OVS segments yet; those act on a
+Linux bridge's devices. Use an internal bridge when you want them, and OVS when
+you want the flow table.
+
 ### NAT
 
 A bridge with a gateway address on it and masquerading behind it. Guests reach

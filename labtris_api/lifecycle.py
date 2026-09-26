@@ -333,6 +333,36 @@ async def _ensure_bridge(name: str) -> None:
             raise
 
 
+async def _ensure_segment(net: Network) -> None:
+    """Create the host device backing a lab segment, whichever kind it is.
+
+    Only `ovs` diverges. vxlan and cloud have their own paths above and do
+    not come through here — a stretched segment needs a Linux bridge for
+    the vxlan interface to enslave into, so OVS is not offered for those.
+    """
+    if not net.host_ifname:
+        return
+    if net.kind == "ovs":
+        await netd.call("ovs.bridge_create", {"name": net.host_ifname})
+        return
+    await netd.call("bridge.create", {"name": net.host_ifname})
+
+
+async def _drop_segment(net: Network) -> None:
+    """Remove it again, tolerating its already being gone."""
+    if not net.host_ifname:
+        return
+    try:
+        if net.kind == "ovs":
+            # del-br removes the ports with it; the veths themselves are
+            # cleaned up by the ifname registry sweep, as with a bridge.
+            await netd.call("ovs.bridge_delete", {"name": net.host_ifname})
+            return
+    except NetdError:
+        pass
+    await _drop_iface(net.host_ifname)
+
+
 def _vni_for(network_id: str) -> int:
     """Deterministic VNI from the network id — stays in the 24-bit VXLAN VNI
     space and away from 0."""
@@ -798,7 +828,7 @@ async def realize_link_if_running(session: AsyncSession, link: Link) -> None:
         net.host_ifname = await try_allocate_ifname(
             session, "bridge", net.id, device_hint(net.name)
         )
-        await netd.call("bridge.create", {"name": net.host_ifname})
+        await _ensure_segment(net)
         await session.commit()
     for iface, node in ((a, node_a), (b, node_b)):
         if not iface.host_ifname:
@@ -975,7 +1005,7 @@ async def delete_lab(session: AsyncSession, lab: Lab) -> None:
             # take the host's uplink with it.
             pass
         elif net.host_ifname:
-            await _drop_iface(net.host_ifname)
+            await _drop_segment(net)
         await session.delete(net)
     rows = await session.execute(
         select(IfnameRegistry).where(IfnameRegistry.owner_id.in_(owner_ids))

@@ -10,6 +10,9 @@ VERBS = frozenset(
         "bridge.create",
         "bridge.delete",
         "bridge.list",
+        "ovs.available",
+        "ovs.bridge_create",
+        "ovs.bridge_delete",
         "tap.create",
         "tap.delete",
         "iface.attach",
@@ -101,6 +104,9 @@ class NetOps(Protocol):
         up: bool = True,
     ) -> dict[str, Any]: ...
     def netns_links(self, pids: dict[str, int]) -> dict[str, Any]: ...
+    def ovs_available(self) -> dict[str, Any]: ...
+    def ovs_bridge_create(self, name: str) -> dict[str, Any]: ...
+    def ovs_bridge_delete(self, name: str) -> dict[str, Any]: ...
     def tc_set(self, name: str, spec: dict[str, Any]) -> dict[str, Any]: ...
     def tc_read(self, name: str) -> dict[str, Any]: ...
     def iface_inspect(self, names: list[str]) -> dict[str, Any]: ...
@@ -367,6 +373,12 @@ def _call(verb: str, params: dict[str, Any], net: NetOps) -> dict[str, Any]:
             _require_ifname(params.get("name")),
             _require_ifname(params.get("peer"), "peer"),
         )
+    if verb == "ovs.available":
+        return net.ovs_available()
+    if verb == "ovs.bridge_create":
+        return net.ovs_bridge_create(_require_ifname(params.get("name")))
+    if verb == "ovs.bridge_delete":
+        return net.ovs_bridge_delete(_require_ifname(params.get("name")))
     if verb == "netns.links":
         pids = params.get("pids")
         if not isinstance(pids, dict) or not pids:

@@ -39,6 +39,11 @@ class Plan:
     nodes: list[PlannedNode] = field(default_factory=list)
     links: list[PlannedLink] = field(default_factory=list)
     networks: list[str] = field(default_factory=list)
+    #: name -> network kind, for the few segments that are not a plain
+    #: Linux bridge. A side-table rather than a richer `networks` element
+    #: so that every existing producer and consumer of `networks` is
+    #: unaffected; anything absent here is a bridge.
+    network_kinds: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -104,8 +109,15 @@ def parse_clab(text: str) -> Plan:
 
         if kind in CLAB_SEGMENTS:
             # A clab bridge is a segment, not a node — it becomes one here too.
+            # `ovs-bridge` used to be flattened to a plain Linux bridge, which
+            # quietly dropped the reason someone chose it. It maps to an OVS
+            # segment now; if the host has no working Open vSwitch the create
+            # fails with a reason, which beats a lab that is subtly not what
+            # the file asked for.
             segments[str(raw_name)] = name
             plan.networks.append(name)
+            if kind == "ovs-bridge":
+                plan.network_kinds[name] = "ovs"
             continue
 
         runtime = CLAB_KINDS.get(kind)
