@@ -27,13 +27,35 @@ die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "run this as root (\`sudo bash\`, or pipe into \`sudo bash\`)"
 
-# The installer targets Ubuntu 24.04 specifically — dependency versions are
-# pinned to what noble ships. Refusing loudly rather than failing on a
-# missing package six minutes in is the polite thing to do.
+# The native installer targets Ubuntu 24.04 specifically — dependency
+# versions are pinned to what noble ships. Refusing loudly rather than
+# failing on a missing package six minutes in is the polite thing to do.
+#
+# 26.04 gets its own message rather than the generic one, because the two
+# reasons it cannot work yet are concrete and neither is the user's fault:
+# resolute ships Python 3.14 while this tree is pinned to >=3.12,<3.13,
+# and Guacamole is not packaged for resolute at all, so the VNC and RDP
+# consoles have nothing to install. The container install has neither
+# problem — it carries its own Python 3.12 and pulls guacd as an image —
+# so that is where 26.04 users are pointed.
 if [ "$FORCE_OS" != 1 ]; then
   . /etc/os-release 2>/dev/null || true
+  if [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = "26.04" ]; then
+    die "Ubuntu 26.04 is supported through the container install, not this one.
+
+       curl -fsSL https://raw.githubusercontent.com/labtris/labtris/main/docker-compose.yml \\
+         | docker compose -f - up -d
+
+       The native install cannot work on resolute yet: it ships Python
+       3.14 and Labtris is pinned to 3.12, and Guacamole is not packaged
+       there so the VNC and RDP consoles have nothing to install. The
+       container install carries both itself.
+       Set LABTRIS_FORCE_OS=1 to attempt it anyway."
+  fi
   if [ "${ID:-}" != ubuntu ] || [ "${VERSION_ID:-}" != "24.04" ]; then
     die "this installer wants Ubuntu 24.04; found ${PRETTY_NAME:-unknown}.
+       The container install runs on any distribution with Docker:
+         https://docs.labtris.com/reference/docker
        Set LABTRIS_FORCE_OS=1 to try anyway (nothing about the rest is
        Ubuntu-specific, but the package set is pinned to noble)."
   fi

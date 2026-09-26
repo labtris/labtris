@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Install Labtris on Ubuntu 24.04. Idempotent: safe to re-run over an existing
+# Install Labtris on Ubuntu 24.04 (26.04: use the container install — see
+# get.sh for why). Idempotent: safe to re-run over an existing
 # install, which is what makes it usable both as the ISO's late-command and as
 # the upgrade path on a machine somebody already provisioned by hand.
 #

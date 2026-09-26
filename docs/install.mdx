@@ -1,6 +1,6 @@
 ---
 title: "Install"
-description: "One line on Ubuntu 24.04, Docker on any Linux host, or the ISO for bare metal."
+description: "One line on Ubuntu 24.04, Docker on any Linux host including 26.04, or the ISO for bare metal."
 ---
 
 Labtris is server software. It runs on a Linux machine, boots your containers
@@ -14,11 +14,24 @@ is installed on the machines people use it from.
 | **CPU** | x86-64. Virtualisation extensions if you want QEMU nodes to run at useful speed |
 | **RAM** | 8 GB is a comfortable floor. Each QEMU guest wants what its image wants; containers want almost nothing |
 | **Disk** | 40 GB plus whatever your images take. A desktop OS image is 2–6 GB |
-| **OS** | Ubuntu 24.04, which is what the installer produces |
+| **OS** | Ubuntu 24.04 for the one-line installer and the ISO. Any Linux with Docker for the container install — including Ubuntu 26.04, which the native installer does not support (see below) |
 
 Labtris will run without hardware virtualisation — QEMU falls back to software
 emulation — but a guest that boots in twelve seconds with KVM can take four
 minutes without it.
+
+## Ubuntu 26.04
+
+Use the container install. The native installer and the ISO cannot work
+on 26.04 yet, for two reasons that are nothing to do with the emulator:
+
+* **Python.** 26.04 ships 3.14; this tree is pinned to `>=3.12,<3.13`.
+* **Guacamole.** It is not packaged for resolute at all, so the VNC and
+  RDP consoles have nothing to install.
+
+The container install has neither problem — it carries its own Python
+3.12 and pulls `guacamole/guacd` as an image. Verified end to end on
+Ubuntu 26.04.1, kernel 7.0.0-31.
 
 ## One line, on a fresh Ubuntu 24.04 machine
 

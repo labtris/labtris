@@ -38,8 +38,32 @@ VERSION=${VERSION:-dev}
 OUT=${OUT:-$ROOT/dist/labtris-${VERSION}-${ARCH}.iso}
 LABEL=${LABEL:-LABTRIS}
 #: Ubuntu codename matching RELEASE, used for the clean base the package set
-#: is resolved against.
-SUITE=${SUITE:-noble}
+#: is resolved against. Derived from RELEASE rather than defaulted
+#: separately: the two were independent before, so `RELEASE=26.04.1
+#: ./build.sh` would have fetched a resolute ISO and then resolved its
+#: package set against noble, which fails in ways that look like a broken
+#: mirror rather than a wrong codename.
+case "${RELEASE%.*}" in
+  24.04) SUITE_DEFAULT=noble ;;
+  24.10) SUITE_DEFAULT=oracular ;;
+  25.04) SUITE_DEFAULT=plucky ;;
+  25.10) SUITE_DEFAULT=questing ;;
+  26.04) SUITE_DEFAULT=resolute ;;
+  *)     SUITE_DEFAULT="" ;;
+esac
+SUITE=${SUITE:-$SUITE_DEFAULT}
+[ -n "$SUITE" ] || die "no codename known for Ubuntu ${RELEASE%.*}; set SUITE= explicitly"
+
+# 26.04 is not buildable yet, and the reason is not the ISO machinery: the
+# package set in packaging/packages.txt names python3.12 and the Guacamole
+# libraries, and resolute has neither — it ships Python 3.14 and does not
+# package Guacamole at all. Left as an explicit refusal rather than a
+# build that fails an hour in on an apt resolve.
+if [ "${RELEASE%.*}" = "26.04" ] && [ "${FORCE_SUITE:-0}" != 1 ]; then
+  die "Ubuntu 26.04 ISOs are not buildable yet: packages.txt needs python3.12
+       (resolute ships 3.14) and guacd/libguac-* (not packaged for resolute).
+       Use the container install on 26.04. FORCE_SUITE=1 to try anyway."
+fi
 APT_MIRROR=${APT_MIRROR:-http://archive.ubuntu.com/ubuntu/}
 
 say()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
