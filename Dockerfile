@@ -105,6 +105,13 @@ COPY migrations  /opt/labtris/migrations
 # frontend container.
 COPY --from=webbuild /web/dist /opt/labtris/web/dist
 
+# Image build recipes (vyos and friends) and the serial-console bootstrap
+# step files they reference. 24K, and without them the documented
+# `docker compose exec api sh /opt/labtris/recipes/vyos.sh` has nothing to
+# run — there is no other way to build an image that ships only as an
+# installer ISO.
+COPY packaging/recipes /opt/labtris/recipes
+
 # Non-root user for the API (matches the ISO's `labtris` user).
 # netd itself still needs root for netlink; the compose file overrides
 # `user:` for that container.

@@ -48,6 +48,14 @@ def internal(message: str, detail: dict[str, Any] | None = None) -> ApiError:
     return ApiError("internal", message, 500, detail)
 
 
+def unsupported(message: str, detail: dict[str, Any] | None = None) -> ApiError:
+    """This build can never do it — not "not right now", and not the caller's
+    fault, so neither 400 nor 409 fits. Used for the features that need to
+    reconfigure the host's own network stack, which a containerised Labtris
+    has no access to."""
+    return ApiError("unsupported_deployment", message, 501, detail)
+
+
 def envelope(code: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "detail": detail or {}}}
 

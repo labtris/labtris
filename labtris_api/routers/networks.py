@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import User, get_current_user
+from labtris_api.config import settings
 from labtris_api.db import get_session
 from labtris_api.errors import (
     bad_request,
@@ -16,6 +17,7 @@ from labtris_api.errors import (
     not_found,
     runtime_error,
     unprocessable,
+    unsupported,
 )
 from labtris_api.lifecycle import (
     bind_cloud,
@@ -100,6 +102,20 @@ async def create_network(
 
     is_reuse = False
     if body.kind == "cloud":
+        if not settings.host_network_features:
+            # The "host" here is a container namespace holding eth0 and
+            # nothing else, so there is no real NIC to enslave — and
+            # enslaving eth0 would cut the instance off the network for no
+            # gain. Say that plainly rather than building a bridge that
+            # bridges nothing.
+            await session.delete(net)
+            await session.commit()
+            raise unsupported(
+                "cloud networks need access to the host's own interfaces, "
+                "which this deployment does not have. Use a nat network for "
+                "outbound access, or run Labtris from the ISO or from source "
+                "if a lab has to share a physical segment."
+            )
         if not body.cloud_ref:
             raise bad_request("a cloud network needs cloud_ref, the host NIC to bind")
         # Ask netd whether the picker chose a bare NIC or an OS-owned bridge.

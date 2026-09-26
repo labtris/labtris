@@ -1,6 +1,6 @@
 ---
 title: "Install"
-description: "One line on Ubuntu 24.04, or the ISO for bare metal."
+description: "One line on Ubuntu 24.04, Docker on any Linux host, or the ISO for bare metal."
 ---
 
 Labtris is server software. It runs on a Linux machine, boots your containers
@@ -37,6 +37,34 @@ The whole thing takes about five minutes on a machine with a route out.
 Nothing about the install is secret to the script — it is
 `packaging/install-labtris.sh` in this repo, invoked by
 `get.sh`, and you can read both before running either.
+
+## With Docker, on any Linux host
+
+If the machine already runs Docker and has working KVM, this is the
+shortest path and the easiest to upgrade — a tag bump rather than a
+reinstall.
+
+```
+$ git clone https://github.com/labtris/labtris && cd labtris
+$ docker compose up -d
+```
+
+Every Labtris process shares one private container namespace, so the lab
+bridges, taps and nftables rules land there rather than on the machine's
+own network stack — `ip link` on the host stays exactly as you left it.
+
+Two things it will not do, both because of that isolation: `cloud`
+networks, which put a lab on a physical segment by enslaving a real NIC,
+and the management-network settings that rewrite the host's netplan. Both
+answer with an explanation rather than failing obscurely. It also needs
+`/dev/kvm` and refuses to start without it, rather than falling back to
+software emulation at a speed nobody wants.
+
+Docker Desktop on macOS and Windows is not a supported path — there is no
+`/dev/kvm` to give it. Run a Linux VM instead.
+
+Full detail, including how to get images in and what each container is for,
+is in [Install with Docker](/reference/docker).
 
 ## From the ISO
 

@@ -86,6 +86,7 @@
       "pages": [
         "cli",
         "cli-profiles",
+        "reference/docker",
         "reference/install-from-source",
         "reference/building-the-iso"
       ]

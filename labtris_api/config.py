@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     #: unrestricted arguments to a process on this host, which is a very
     #: different trust level from the rest of the node options.
     qemu_allow_extra_args: bool = False
+    #: Whether this deployment can reconfigure the HOST's own network stack.
+    #: True for the ISO and a source install, where netd runs in the host
+    #: namespace. The container image sets it false: everything there shares
+    #: one private namespace (see docker-compose.yml), so `cloud` networks —
+    #: which enslave a real host NIC — and the netplan endpoints under
+    #: /api/v1/system have nothing real to act on. Enslaving the container's
+    #: own eth0 would take the instance off the network to no purpose.
+    host_network_features: bool = True
     #: Where the built SPA lives. Empty means "the web/dist beside the
     #: source tree", which is right for a source checkout and wrong for
     #: an installed wheel: main.py derives it from __file__, so in

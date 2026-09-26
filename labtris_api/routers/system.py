@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import User, get_current_user, require_admin
+from labtris_api.config import settings
 from labtris_api.db import get_session
-from labtris_api.errors import bad_request
+from labtris_api.errors import bad_request, unsupported
 from labtris_api.models import Template
 from labtris_api.naming import IFACE_SCHEMES
 from labtris_api.netd_client import netd
@@ -332,6 +333,12 @@ async def apply_management_network(
     the response body — nginx and the API layer both live at the old
     address for a fraction of a second and then move. Retry the browser at
     the new URL from the confirmation modal."""
+    if not settings.host_network_features:
+        raise unsupported(
+            "this deployment cannot reconfigure the host's network: it runs in "
+            "a private namespace, so writing /etc/netplan would change nothing. "
+            "Configure the host's own networking outside Labtris."
+        )
     from labtris_api.netd_client import NetdError
 
     payload: dict[str, Any] = {
@@ -380,6 +387,12 @@ async def apply_uplink_bridges(
     network) is refused up front — the netd write is atomic and cannot
     unwind a partial state, so the check happens here rather than
     ping-ponging errors between the two layers."""
+    if not settings.host_network_features:
+        raise unsupported(
+            "this deployment cannot reconfigure the host's network: it runs in "
+            "a private namespace, so writing /etc/netplan would change nothing. "
+            "Configure the host's own networking outside Labtris."
+        )
     from labtris_api.models import Network
     from labtris_api.netd_client import NetdError
 

@@ -178,6 +178,13 @@ services:
       # real topology, so this deployment requires working KVM and says
       # so rather than quietly crawling.
       LABTRIS_QEMU_ACCEL: kvm
+      # Refuse the features that would need the host's own network stack:
+      # `cloud` networks enslave a real NIC, and the netplan endpoints under
+      # /api/v1/system rewrite the host's addressing. In here the only NIC
+      # is this namespace's eth0, so both would either do nothing or cut the
+      # instance off the network. They return 501 with an explanation
+      # instead of half-working.
+      LABTRIS_HOST_NETWORK_FEATURES: "false"
       # Duplicated from the Dockerfile on purpose. The settings in
       # labtris_api/config.py derive these from $HOME, and there is no
       # USER instruction in the image, so the unset defaults resolve

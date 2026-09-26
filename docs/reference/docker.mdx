@@ -1,0 +1,267 @@
+---
+title: "Install with Docker"
+description: "One compose file on a Linux host with KVM: how the containers share a network namespace, where images live, and what this install cannot do."
+---
+
+`docker compose up -d` on a Linux host with KVM. This is the shortest path
+to a working Labtris and the easiest to upgrade — a tag bump instead of
+reimaging — but it is not a way to run Labtris on a laptop. Read
+[Requirements](#requirements) before starting.
+
+## Quick start
+
+```sh
+$ git clone https://github.com/labtris/labtris && cd labtris
+$ docker compose up -d
+$ ssh -L 8080:127.0.0.1:8080 you@labhost     # from your workstation
+```
+
+Then open `http://localhost:8080` and complete the first-run wizard, which
+creates the administrator account.
+
+Ports publish on `127.0.0.1` by default. That is deliberate: until the
+wizard has been completed there is no account, so an instance reachable
+from the internet can be claimed by whoever finds it first. Widen only
+once you have an admin, and prefer a private or VPN address:
+
+```sh
+$ LABTRIS_BIND=100.101.102.103 docker compose up -d
+```
+
+<Note>
+`2222` is frequently taken already by a second sshd. `LABTRIS_SSH_PORT=2223
+docker compose up -d` moves the SSH proxy's published port; the proxy
+itself is off unless `LABTRIS_SSH_PROXY_ENABLED=true`.
+</Note>
+
+## Requirements
+
+| | |
+|---|---|
+| Host OS | Linux. Kernel 5.3 or newer. |
+| Virtualisation | `/dev/kvm` must exist **and work**. |
+| Docker | Engine 24+ with the compose plugin. |
+| Disk | 20GB for the images plus whatever your labs need. |
+
+The compose file maps `/dev/kvm` unconditionally, so on a host without it
+the `api` container fails to start. That is the intended behaviour: QEMU
+under TCG software emulation is too slow to run a real topology, and a lab
+that boots and then crawls is worse than one that refuses to boot.
+
+Nested virtualisation deserves care. `/dev/kvm` being present and `kvm-ok`
+reporting success is **not** sufficient — some cloud VMs hang on first vcpu
+run anyway. Verify by booting one node before building a topology on top.
+
+### Docker Desktop on macOS and Windows will not work
+
+There is no `/dev/kvm` to map. The shared-namespace design below needs
+Linux namespace semantics that Docker Desktop's VM does not reproduce, and
+the "host" whose namespace matters would be that VM rather than your
+machine. KSM memory dedup across many guests is unavailable, and `cloud`
+networks are meaningless. If you want Labtris on a laptop, run a Linux VM
+and install [from source](/reference/install-from-source) or from the ISO.
+
+## How it fits together
+
+Six containers, of which one does nothing:
+
+| Service | What it is |
+|---|---|
+| `labnet` | Owns the shared network and PID namespace. Idle. |
+| `api` | FastAPI, the web UI, and every QEMU process. |
+| `netd` | The only process that touches netlink. Privileged. |
+| `dind` | A private Docker daemon for container nodes. |
+| `guacd` | VNC and RDP console backend. |
+| `postgres` | Labtris state. |
+
+### Why `labnet` exists
+
+Three processes have to agree on one network namespace. `netd` creates the
+lab bridges and taps; `api` launches QEMU with `-netdev tap,ifname=...`,
+which can only open a tap that exists in its *own* namespace; and `guacd`
+dials a VM's VNC on `127.0.0.1:5901+`, which only resolves where QEMU is
+listening.
+
+The obvious way to make them agree is `network_mode: host`. That works, and
+it also puts lab bridges, nftables rules and sysctl changes on the machine
+Labtris happens to be installed on — which is not a reasonable thing for a
+container install to do to its host.
+
+So `labnet` holds a namespace and everything else joins it with
+`network_mode: "service:labnet"`, the way containers in a Kubernetes pod
+share one. A container that joins another's namespace cannot declare its
+own ports, which is why the published ports are on `labnet`. The PID
+namespace is shared too, so `netd` can resolve a container node's pid to
+`/proc/<pid>/ns/net` when it moves a veth into it.
+
+Consequences worth knowing:
+
+- **Lab networks are invisible from the host.** That is the point, but it
+  means `ip link` on the host tells you nothing about a running lab. Use
+  `docker compose exec netd ip link` instead.
+- **Restarting `labnet` tears down the namespace** and everything that
+  joined it must restart too. Prefer `docker compose restart` over
+  restarting one service.
+- `netd` is still privileged, but now only within that namespace rather
+  than the host's.
+
+### Why container nodes get their own Docker daemon
+
+Bind-mounting `/var/run/docker.sock` would be simpler and is wrong three
+times over: guest containers would land in host-side namespaces where
+`netd` cannot wire them, they would survive `docker compose down`, and the
+mount hands root on the host to anything that can reach the API.
+
+The cost is a second image store, so an image used both by the host and by
+a lab node is pulled twice. It lives in the `dind-storage` volume.
+
+## Images
+
+Base images are content-addressed and shared; each node gets a
+`qemu-img create -b` overlay, so one copy of Ubuntu serves twenty nodes.
+
+Four ways to get an image in:
+
+**The built-in catalog.** CirrOS, Ubuntu cloud images, Debian, Fedora,
+Cumulus VX and others download on first use. Nothing to configure.
+
+**The web UI.** Settings → Images → Upload. Admin only.
+
+**A file you already have.** Drop it in `./images/` next to the compose
+file, then register it:
+
+```sh
+$ docker compose exec api labtris-image add /images/vmx.qcow2 \
+    --name "Juniper vMX" --ram-mb 4096 --cpus 2
+```
+
+Nothing watches that directory — the `add` is what creates a template.
+
+**A build recipe**, for images that only exist as an installer ISO:
+
+```sh
+$ docker compose exec api sh /opt/labtris/recipes/vyos.sh
+```
+
+### Where it all lives
+
+| Volume | Holds | Why separate |
+|---|---|---|
+| `labtris-images` | Base images | Large and expensive to re-download |
+| `labtris-state` | Node disks, pods, session secret | |
+| `dind-storage` | Container images for lab nodes | |
+| `postgres-data` | Labs, users, topology | |
+
+`labtris-images` is deliberately its own volume so that `docker compose
+down -v` to reset a database does not also discard tens of gigabytes of
+qcow2.
+
+<Warning>
+The image sets these paths explicitly via `LABTRIS_QEMU_IMAGE_CACHE_DIR`
+and friends. Do not unset them. The settings default to paths under
+`$HOME`, and because the API runs as root in the container that resolves
+to `/root` — inside the writable layer, where the next `docker pull`
+discards every image, every node disk, and the session secret that keeps
+users logged in.
+</Warning>
+
+## Reaching things
+
+**The web UI, the REST API, RESTCONF and every console** are all on the one
+published port, 8080. Consoles are WebSockets through the same port, so
+there is nothing extra to expose: serial over a Unix socket, container
+shells over `docker exec`, VNC and RDP through `guacd`.
+
+**A node's own serial console or shell** over SSH, if you enable the proxy:
+
+```sh
+$ ssh -p 2222 leaf-1@labhost      # username is the node name
+```
+
+**Lab nodes reaching the internet** need a `nat` network. Attach a node to
+one and it gets a DHCP lease and a masqueraded route out. See
+[Networking](/networking).
+
+**A web page served by a lab node** is the one thing with no good answer
+yet, in this install or any other — Labtris has no port-forwarding. The
+options today are pointing the node's RDP/VNC console at the guest,
+`POST /nodes/{id}/console/exec` to run `curl` inside it, or an `ssh -L`
+tunnel to the lab host, which works on a `nat` network because the host
+holds the gateway address.
+
+## What this install cannot do
+
+Both of these return HTTP 501 with an explanation rather than
+half-working, because the container has no access to the host's network
+stack:
+
+- **`cloud` networks**, which enslave a real host NIC so a lab shares a
+  physical segment. The only interface in the namespace is its own `eth0`,
+  and enslaving that would cut the instance off the network. Use a `nat`
+  network for outbound access.
+- **The management-network and uplink-bridge settings** under
+  `/api/v1/system`, which rewrite the host's `/etc/netplan`. Configure the
+  host's networking outside Labtris.
+
+If a lab genuinely has to sit on a physical segment, install
+[from source](/reference/install-from-source) or from the ISO.
+
+Two further differences from the ISO, both by choice rather than
+limitation. There is no nginx in front of the API, so if you want TLS put
+your own reverse proxy in front of port 8080. And the Wireshark GUI is not
+in the default image, because it is roughly 400MB of X11 that most
+installs never open — build it in if you want it:
+
+```sh
+$ docker build --build-arg WITH_WIRESHARK=true -t labtris-local .
+```
+
+Packet capture itself is unaffected; it uses tcpdump, which is included.
+
+## Upgrading
+
+```sh
+$ docker compose pull && docker compose up -d
+```
+
+Database migrations run on boot. Images and node state are on volumes and
+survive. Take a [snapshot](/snapshots) first if a lab matters to you.
+
+## Verifying the install
+
+`packaging/docker-e2e.sh` runs the whole thing end to end — container nodes
+wired through `dind` and pinging over a lab bridge, a NAT node taking a
+DHCP lease and reaching the internet, and a QEMU node running under KVM
+with its tap attached — then checks that no lab device leaked to the host
+namespace.
+
+```sh
+$ ./packaging/docker-e2e.sh
+```
+
+It creates a lab, asserts, and deletes it. `KEEP=1` leaves the lab behind
+for inspection.
+
+## Troubleshooting
+
+**`api` will not start, "no such file or directory: /dev/kvm"** — the host
+has no KVM. See [Requirements](#requirements); there is no supported
+software-emulation mode.
+
+**`failed to bind host port 127.0.0.1:2222: address already in use`** —
+something else holds 2222. `LABTRIS_SSH_PORT=2223 docker compose up -d`.
+
+**A QEMU node starts and immediately stops** — read the guest's own log:
+
+```sh
+$ docker compose exec api sh -c 'tail -40 /var/lib/labtris/qemu-vms/*/qemu.log'
+```
+
+**A lab's interfaces are missing from `ip link`** — expected. They are in
+`labnet`'s namespace: `docker compose exec netd ip link`.
+
+**The VNC or RDP console tab fails to connect** — check `guacd`:
+
+```sh
+$ docker compose ps guacd && docker compose logs guacd --tail 30
+```
