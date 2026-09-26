@@ -965,11 +965,25 @@ async def import_topology(
         raise bad_request("that topology has no nodes we could import")
 
     lab, warnings = await realize_plan(session, plan)
+
+    adoption: dict[str, Any] | None = None
+    if body.adopt_clab:
+        if kind != "clab":
+            raise bad_request("adopt_clab only applies to a containerlab topology")
+        from labtris_api.clab_adopt import adopt
+
+        adoption = await adopt(session, lab.id, body.adopt_clab)
+        if adoption["missing"]:
+            warnings = [*warnings,
+                        "not deployed by containerlab, imported as defined: "
+                        + ", ".join(adoption["missing"])]
+
     detail = await get_lab_detail(lab.id, session, None)
     return {
         "lab": detail.model_dump(),
         "warnings": warnings,
         "source": kind,
+        "adopted": adoption,
         "imported": {"nodes": len(plan.nodes), "links": len(plan.links),
                      "networks": len(plan.networks)},
     }

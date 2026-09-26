@@ -510,6 +510,12 @@ class TopologyImportIn(BaseModel):
     name: str | None = None
     #: Force a parser instead of detecting one: "clab" or "unl".
     format: str | None = None
+    #: clab only. The topology has already been deployed by containerlab
+    #: inside this instance's namespace, so bind the imported nodes to the
+    #: containers it started instead of starting new ones. The value is the
+    #: `name:` from the .clab.yml, which is what clab prefixes its container
+    #: names with.
+    adopt_clab: str | None = None
 
 
 class UnlImportIn(BaseModel):

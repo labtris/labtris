@@ -50,14 +50,32 @@ The containers land on Labtris's own dind — the same daemon that runs
 container nodes — and the veths land in labnet's namespace, visible from
 netd.
 
-## What is still missing
+## Reconciliation
 
-Only the reconciliation. Labtris has no idea any of it happened: the
-nodes exist as containers and the links exist as veths, but no lab row
-owns them, so nothing appears on the canvas. Both halves of the bridge
-already exist — `parse_clab` in `labtris_api/migrate.py` reads the same
-topology file, and the runtime already speaks to that dockerd — but
-nothing binds a deployed container to a `Node.runtime_ref`.
+`POST /labs/import/topology` takes `adopt_clab: "<name from the .clab.yml>"`.
+It builds the lab from the topology the ordinary way, then binds each node
+to the container containerlab already started — `clab-<lab>-<node>` on the
+same dockerd — setting `runtime_ref` and `state=running` rather than
+starting anything.
+
+Measured on a live instance:
+
+```
+"adopted": { "adopted": ["n1", "n2"], "missing": [], "clab_lab": "spike" }
+
+nodes:
+  n1 running ref=c9569c31605c
+  n2 running ref=d105521c2f8a
+links: 1
+```
+
+The canvas draws it like any other lab, and `console/exec` on an adopted
+node returns `n1` — Labtris is executing inside containerlab's container,
+so the binding is live rather than cosmetic.
+
+A node in the file that clab did not deploy is left in `defined` and named
+in a warning. A topology can legitimately describe more than was brought
+up, and a half-adopted lab is still worth having.
 
 ## Two things the spike turned up
 
