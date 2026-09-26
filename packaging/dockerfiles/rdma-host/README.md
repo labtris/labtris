@@ -63,14 +63,45 @@ having:
 * `ib_send_bw` connects and exchanges RoCEv2 IPv4 GIDs
   (`::ffff:10.88.0.1`).
 
-### What to try next
+### A newer kernel does not fix it — tested
 
-A newer kernel. rxe's namespace handling has had fixes since 6.8, and
-Ubuntu 24.04 offers `linux-image-generic-hwe-24.04` (7.0.x at the time of
-writing). If `netns exclusive` places the device inside the namespace on
-that kernel, the rest of this should fall into place — the Labtris side
-(device passthrough, per-node naming, the RoCEv2 GID index) is already
-done and verified.
+An earlier version of this file suggested trying a newer kernel, on the
+theory that rxe's namespace handling had improved since 6.8. It has not.
+
+Tested in a QEMU guest on **Ubuntu 26.04.1 LTS, kernel 7.0.0-31**, same
+experiment, same result: devices create and report ACTIVE bound to the
+right netdev, `ibv_devinfo` lists them from inside each namespace,
+`ib_send_bw` connects and exchanges RoCEv2 IPv4 GIDs, and then no
+bandwidth row ever appears and no UDP 4791 packet reaches the wire.
+
+Two things 7.0 does differently, neither of which helps:
+
+* In `shared` mode a device IS now visible from inside the namespace that
+  created it, showing its own netdev. On 6.8 the namespace saw nothing.
+* `rdma system set netns exclusive` still fails while any other network
+  namespace exists — and on a modern systemd host one always does,
+  because `polkitd` runs with `PrivateNetwork=yes`. Stopping polkit lets
+  the setting through, after which rxe still places the device on the
+  host and a second namespace's add fails with ENFILE
+  ("Too many open files in system").
+
+`siw` (SoftiWARP) was tried as an alternative transport, with and without
+`-R`. Same outcome.
+
+So this is not a kernel-version problem and not something Labtris can fix
+from above. Two Linux network namespaces doing soft-RDMA to each other
+does not work with the in-tree soft transports as they stand.
+
+### What this image is for, then
+
+Learning the RDMA userspace: `rdma link`, `ibv_devinfo`, the verbs API,
+what a queue pair and a GID index are, and reading RoCEv2 addressing.
+All of that works. Running an actual RDMA transfer between two lab nodes
+does not, and nothing on the Labtris side is what is stopping it.
+
+For a lab that puts real, inspectable frames on a real wire today, use
+the `ue-stack` nodes instead — see
+`packaging/demo-pods/rdma-uet-demo.pod.tar.gz`.
 
 ## Host prerequisite: rdma_rxe
 
