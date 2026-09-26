@@ -10,7 +10,7 @@ has an MCP tool wrapper — so a Claude Code or Cursor session drives your lab
 the way it edits a file. No node limit, no licence server, no account, and
 the installer needs no internet at all.
 
-Apache-2.0. Self-hosted. Installs from a USB stick onto a machine that has never
+MIT. Self-hosted. Installs from a USB stick onto a machine that has never
 been online.
 
 ## Why it exists
@@ -240,4 +240,7 @@ tests/           306 tests: unit, plus acceptance against a real Postgres
 
 ## Licence
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+MIT. See [`LICENSE`](LICENSE).
+
+The LabStack plugins that add cloud and SaaS API emulation on top of
+Labtris are separate products and are not MIT licensed.

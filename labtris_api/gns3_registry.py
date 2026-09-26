@@ -7,7 +7,7 @@ port-naming convention the guest uses. That is almost exactly what Labtris's
 own catalogue holds, written down 228 times by people who tested it.
 
 We read the format; we do not ship the files. The registry is GPL-3.0 and
-Labtris is Apache-2.0 — a format is not copyrightable, but bundling those files
+Labtris is MIT — a format is not copyrightable, but bundling those files
 into this distribution would pull GPL obligations onto them. So an import is
 something a user asks for, pointing at a directory or a URL they chose.
 
