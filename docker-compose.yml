@@ -136,6 +136,16 @@ services:
     volumes:
       - dind-storage:/var/lib/docker
       - dind-sock:/dockersock
+      # Soft-RoCE. libibverbs reaches a device through
+      # /dev/infiniband/uverbsN, and a container gets a private /dev that
+      # never has it. dind must see the host's copy before it can pass it
+      # on to an rdma-host node. Bind, not `devices:`, because the uverbs
+      # node for a given rxe device does not exist until that device is
+      # created — which happens inside a running lab node, long after
+      # this file is read. Harmless when the host has no RDMA at all:
+      # Docker creates an empty directory and rdma-host nodes report the
+      # device as missing rather than failing to start.
+      - /dev/infiniband:/dev/infiniband
     restart: unless-stopped
 
   # -------------------------------------------------------------------

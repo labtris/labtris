@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import structlog
 import aiodocker
 from aiodocker.exceptions import DockerError
 
@@ -18,6 +20,8 @@ from labtris_api.runtime.base import (
     StopMode,
 )
 from labtris_api.runtime.containers import BASE_CAPS, profile_for
+
+log = structlog.get_logger(__name__)
 
 
 def _docker() -> aiodocker.Docker:
@@ -100,12 +104,31 @@ class DockerRuntime:
             # writes into them and the container reads on start. No shared
             # cache: each node has its own copy so editing one node's
             # program never touches another's.
+            binds: list[str] = []
             if profile is not None and profile.per_node_mounts:
-                binds: list[str] = []
                 for subdir, container_path in profile.per_node_mounts:
                     host_dir = _per_node_dir(spec.node_id, subdir)
                     binds.append(f"{host_dir}:{container_path}:rw")
+            # Shared host paths, bound unconditionally.
+            #
+            # Not guarded by an existence check, because the path has to
+            # exist on the DOCKER DAEMON's filesystem and this code runs in
+            # the API process. In the container install those are different
+            # machines as far as the filesystem is concerned — the api
+            # container has no /dev/infiniband no matter what dind has — so
+            # checking here skipped the bind exactly when it was needed.
+            #
+            # If the daemon has no such path Docker creates an empty
+            # directory, and the node comes up reporting "0 HCAs found".
+            # That is a diagnosable state; a silently missing bind is not.
+            if profile is not None and profile.host_mounts:
+                for host_path, container_path in profile.host_mounts:
+                    binds.append(f"{host_path}:{container_path}:rw")
+            if binds:
                 host_config["Binds"] = binds
+            if profile is not None and profile.device_cgroup_rules:
+                host_config["DeviceCgroupRules"] = list(profile.device_cgroup_rules)
+            if profile is not None and profile.per_node_mounts:
                 # Seed a bmv2 node's /p4 with basic_switch.p4 on first
                 # create, so a drag-and-drop from the palette produces
                 # a switch that actually boots rather than one whose

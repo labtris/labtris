@@ -58,6 +58,22 @@ class ContainerImage:
     #: this same mechanism.
     per_node_mounts: tuple[tuple[str, str], ...] = ()
 
+    #: Host paths bind-mounted straight through, each `(host_path,
+    #: container_path)`. Unlike per_node_mounts these are shared, not
+    #: per-node, and are skipped silently when the host path is absent.
+    #:
+    #: Only user is /dev/infiniband, which soft-RoCE needs: libibverbs
+    #: opens /dev/infiniband/uverbsN to reach a device, and a container
+    #: gets a private /dev that never contains it. A bind of the whole
+    #: directory rather than a Docker `--device` per node, because the
+    #: uverbs node for a given rxe device does not exist until that
+    #: device is created — which happens after the container is running.
+    host_mounts: tuple[tuple[str, str], ...] = ()
+    #: cgroup device rules needed to actually use the above, as
+    #: `(type, major, minor, perms)`. A bind mount makes the node visible;
+    #: the device cgroup still has to permit opening it.
+    device_cgroup_rules: tuple[str, ...] = ()
+
 
 CONTAINER_CATALOG: dict[str, ContainerImage] = {
     image.id: image
@@ -213,6 +229,11 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
                 "Local build — see packaging/dockerfiles/rdma-host/"
                 "README.md (Dockerfile in this repo)"
             ),
+            # 231 is the infiniband_verbs char major (uverbsN), 10 is misc
+            # (rdma_cm). Without both rules the bind mount is visible and
+            # every open() returns EPERM.
+            host_mounts=(("/dev/infiniband", "/dev/infiniband"),),
+            device_cgroup_rules=("c 231:* rwm", "c 10:* rwm"),
             notes=(
                 "Ubuntu + rdma-core + perftest, all baked in — starts "
                 "in ~1 s with `ib_send_bw` / `rdma` on PATH. Host "
