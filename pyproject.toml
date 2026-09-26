@@ -62,9 +62,9 @@ dependencies = [
   "jmespath==1.0.1",
 ]
 
-# `botocore` is no longer a core dep — moved to `labstack-aws` which is
+# `botocore` is no longer a core dep — moved to `labtris-aws` which is
 # where the AWS SigV4 re-signing lives. Users who want AWS emulation:
-# `pip install labstack-aws`.
+# `pip install labtris-aws`.
 
 [project.optional-dependencies]
 dev = [
@@ -104,9 +104,9 @@ build-backend = "setuptools.build_meta"
 include = ["labtris_api*", "labtris_netd*", "labtris_mcp*", "labtris_client*", "labtris_cli*", "ue_stack*"]
 
 # Plugin declarations moved out. The AWS surface now lives in the
-# separate `labstack-aws` repo (github.com/labtris/labstack-aws) and
+# separate `labtris-aws` repo (github.com/labtris/labtris-aws) and
 # registers itself via its own `labtris.plugins` entry point when
-# `pip install labstack-aws` runs. The core discovers plugins at
+# `pip install labtris-aws` runs. The core discovers plugins at
 # labtris-api startup via `labtris_api/plugins.py:load_plugins`;
 # no core-side changes are needed to add or remove plugins.
 

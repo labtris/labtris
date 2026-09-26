@@ -3,8 +3,8 @@
 Living roadmap. Delete items as they land in `git log`.
 
 Sibling roadmaps:
-- **[labstack-aws/TODO.md](https://github.com/labtris/labstack-aws/blob/master/TODO.md)** — 141 AWS services (12 verified real, 6 real-backing, ~18 persistent, ~99 façade)
-- `labstack-azure`, `labstack-gcp`, `labstack-oci`, `labstack-saas` — skeletons only
+- **[labtris-aws/TODO.md](https://github.com/labtris/labtris-aws/blob/master/TODO.md)** — 141 AWS services (12 verified real, 6 real-backing, ~18 persistent, ~99 façade)
+- `labtris-azure`, `labtris-gcp`, `labtris-oci`, `labtris-saas` — skeletons only
 
 ---
 
@@ -113,7 +113,7 @@ three surfaces work; what follows is what the verification turned up.
 ## Web UI
 
 - [ ] **Cloud resources as canvas objects** — resources created via
-      `aws` CLI (labstack-aws) appear in the labtris canvas as
+      `aws` CLI (labtris-aws) appear in the labtris canvas as
       first-class objects, not just SDK endpoints. Blocks the "LocalStack
       but visual" pitch.
 - [ ] **Console tabs per lab** — currently one tab per node; a lab-level
@@ -127,7 +127,7 @@ three surfaces work; what follows is what the verification turned up.
 ## Networking / runtime
 
 - [ ] **VyOS firewall compiler** — `authorize-security-group-ingress`
-      from labstack-aws compiles to real VyOS config on the in-path
+      from labtris-aws compiles to real VyOS config on the in-path
       firewall node. Requires a `firewall` node kind (pluggable, VyOS
       as reference impl), NOT nftables at netd.
 - [ ] **NETCONF over SSH subsystem** — bolt onto the K1 asyncssh server
@@ -140,14 +140,14 @@ three surfaces work; what follows is what the verification turned up.
 
 ---
 
-## LabStack family (sibling plugins)
+## Labtris family (sibling plugins)
 
 Each is a separate repo under `github.com/labtris/`:
 
-- [ ] **labstack-azure** — ARM API surface, at least Storage/Cosmos/AKS
-- [ ] **labstack-gcp** — Compute/Storage/BigQuery/GKE
-- [ ] **labstack-oci** — Compute/Object Storage
-- [ ] **labstack-saas** — wrap [WonderTwin](https://github.com/WonderTwin-AI/wondertwin)
+- [ ] **labtris-azure** — ARM API surface, at least Storage/Cosmos/AKS
+- [ ] **labtris-gcp** — Compute/Storage/BigQuery/GKE
+- [ ] **labtris-oci** — Compute/Object Storage
+- [ ] **labtris-saas** — wrap [WonderTwin](https://github.com/WonderTwin-AI/wondertwin)
       for Stripe/Twilio/GitHub/Slack twins
 
 ---

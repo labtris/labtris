@@ -43,7 +43,7 @@
 #     should never be the thing that dies, but `docker compose restart`
 #     is the safe move rather than restarting one service.
 #
-# labstack-aws (LocalStack alternative) is opt-in; see the note at the
+# labtris-aws (LocalStack alternative) is opt-in; see the note at the
 # bottom.
 
 services:
@@ -220,9 +220,9 @@ services:
     restart: unless-stopped
 
   # -----------------------------------------------------------------
-  # Optional: labstack-aws (LocalStack alternative, 148 AWS services),
+  # Optional: labtris-aws (LocalStack alternative, 148 AWS services),
   # shipped as a plugin that registers itself on api boot. Swap the api
-  # image for the -aws tag built by the labstack-aws repo:
+  # image for the -aws tag built by the labtris-aws repo:
   #
   #   image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}-aws
   # -----------------------------------------------------------------
