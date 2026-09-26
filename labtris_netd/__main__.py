@@ -62,6 +62,10 @@ async def handle(
             pass
 
 
+def log_startup_warning(exc: Exception) -> None:
+    print(f"netd: group_fwd reconcile skipped: {exc}", flush=True)
+
+
 def _relax_bridge_netfilter() -> None:
     """Linux bridges used as a lab dataplane must not be hijacked by iptables."""
     for name in (
@@ -83,6 +87,12 @@ async def serve(
         sock.unlink()
     _relax_bridge_netfilter()
     net = PyrouteNet()
+    # Repair bridges that predate the group_fwd_mask change, so upgrading
+    # fixes a running lab instead of requiring it to be rebuilt.
+    try:
+        net.reconcile_group_fwd()
+    except Exception as exc:  # noqa: BLE001 - never block startup on this
+        log_startup_warning(exc)
     servers = [await asyncio.start_unix_server(lambda r, w: handle(r, w, net), path=path)]
     # netd runs as root; the API does not. 0660 root:root means the API cannot
     # connect at all, which shows up as a permission error on every call rather

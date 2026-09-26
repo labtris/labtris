@@ -410,6 +410,40 @@ class PyrouteNet:
             log.warning("bridge.port_group_fwd_mask_failed",
                         port=name, error=str(exc))
 
+    def reconcile_group_fwd(self) -> dict[str, Any]:
+        """Apply the forwarding masks to bridges that already exist.
+
+        The masks are otherwise only set when a bridge is created and when a
+        port is enslaved, so upgrading netd left every already-running lab
+        still eating LACP, EAPOL and LLDP — the fix appeared to do nothing
+        unless you rebuilt the topology. netd calls this at startup so an
+        upgrade repairs labs in place.
+        """
+        fixed_bridges, fixed_ports = [], []
+        with IPRoute() as ipr:
+            links = ipr.get_links()
+            by_index = {l["index"]: l for l in links}
+            for link in links:
+                attrs = dict(link["attrs"])
+                name = attrs.get("IFLA_IFNAME", "")
+                if not IFNAME_RE.match(name):
+                    continue
+                info = attrs.get("IFLA_LINKINFO")
+                kind = dict(info["attrs"]).get("IFLA_INFO_KIND") if info else None
+                if kind == "bridge":
+                    self._forward_link_local(ipr, link["index"], name)
+                    fixed_bridges.append(name)
+                elif attrs.get("IFLA_MASTER") in by_index:
+                    # Enslaved to something; only bother if the master is one
+                    # of ours, so a stray host bridge is left alone.
+                    master = dict(by_index[attrs["IFLA_MASTER"]]["attrs"])
+                    if IFNAME_RE.match(master.get("IFLA_IFNAME", "")):
+                        self._port_forward_link_local(ipr, link["index"], name)
+                        fixed_ports.append(name)
+        log.info("bridge.group_fwd_reconciled",
+                 bridges=len(fixed_bridges), ports=len(fixed_ports))
+        return {"bridges": fixed_bridges, "ports": fixed_ports}
+
     def iface_attach(self, name: str, bridge: str) -> dict[str, Any]:
         with IPRoute() as ipr:
             try:
