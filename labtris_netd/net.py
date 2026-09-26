@@ -11,8 +11,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import structlog
 from pyroute2 import IPRoute
 from pyroute2.netlink.exceptions import NetlinkError
+
+log = structlog.get_logger(__name__)
 
 from labtris_netd.protocol import IFNAME_RE
 from labtris_netd.verbs import NetdFault
@@ -317,7 +320,33 @@ class PyrouteNet:
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc
             idx = _lookup(ipr, name)
+            self._forward_link_local(ipr, idx, name)
             return {"index": idx}
+
+    #: Forward every reserved 01:80:C2:00:00:0X frame the kernel will let us.
+    #:
+    #: A bridge consumes all sixteen of those addresses by default, which is
+    #: correct for a switch and wrong for a wire. Every Labtris link IS a
+    #: bridge with two ports, so the default silently ate the control plane
+    #: of anything that uses that range: 802.1X never authenticated and LLDP
+    #: neighbours never appeared, with no error anywhere to explain it.
+    #:
+    #: Bits 0-2 (STP, 802.3x PAUSE, LACP) are refused by the kernel —
+    #: BR_GROUPFWD_RESTRICTED — because a bridge is supposed to terminate
+    #: them. 0xFFF8 is therefore "everything that is actually permitted", and
+    #: labbing STP or LACP between two guests needs a bridgeless veth link
+    #: rather than a mask.
+    GROUP_FWD_ALL = 0xFFF8
+
+    def _forward_link_local(self, ipr: IPRoute, idx: int, name: str) -> None:
+        try:
+            ipr.link("set", index=idx, kind="bridge",
+                     br_group_fwd_mask=self.GROUP_FWD_ALL)
+        except NetlinkError as exc:
+            # Old kernels without IFLA_BR_GROUP_FWD_MASK, or a value they
+            # dislike. The bridge still works; only the link-local protocols
+            # stay swallowed, so this is a warning and not a failed create.
+            log.warning("bridge.group_fwd_mask_failed", bridge=name, error=str(exc))
 
     def bridge_delete(self, name: str) -> dict[str, Any]:
         return self.iface_delete(name)
@@ -356,12 +385,40 @@ class PyrouteNet:
     def tap_delete(self, name: str) -> dict[str, Any]:
         return self.iface_delete(name)
 
+    #: Per-port forwarding mask. The bridge-wide knob refuses STP, PAUSE and
+    #: LACP outright; the per-port one refuses only PAUSE
+    #: (BR_GROUPFWD_MACPAUSE), so setting it here is what actually lets a
+    #: guest run spanning tree or LACP across a Labtris link.
+    #:
+    #: 0xFFFD is every reserved 01:80:C2:00:00:0X address except :01. PAUSE
+    #: is excluded by the kernel and there is no sensible way around that —
+    #: "stop transmitting" refers to the wire it arrived on, so forwarding it
+    #: would tell the wrong device to stop.
+    #:
+    #: Set over netlink via IPRoute.brport(). Two other routes look like they
+    #: work and do not: `link("set", kind="bridge_slave",
+    #: brport_group_fwd_mask=...)` is accepted by pyroute2 and silently
+    #: dropped, so it reads back as 0; and sysfs is read-only here, because a
+    #: container that joins another container's network namespace gets /sys
+    #: mounted ro regardless of privileged.
+    PORT_FWD_ALL = 0xFFFD
+
+    def _port_forward_link_local(self, ipr: IPRoute, idx: int, name: str) -> None:
+        try:
+            ipr.brport("set", index=idx, group_fwd_mask=self.PORT_FWD_ALL)
+        except Exception as exc:  # noqa: BLE001 - never fail an attach for this
+            log.warning("bridge.port_group_fwd_mask_failed",
+                        port=name, error=str(exc))
+
     def iface_attach(self, name: str, bridge: str) -> dict[str, Any]:
         with IPRoute() as ipr:
             try:
                 ipr.link("set", index=_lookup(ipr, name), master=_lookup(ipr, bridge))
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc
+        # Only meaningful once the port belongs to a bridge.
+        with IPRoute() as ipr:
+            self._port_forward_link_local(ipr, _lookup(ipr, name), name)
         return {}
 
     def iface_detach(self, name: str) -> dict[str, Any]:
