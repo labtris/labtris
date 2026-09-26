@@ -79,10 +79,15 @@ Two things 7.0 does differently, neither of which helps:
 * In `shared` mode a device IS now visible from inside the namespace that
   created it, showing its own netdev. On 6.8 the namespace saw nothing.
 * `rdma system set netns exclusive` still fails while any other network
-  namespace exists — and on a modern systemd host one always does,
-  because `polkitd` runs with `PrivateNetwork=yes`. Stopping polkit lets
-  the setting through, after which rxe still places the device on the
-  host and a second namespace's add fails with ENFILE
+  namespace exists, which is the practical blocker. On the Labtris host
+  that is simply the running containers — every one holds a netns, so the
+  setting can only go through with the whole stack stopped. In a bare
+  Ubuntu 26.04 VM with no containers at all it still failed, and there
+  the culprit was `polkitd`: 26.04 hardens `polkit.service` with
+  `PrivateNetwork=yes`, so the authorization daemon sits in its own empty
+  network namespace. (24.04 does not — `PrivateNetwork=no` there.)
+  Stopping polkit lets the setting through, after which rxe still places
+  the device on the host and a second namespace's add fails with ENFILE
   ("Too many open files in system").
 
 `siw` (SoftiWARP) was tried as an alternative transport, with and without
