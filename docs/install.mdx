@@ -45,9 +45,13 @@ shortest path and the easiest to upgrade — a tag bump rather than a
 reinstall.
 
 ```
-$ git clone https://github.com/labtris/labtris && cd labtris
-$ docker compose up -d
+$ curl -fsSL https://raw.githubusercontent.com/labtris/labtris/main/docker-compose.yml \
+    | docker compose -f - up -d
 ```
+
+That is the whole install — the image is public, so there is nothing to
+clone and no registry login. Clone the repo instead if you want to
+sideload your own images or run the end-to-end check.
 
 Every Labtris process shares one private container namespace, so the lab
 bridges, taps and nftables rules land there rather than on the machine's

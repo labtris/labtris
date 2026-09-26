@@ -10,10 +10,20 @@ reimaging — but it is not a way to run Labtris on a laptop. Read
 
 ## Quick start
 
+One command, nothing cloned, no registry login — the image is public:
+
+```sh
+$ curl -fsSL https://raw.githubusercontent.com/labtris/labtris/main/docker-compose.yml \
+    | docker compose -f - up -d
+$ ssh -L 8080:127.0.0.1:8080 you@labhost     # from your workstation
+```
+
+Or clone first, which you want anyway if you plan to sideload images from
+`./images` or run the end-to-end check:
+
 ```sh
 $ git clone https://github.com/labtris/labtris && cd labtris
 $ docker compose up -d
-$ ssh -L 8080:127.0.0.1:8080 you@labhost     # from your workstation
 ```
 
 Then open `http://localhost:8080` and complete the first-run wizard, which
