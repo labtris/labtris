@@ -5,15 +5,69 @@
 # Then http://localhost:8080. Default login is set on first-run through
 # the web setup wizard.
 #
-# What's here:
-#   * postgres — Labtris state
-#   * netd    — the only process that touches netlink (privileged, host net)
-#   * api     — FastAPI + web UI, spawns QEMU + docker guest containers
+# ---------------------------------------------------------------------
+# Why there is a `labnet` container that does nothing
+# ---------------------------------------------------------------------
+# Labtris needs several processes to agree on one network namespace:
 #
-# labstack-aws (LocalStack alternative) is opt-in; uncomment the block
-# at the bottom and it registers itself as a plugin on api boot.
+#   * netd creates the lab bridges, taps and veths
+#   * the api launches QEMU with `-netdev tap,ifname=...`, which can only
+#     open a tap that exists in its OWN namespace
+#   * guacd dials a VM's VNC on 127.0.0.1:5901+, which only resolves in
+#     the namespace QEMU is listening in
+#
+# The obvious way to make them agree is `network_mode: host`, and that is
+# what this file used to do for netd. It is also wrong twice over: the
+# api was left on the default bridge network, so the taps netd made were
+# in a namespace QEMU could not see and no QEMU node could get a NIC at
+# all — and it put lab bridges, nftables rules and sysctl changes on the
+# host, which is not a reasonable thing for a container install to do to
+# the machine it lands on.
+#
+# So `labnet` owns a namespace and every other service joins it with
+# `network_mode: "service:labnet"`. A container that joins another's
+# namespace cannot declare its own ports, which is why the published
+# ports live on labnet. It shares its PID namespace too, so netd can
+# resolve a guest container's pid to /proc/<pid>/ns/net when it moves a
+# veth into it.
+#
+# Consequences worth knowing:
+#   * Lab networks are invisible from the host. That is the point, but it
+#     means `ip link` on the host shows you nothing about a running lab;
+#     use `docker compose exec netd ip link` instead.
+#   * `cloud` networks (enslaving a real host NIC into a lab segment) and
+#     the /etc/netplan endpoints under /api/v1/system cannot work here.
+#     They need the host namespace by definition.
+#   * Restarting labnet tears down the shared namespace and every service
+#     that joined it must be restarted too. It runs no workload so it
+#     should never be the thing that dies, but `docker compose restart`
+#     is the safe move rather than restarting one service.
+#
+# labstack-aws (LocalStack alternative) is opt-in; see the note at the
+# bottom.
 
 services:
+  # -------------------------------------------------------------------
+  # The namespace every Labtris process shares. Deliberately idle.
+  # -------------------------------------------------------------------
+  labnet:
+    image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}
+    command: ["sleep", "infinity"]
+    # Bound to loopback by default, matching the ISO (where uvicorn listens
+    # on 127.0.0.1 behind nginx). This matters on a public host: until the
+    # first-run wizard has been completed there is no admin account, so an
+    # instance published on 0.0.0.0 can be claimed by whoever reaches it
+    # first. Widen deliberately, ideally to a private or VPN address:
+    #   LABTRIS_BIND=100.x.y.z docker compose up -d
+    # 2222 is often already taken by a second sshd, hence the override.
+    ports:
+      - "${LABTRIS_BIND:-127.0.0.1}:${LABTRIS_HTTP_PORT:-8080}:8080"
+      - "${LABTRIS_BIND:-127.0.0.1}:${LABTRIS_SSH_PORT:-2222}:2222"
+    # Attached to the default compose network, so everything sharing this
+    # namespace resolves `postgres` by name and reaches the internet for
+    # image downloads.
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -27,56 +81,152 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
+  # -------------------------------------------------------------------
+  # The only process that touches netlink.
+  # -------------------------------------------------------------------
   netd:
-    image: ghcr.io/labtris/labtris:latest
+    image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}
     command: ["netd"]
-    # netd creates bridges + taps on the host network namespace and
-    # needs to talk netlink — running in host-network + privileged is
-    # the pragmatic path; a locked-down cap-set is a future refinement.
-    network_mode: host
+    network_mode: "service:labnet"
+    pid: "service:labnet"
+    # Still privileged, but now confined to labnet's namespace rather
+    # than the host's. netd writes /proc/sys/net/{bridge,ipv4} directly,
+    # and Docker mounts /proc/sys read-only for unprivileged containers.
+    # Dropping to cap_add: [NET_ADMIN, NET_RAW] needs those sysctls
+    # pre-set on labnet instead — see docs/reference/docker.mdx.
     privileged: true
+    depends_on:
+      labnet:
+        condition: service_started
     volumes:
       - labtris-run:/run/labtris
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # Docker runtime for container nodes — its own daemon, not the host's.
+  # -------------------------------------------------------------------
+  # Bind-mounting /var/run/docker.sock would put guest containers on the
+  # host daemon: they would land in host-side namespaces (so netd, which
+  # is not in the host namespace, could not wire them), they would
+  # survive `docker compose down`, and the mount is root on the host for
+  # anything that can reach the api. A private daemon in the shared
+  # namespace fixes all three.
+  #
+  # The cost is a second image store, so a container image used both by
+  # the host and by a lab node is pulled twice. It lives in the
+  # dind-storage volume.
+  dind:
+    image: docker:27-dind
+    network_mode: "service:labnet"
+    pid: "service:labnet"
+    privileged: true          # dockerd needs this; unavoidable for DinD
+    environment:
+      # No TLS material to generate: there is no TCP listener at all.
+      DOCKER_TLS_CERTDIR: ""
+    # A unix socket on a shared volume rather than tcp://127.0.0.1:2375.
+    # Both work over a shared namespace, but `unix://` is the branch
+    # labtris_api/runtime/docker.py already handles explicitly, and a
+    # socket file means no listening port to secure in the first place.
+    command: ["--host=unix:///dockersock/docker.sock"]
+    depends_on:
+      labnet:
+        condition: service_started
+    volumes:
+      - dind-storage:/var/lib/docker
+      - dind-sock:/dockersock
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------
+  # VNC/RDP console backend. Without this, serial consoles and container
+  # shells work but the VNC and RDP tabs fail at connect.
+  # -------------------------------------------------------------------
+  guacd:
+    image: guacamole/guacd:1.5.5
+    network_mode: "service:labnet"
+    depends_on:
+      labnet:
+        condition: service_started
     restart: unless-stopped
 
   api:
-    image: ghcr.io/labtris/labtris:latest
+    image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}
     command: ["api"]
+    network_mode: "service:labnet"
+    pid: "service:labnet"
     depends_on:
+      labnet:
+        condition: service_started
       postgres:
         condition: service_healthy
-      netd:
-        condition: service_started
+    # Deliberately NOT depends_on netd: NetdClient opens a connection per
+    # call, not at boot, so the api starts fine before netd is listening
+    # and a lab started before then fails with a clear netd error.
     environment:
       LABTRIS_DATABASE_URL: postgresql+asyncpg://labtris:labtris@postgres:5432/labtris
       LABTRIS_NETD_SOCKET:  /run/labtris/netd.sock
-      LABTRIS_QEMU_ACCEL:   kvm
-    ports:
-      - "8080:8080"    # web + REST + RESTCONF
-      - "2222:2222"    # SSH proxy (Phase K1)
+      # Guest containers go to the private daemon, not the host's.
+      # DOCKER_HOST is the same value for the `docker save` that
+      # labtris_api/pods.py shells out to (aiodocker has no binding for
+      # it), so the CLI and the library agree on one daemon.
+      LABTRIS_DOCKER_HOST: unix:///dockersock/docker.sock
+      DOCKER_HOST: unix:///dockersock/docker.sock
+      # Hardware acceleration, not software emulation. labtris_api/config.py
+      # defaults to tcg because a generic cloud VM may advertise /dev/kvm
+      # and still hang on first vcpu run, but TCG is too slow to run a
+      # real topology, so this deployment requires working KVM and says
+      # so rather than quietly crawling.
+      LABTRIS_QEMU_ACCEL: kvm
+      # Duplicated from the Dockerfile on purpose. The settings in
+      # labtris_api/config.py derive these from $HOME, and there is no
+      # USER instruction in the image, so the unset defaults resolve
+      # under /root — inside the container's writable layer, where a
+      # `docker pull` discards every base image, node overlay, saved pod
+      # and the session secret. Setting them here as well means the fix
+      # applies to the currently published :latest, not only to an image
+      # rebuilt from this tree.
+      LABTRIS_QEMU_IMAGE_CACHE_DIR: /var/lib/labtris/qemu-images
+      LABTRIS_QEMU_VM_DIR:          /var/lib/labtris/qemu-vms
+      LABTRIS_POD_DIR:              /var/lib/labtris/pods
+      LABTRIS_NODE_MOUNTS_DIR:      /var/lib/labtris/node-mounts
+      LABTRIS_SESSION_SECRET_PATH:  /var/lib/labtris/session-secret
     devices:
-      - /dev/kvm       # QEMU accel — remove for TCG-only hosts
+      # Both required. A missing /dev/kvm fails the container at start,
+      # which is the intended behaviour: a lab that boots and then runs
+      # at emulation speed is worse than one that refuses to boot.
+      # Needs a bare-metal Linux host or a VM with nested virt actually
+      # verified (`kvm-ok` reporting success is not sufficient).
+      - /dev/kvm
+      - /dev/net/tun    # QEMU opens the taps netd creates through this
+    cap_add:
+      - NET_ADMIN       # to open a tap by name
     volumes:
       - labtris-run:/run/labtris
       - labtris-state:/var/lib/labtris
-      # Labtris spawns Docker-runtime guest containers via the host
-      # daemon; the docker CLI is baked into the image but the socket
-      # has to come from the host.
-      - /var/run/docker.sock:/var/run/docker.sock
+      - labtris-images:/var/lib/labtris/qemu-images
+      - dind-sock:/dockersock
+      # Drop a .qcow2 here and register it with:
+      #   docker compose exec api labtris-image add /images/foo.qcow2 --name foo
+      # Nothing watches this directory; the add is what creates a template.
+      - ./images:/images:ro
     restart: unless-stopped
 
   # -----------------------------------------------------------------
-  # Optional: labstack-aws (LocalStack alternative, 141 AWS services).
-  # Uncomment to enable — it's shipped as a plugin, so no ports on
-  # its own; it just needs to be installed into the api container.
+  # Optional: labstack-aws (LocalStack alternative, 148 AWS services),
+  # shipped as a plugin that registers itself on api boot. Swap the api
+  # image for the -aws tag built by the labstack-aws repo:
+  #
+  #   image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}-aws
   # -----------------------------------------------------------------
-  # api-with-aws:
-  #   extends: api
-  #   image: ghcr.io/labtris/labtris:latest-aws
-  #   # ↑ built by the labstack-aws repo, adds the plugin wheel on top.
 
 volumes:
   postgres-data:
   labtris-state:
   labtris-run:
+  # Base images are large and expensive to re-download, so they get a
+  # volume of their own — `docker compose down -v` to reset a database
+  # should not also throw away tens of gigabytes of qcow2.
+  labtris-images:
+  dind-storage:
+  dind-sock:

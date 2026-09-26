@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     #: unrestricted arguments to a process on this host, which is a very
     #: different trust level from the rest of the node options.
     qemu_allow_extra_args: bool = False
+    #: Where the built SPA lives. Empty means "the web/dist beside the
+    #: source tree", which is right for a source checkout and wrong for
+    #: an installed wheel: main.py derives it from __file__, so in
+    #: site-packages it resolves to a directory that does not exist and
+    #: the mount is skipped silently — an API with no UI and no error.
+    #: The container image sets this explicitly.
+    web_dist: str = ""
     qemu_vm_dir: str = "~/.local/share/labtris/qemu-vms"
     qemu_image_cache_dir: str = "~/.cache/labtris/qemu-images"
     #: Where lab snapshots (`labtris-pod-v1.tar.gz`) are written on save

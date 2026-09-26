@@ -205,9 +205,23 @@ def create_app() -> FastAPI:
 
     load_plugins(app)
 
-    web_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+    web_dist = (
+        Path(settings.web_dist).expanduser()
+        if settings.web_dist
+        else Path(__file__).resolve().parent.parent / "web" / "dist"
+    )
     if web_dist.is_dir():
         app.mount("/", _WebStatic(directory=web_dist, html=True), name="web")
+    elif settings.web_dist:
+        # Skipping the mount is fine when nobody asked for a UI, but if a
+        # path was configured and is not there, every page is a 404 with
+        # nothing in the log to say why.
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "web.dist_missing", path=str(web_dist),
+            hint="LABTRIS_WEB_DIST is set but that directory does not exist; serving API only",
+        )
 
     return app
 

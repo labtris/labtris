@@ -951,8 +951,20 @@ async def delete_lab(session: AsyncSession, lab: Lab) -> None:
             owner_ids.append(iface.id)
             owner_ids.append(peer_owner(iface.id))
     nets = list((await session.execute(select(Network).where(Network.lab_id == lab.id))).scalars())
+    from labtris_api.nat import tear_down as nat_tear_down
+
     for net in nets:
         owner_ids.append(net.id)
+        if net.kind == "nat":
+            # Same ordering as DELETE /networks/{id}, which has always done
+            # this: the nftables masquerade and the dnsmasq are bound to the
+            # bridge by name, so they have to come down before it does.
+            # Without this the lab's dnsmasq outlives the lab and keeps
+            # 10.200.x.1:53 — and since the deleted row frees that /24 for
+            # reuse, the next NAT network is likely to be placed on the same
+            # subnet and fails with "failed to create listening socket for
+            # 10.200.0.1: Address already in use".
+            await nat_tear_down(net)
         if net.kind == "vxlan":
             # A stretched network has a bridge and a vxlan endpoint on every
             # host it spans. Dropping the local interface leaves all the

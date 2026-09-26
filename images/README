@@ -1,0 +1,3 @@
+# Drop .qcow2 / .vmdk images here, then register one with:
+#   docker compose exec api labtris-image add /images/<file> --name <name>
+# Nothing watches this directory; the `add` is what creates a template.
