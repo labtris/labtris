@@ -13,49 +13,64 @@ docker build \
   packaging/dockerfiles/rdma-host/
 ```
 
-## Status: verbs work, the data path does not
+## Status: blocked by the kernel, not by Labtris
 
-Measured on Ubuntu 24.04, kernel 6.8.0-139, September 2026. Everything up
-to and including an established RDMA connection works; the transfer
-itself does not. Read this before spending an afternoon on it.
+Measured on Ubuntu 24.04, kernel 6.8.0-139-generic, September 2026. Read
+this before spending an afternoon on it.
 
-What was verified working:
+**Soft-RoCE between two containers does not work on this kernel.** The
+cause is not Docker and not Labtris — it is `rdma_rxe`'s handling of
+network namespaces, and it reproduces with no containers involved at all:
 
-* `rdma link add <name> type rxe netdev eth1` inside a node — ACTIVE,
-  bound to the node's own veth.
-* `/dev/infiniband/uverbsN` appears on the host per device, and Labtris
-  bind-mounts that directory into `rdma-host` nodes, so the nodes see
-  each device as it is created.
-* `ibv_devinfo` inside a node lists the HCAs.
-* `ib_send_bw` connects, exchanges RoCEv2 IPv4 GIDs (`::ffff:10.88.0.1`)
-  and prints the results header.
+```bash
+rdma system set netns exclusive        # only settable when init is the
+                                       # ONLY netns, i.e. at boot
+ip netns add t
+ip link add vh type veth peer name vc && ip link set vc netns t
+ip netns exec t rdma link add rxe_ns type rxe netdev vc   # rc=0
+ip netns exec t rdma link show                            # EMPTY
+rdma link show                                            # rxe_ns is HERE
+```
 
-Where it stops: **zero RoCE packets reach the wire.** `tcpdump -i <lab
-bridge> udp port 4791` during a run captures nothing, and the benchmark
-never prints a result row.
-
-The cause is the RDMA network-namespace mode. In the default `shared`
-mode an rxe device created from inside a container lives in the *init*
-namespace while its netdev is in the container's, and the transmit path
-does not survive that split.
-
-The obvious fix does not work on this kernel. `rdma system set netns
-exclusive` can only be set when init is the only network namespace —
-i.e. at boot, before Docker starts — and once set, `rdma link add` inside
-a container fails:
+The device is created **on the host** and is invisible inside the
+namespace that asked for it, even though `rdma system show` reports
+`netns exclusive` both inside and out. A second namespace then cannot
+create its own, because the name is effectively global:
 
 ```
 rdma_rxe: rxe_newlink: failed to add eth0
-error: Too many open files in system
+rxe0: rxe_newlink: already configured on eth0
 ```
 
-with `/sys/class/infiniband/` empty inside the node, so `ibv_devinfo`
-finds nothing even when a device did get created. Remounting sysfs needs
-`CAP_SYS_ADMIN` and did not help.
+In the default `shared` mode the device is created on the host by design.
+Verbs then work — see below — but the transmit path does a route lookup
+in the *host's* namespace, which has no route to the lab subnet, so
+nothing reaches the wire. Confirmed by capturing on the node's own
+`eth1` during an `ib_send_bw` run: the TCP out-of-band exchange on port
+18515 is there, and not one UDP packet on 4791.
 
-So this image is a working RDMA *toolbox* — the tools are there, the
-device appears, verbs enumerate — and not yet a working RDMA *fabric*.
-Treat it as the starting point for that work.
+### What does work, in shared mode
+
+Everything up to the transfer, which is why the image is still worth
+having:
+
+* `rdma link add <name> type rxe netdev eth1` — ACTIVE, bound to the
+  node's veth.
+* `/dev/infiniband/uverbsN` appears per device, and Labtris bind-mounts
+  that directory into `rdma-host` nodes, so a node sees each device as it
+  is created.
+* `ibv_devinfo` inside a node lists the HCAs.
+* `ib_send_bw` connects and exchanges RoCEv2 IPv4 GIDs
+  (`::ffff:10.88.0.1`).
+
+### What to try next
+
+A newer kernel. rxe's namespace handling has had fixes since 6.8, and
+Ubuntu 24.04 offers `linux-image-generic-hwe-24.04` (7.0.x at the time of
+writing). If `netns exclusive` places the device inside the namespace on
+that kernel, the rest of this should fall into place — the Labtris side
+(device passthrough, per-node naming, the RoCEv2 GID index) is already
+done and verified.
 
 ## Host prerequisite: rdma_rxe
 
