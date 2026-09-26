@@ -294,15 +294,24 @@ class ImpairSpec(BaseModel):
     ecn: bool = False
     ecn_min_bytes: int = 50_000
     ecn_max_bytes: int = 150_000
-    #: Reserved for lossless-Ethernet DCB (Phase G3). True asks netd
-    #: to build a per-priority PFC-adjacent shape — but real 802.1Qbb
-    #: pause frames need OVS or an eBPF per-priority pause path, and
-    #: neither is wired yet. Setting this today is accepted and stored;
-    #: netd logs 'pfc requested but not implemented' and leaves the
-    #: link with only the netem+tbf+red qdiscs. The schema is stable
-    #: so a lab spec that names pfc: true will not need changing when
-    #: the runtime lands. `pfc_priorities` is the list of 802.1p PCP
-    #: values that should be lossless in the future implementation.
+    #: Lossless-Ethernet DCB, the queueing half of 802.1Qbb. This IS
+    #: implemented: netd installs a `prio` root with 8 bands
+    #: (priomap 0..7) and hangs a RED qdisc with ECN on each band named
+    #: in `pfc_priorities`; unnamed bands get the default pfifo. Under a
+    #: rate cap or netem the whole tree hangs below them, so the shape is
+    #: `tbf → prio → (red|pfifo)`. See labtris_netd/net.py
+    #: _pfc_apply_via_cli and docs/design/pfc-implementation.mdx.
+    #:
+    #: What is NOT implemented is the other half: emitting real 802.1Qbb
+    #: PAUSE frames, which needs OVS or an eBPF per-priority pause path.
+    #: netd tries `ethtool -A` and logs the EOPNOTSUPP veth returns. So
+    #: classes are isolated and ECN-marked — the part that makes RoCEv2
+    #: usable — but a sender is never explicitly told to stop.
+    #:
+    #: (This comment previously said the whole feature was unimplemented
+    #: and that netd logged 'pfc requested but not implemented'. That was
+    #: true before Phase H and has been wrong since; it is the sort of
+    #: stale note that makes someone re-build a thing that already works.)
     pfc: bool = False
     pfc_priorities: list[int] = []
 
