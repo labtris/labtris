@@ -1,0 +1,90 @@
+---
+title: "Spike: running containerlab inside Labtris"
+description: "Whether containerlab's netlink wiring lands in Labtris's namespace when the CLI runs inside the pod. It does."
+---
+
+## The question
+
+"Run your containerlab CLI and see the devices in the Labtris UI" sounds
+like a Docker API shim: expose a Docker-compatible endpoint, let the user
+point `DOCKER_HOST` at Labtris, and intercept the container calls.
+
+That does not work, and the reason is worth stating plainly.
+**containerlab does not do its wiring through Docker.** It uses the Docker
+API to create containers, then builds veth pairs and moves them into
+network namespaces over netlink, as the process running on that host. A
+shim would get you the nodes and none of the links.
+
+So the design question was narrower: if containerlab runs *inside* the
+pod — joined to the same network namespace netd owns, pointed at the same
+dockerd that runs container nodes — does its netlink wiring land where
+Labtris can see it?
+
+## Result: yes
+
+Run against a live instance, 2026-09-26. containerlab 0.79.0, two
+`linux`-kind alpine nodes, one point-to-point link:
+
+```
+docker run --rm --privileged \
+  --network container:<labnet> --pid container:<labnet> \
+  -v <project>_dind-sock:/dockersock \
+  -e DOCKER_HOST=unix:///dockersock/docker.sock \
+  ghcr.io/srl-labs/clab:latest containerlab deploy -t spike.clab.yml
+```
+
+```
+INFO Creating container name=n2
+INFO Creating container name=n1
+INFO Created link: n1:eth1 ▪┄┄▪ n2:eth1
+```
+
+The link is real, not just reported. Addresses on each `eth1`, then:
+
+```
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 0.116/0.119/0.123 ms
+```
+
+The containers land on Labtris's own dind — the same daemon that runs
+container nodes — and the veths land in labnet's namespace, visible from
+netd.
+
+## What is still missing
+
+Only the reconciliation. Labtris has no idea any of it happened: the
+nodes exist as containers and the links exist as veths, but no lab row
+owns them, so nothing appears on the canvas. Both halves of the bridge
+already exist — `parse_clab` in `labtris_api/migrate.py` reads the same
+topology file, and the runtime already speaks to that dockerd — but
+nothing binds a deployed container to a `Node.runtime_ref`.
+
+## Two things the spike turned up
+
+**Interface names do not match Labtris's naming gate.** containerlab
+creates `vethc9f7a85` and `br-3f03464b7aff`; `IFNAME_RE` accepts neither.
+That gate is what stops netd deleting `docker0` or a host NIC, so it
+should not be loosened. Either the reconciler records clab-owned devices
+as unmanaged, or the integration asks containerlab to name them — the
+first is safer.
+
+**containerlab hits the same read-only sysfs wall netd does:**
+
+```
+WARN failed to enable LLDP on docker bridge:
+     open /sys/class/net/br-.../bridge/group_fwd_mask: read-only file system
+```
+
+It warns and carries on, so LLDP is silently not enabled on its
+management bridge. Independent corroboration that a container joining
+another container's network namespace gets `/sys` mounted read-only no
+matter how privileged it is — and a reminder that the fix netd uses
+(`IPRoute.brport()` over netlink) is the one that works here.
+
+## Recommendation
+
+Ship it as `labtris clab deploy`, which runs the real binary inside the
+namespace and then imports the result through the existing `parse_clab`
+path. Describe it as "Labtris runs your containerlab topology", not "your
+containerlab CLI now drives Labtris" — the user still runs it through
+Labtris, and claiming otherwise sets up a disappointment.
