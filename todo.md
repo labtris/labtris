@@ -9,6 +9,39 @@ Sibling roadmaps:
 
 ---
 
+## Ultra Ethernet: use the reference implementation
+
+Corrected on 2026-09-27. The UE work in 0.11.0 was built without checking
+`github.com/ultraethernet` — the consortium's own org, where
+`uet-ref-prov` has existed since 2024-01-26. Three consequences:
+
+- [x] `uet-ref` node kind — UEC's reference provider (MIT), real SES/PDS/TSS,
+      four delivery modes, partial NSCC congestion control, raw socket or
+      XDP on an ordinary veth. `packaging/dockerfiles/uet-ref/`
+- [ ] **Decide the fate of `ue_stack/`.** It is a 500-line header demo:
+      no CC, no multipath, single-packet messages only, and its TPDC is
+      unreachable — nothing calls `register_tpdc()` or `rto_sweep()`, and
+      no `send_ack()` exists, so the reliable path cannot work as written.
+      It also borrows RoCEv2's UDP 4791, while real UET is its own
+      transport on protocol 253. Either retire it or keep it explicitly as
+      a teaching artifact; do not invest in making it conformant.
+- [ ] **Replace `ue-sim` with `uet-htsim`.** We package Kaima Lab's ns-3
+      fork (GPL-2.0, 13 stars, last pushed 2026-04-21). UEC ships
+      `uet-htsim` under BSD-2-Clause, aimed squarely at UET congestion
+      control. The swap also removes the only GPL component in the stack.
+- [ ] Verify the `uet-ref` image builds on the amd64 host and a pair
+      completes a transfer on a Labtris segment. Not yet done.
+- [ ] Then multipath, which upstream states is not fully supported. It
+      needs a real multi-path fabric to develop against, which is what
+      `lab generate` produces — and it is the contribution back to UEC.
+
+The spec is not gated: UE Specification 1.0.2 is a public PDF under
+CC BY-ND 4.0. Implementing from it is fine; do not paste its text or
+reproduce its tables into these repos, and note CC covers copyright, not
+patents.
+
+---
+
 ## Why this exists
 
 Labtris is a usable network lab, and it is also the instrument for a

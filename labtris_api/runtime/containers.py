@@ -193,6 +193,38 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             boot_seconds=3,
         ),
         ContainerImage(
+            id="uet-ref",
+            label="UET reference provider (UEC, real CC)",
+            image="labtris/uet-ref:latest",
+            # Raw Ethernet sockets need NET_RAW, already in BASE_CAPS.
+            # The XDP shim loads an eBPF program, which wants BPF and
+            # SYS_ADMIN; `uet` (rawsock only) runs without them, so a
+            # lab that only needs the rawsock path costs nothing extra.
+            cap_add=("BPF", "SYS_ADMIN", "SYS_RESOURCE"),
+            source=(
+                "Local build — see packaging/dockerfiles/uet-ref/README.md "
+                "(upstream: github.com/ultraethernet/uet-ref-prov, MIT)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "The Ultra Ethernet Consortium's own reference "
+                "implementation of UET, and the one to reach for: SES "
+                "with tagged and untagged messages plus RMA read/write, "
+                "PDS in two implementations, TSS with AES-GCM, all four "
+                "delivery modes (RUD, ROD, RUDI, UUD), and a partial "
+                "implementation of UET Network Signal Congestion "
+                "Control. Real packets on the container's veth over "
+                "protocol 253 — UET's own transport, so no port "
+                "collision. `UET_IFNAME=eth0 uet server <ip>` on one "
+                "node, `uet client <ip>` on another. Upstream's own "
+                "gaps: multi-path delivery is not fully supported, "
+                "there is no key exchange, and XDP still copies. The "
+                "Wireshark dissector ships at /usr/share/uet/uet.lua — "
+                "tshark has no built-in UET support without it."
+            ),
+            boot_seconds=3,
+        ),
+        ContainerImage(
             id="ue-sim",
             label="UE-Sim (Ultra Ethernet simulator on ns-3)",
             image="labtris/ue-sim:latest",
