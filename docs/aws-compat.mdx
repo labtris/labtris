@@ -45,7 +45,7 @@ Full registered surface (Phase L1 + L2 + L3):
 
 **Compute**
 - EC2 — 12 ops incl. RunInstances (real KVM boot!), Describe*, VPCs, Subnets, AZs, Security Groups
-- Lambda — function CRUD + Invoke (OpenFaaS backing declared)
+- Lambda — function CRUD + Invoke (real backing, verified)
 - ECS — cluster/task-def CRUD
 - EKS — cluster CRUD (k3s backing declared)
 - ECR — repo CRUD (Distribution backing declared)
@@ -53,28 +53,28 @@ Full registered surface (Phase L1 + L2 + L3):
 - Auto Scaling — scaling-group CRUD, SetDesiredCapacity
 
 **Storage & database**
-- S3 — service registered (MinIO backing declared — runtime proxy is L2b)
-- DynamoDB — table CRUD (Scylla Alternator backing declared)
+- S3 — service registered (real backing; runtime proxy is L2b)
+- DynamoDB — table CRUD (real backing, verified)
 - RDS — DB-instance CRUD (Postgres/MySQL/MariaDB backings declared)
 - ElastiCache — cluster CRUD (Redis/Memcached backings declared)
-- DocumentDB — cluster CRUD (MongoDB backing)
-- Neptune — cluster CRUD (Jena Fuseki backing)
-- Redshift — cluster CRUD (ClickHouse backing)
-- Timestream Write — DB/table CRUD (VictoriaMetrics backing)
+- DocumentDB — cluster CRUD (real backing)
+- Neptune — cluster CRUD (real backing)
+- Redshift — cluster CRUD (real backing)
+- Timestream Write — DB/table CRUD (real backing)
 - EFS — file-system CRUD
 
 **Messaging & streaming**
 - SQS — queue CRUD + Send/Receive/Delete messages (NATS backing declared)
 - SNS — topic CRUD + Subscribe + Publish
 - EventBridge — bus + rule CRUD + PutEvents
-- Kinesis Data Streams — stream CRUD + PutRecord (RedPanda backing declared)
+- Kinesis Data Streams — stream CRUD + PutRecord (real backing, verified)
 - Kinesis Firehose — delivery-stream CRUD (Vector backing declared)
-- MQ — broker CRUD (RabbitMQ backing declared)
-- MSK — cluster CRUD (RedPanda alias)
+- MQ — broker CRUD (real backing, verified)
+- MSK — cluster CRUD (shares the streaming backing)
 
 **Networking**
 - ELBv2 (ALB/NLB) — LB, TG, Listener CRUD, target registration (HAProxy backing declared)
-- Route 53 — hosted-zone + RRSet CRUD (CoreDNS backing declared)
+- Route 53 — hosted-zone + RRSet CRUD (real backing, verified)
 - CloudFront — distribution CRUD, invalidations (nginx backing declared)
 - API Gateway v1 — REST API, deployment, stage, resource, method CRUD (KrakenD backing declared)
 - API Gateway v2 — HTTP API, routes, integrations CRUD
@@ -88,7 +88,7 @@ Full registered surface (Phase L1 + L2 + L3):
 - CloudFormation — stack CRUD (topology_gen wiring pending)
 - CloudTrail — LookupEvents (labtris events wiring pending)
 - CloudWatch Metrics — PutMetricData, GetMetricStatistics, ListMetrics, Alarms
-- CloudWatch Logs — group + stream + event CRUD (Loki backing declared)
+- CloudWatch Logs — group + stream + event CRUD (real backing, verified)
 - Systems Manager — SendCommand (docker exec), StartSession (K1 SSH proxy!), DescribeInstanceInformation (real Labtris nodes!), Parameter Store CRUD
 - Fault Injection Service — template + experiment CRUD (impair.py wiring pending)
 - X-Ray — trace ingest + query (Jaeger backing declared)
@@ -135,9 +135,18 @@ the SDK shape, and a real limitation if you expected the work to happen:
 for a Tier C or D service, a create call returns a plausible response and
 nothing runs. Check the tier before you rely on one.
 
-One known gap of that kind worth naming: Timestream spawns a real
-VictoriaMetrics container, but `WriteRecords` returns a `RecordsIngested`
-count without posting to it.
+One known gap of that kind worth naming: Timestream spawns its real
+backing container, but `WriteRecords` returns a `RecordsIngested` count
+without posting to it.
+
+<Note>
+**Which system backs which service is deliberately not listed here.** The
+cloud emulator is the commercial half of Labtris, and the mapping from AWS
+service to backing implementation is the part that took the work. What this
+page does commit to is the tier: a service marked verified reaches a real
+backend and has a test that proved it. Write to contact@labtris.com if you
+need the per-service detail.
+</Note>
 
 ## Coverage vs LocalStack
 
@@ -155,8 +164,8 @@ infrastructure underneath the ones that work.**
 | Real network (bridges, packets, tc) | No | **Yes** |
 | Real firewall integration | No | **Yes (VyOS + others)** |
 | Multi-cloud (Azure/GCP/OCI) | No | Planned |
-| S3 | ~95% (own impl) | Real backing (SeaweedFS), verified |
-| DynamoDB | ~85% (own impl) | Real backing (Scylla Alternator), verified |
+| S3 | ~95% (own impl) | Real backing, verified |
+| DynamoDB | ~85% (own impl) | Real backing, verified |
 | Lambda runtime | Yes | Real backing (AWS RIE), verified |
 | P4 / RoCE / Ultra Ethernet | No | **Yes** |
 
@@ -336,10 +345,10 @@ for res in ec2.describe_instances()["Reservations"]:
   that map to real primitives; less-common operations return
   `NotImplementedException` with a clear message. This is deliberate:
   we'd rather fail loudly than pretend.
-- **Every AWS service.** Storage / DB / serverless services (S3
-  behavior aside, since it wraps MinIO) are wrapped via best-of-breed
-  OSS — DynamoDB via Scylla Alternator, Lambda via OpenFaaS, RDS via
-  Postgres/MySQL containers. Full list at `/docs/cloud-services`.
+- **Every AWS service.** Storage, database and serverless services are
+  backed by real systems rather than mocked, so an SDK call reaches
+  something that actually stores or runs what you gave it. Which system
+  backs which service is not published — see the note below.
 
 ## What Labtris is uniquely good at compared to LocalStack
 
