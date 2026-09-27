@@ -1697,6 +1697,7 @@ class PyrouteNet:
                     pass
         _CAPABILITIES = {
             "links": links,
+            "rdma": _rdma_capability(),
             "tuntap": Path("/dev/net/tun").exists(),
             "tools": {
                 tool: shutil.which(tool) is not None for tool in ("tcpdump", "ip", "tc", "qemu-img")
@@ -2275,6 +2276,56 @@ def _finish_move(name: str, rename_to: str | None, mac: str | None, up: bool) ->
             ipr.link("set", **kwargs)
         if up:
             ipr.link("set", index=_lookup(ipr, rename_to or name), state="up")
+
+
+#: rxe only got per-network-namespace UDP 4791 sockets in Linux 7.1. Before
+#: that the socket lives in init_net alone, so a device created inside a lab
+#: node is bound to a socket that does not exist there: `ib_send_bw` connects,
+#: exchanges GIDs, and then moves no packets at all. There is no error to
+#: report, which is why this is worth surfacing as a capability rather than
+#: leaving people to discover it.
+RDMA_NETNS_MIN_KERNEL = (7, 1)
+
+
+def _kernel_release() -> tuple[int, ...]:
+    try:
+        rel = os.uname().release.split("-")[0]
+        return tuple(int(x) for x in rel.split(".")[:3])
+    except (ValueError, OSError):
+        return ()
+
+
+def _rdma_capability() -> dict[str, Any]:
+    """Can soft-RoCE actually carry traffic between two lab nodes here?
+
+    A version comparison rather than a live probe, because the honest probe
+    — create an rxe device and see whether a 4791 socket appears in this
+    namespace — needs the module loaded and a spare interface, and a
+    capability call should not have side effects. Distributions do backport,
+    so `ss -lun | grep 4791` on the host remains the definitive check and is
+    named in the reason string.
+    """
+    release = os.uname().release if hasattr(os, "uname") else ""
+    version = _kernel_release()
+    module = Path("/sys/module/rdma_rxe").exists()
+    netns_ok = bool(version) and version >= RDMA_NETNS_MIN_KERNEL
+    out: dict[str, Any] = {
+        "kernel": release,
+        "rxe_loaded": module,
+        "netns_capable": netns_ok,
+        "min_kernel": ".".join(str(n) for n in RDMA_NETNS_MIN_KERNEL),
+    }
+    if not netns_ok:
+        out["reason"] = (
+            f"kernel {release or 'unknown'} predates Linux "
+            f"{out['min_kernel']}, where rxe gained per-namespace UDP 4791 "
+            "sockets. Soft-RoCE will connect between lab nodes and transfer "
+            "nothing. Confirm with `ss -lun | grep 4791` on the host: one "
+            "global 0.0.0.0:4791 means too old."
+        )
+    elif not module:
+        out["reason"] = "kernel is new enough; run `sudo modprobe rdma_rxe` to enable it"
+    return out
 
 
 def _in_netns(pid: int, fn: Any) -> None:
