@@ -4,6 +4,7 @@ Living roadmap. Delete items as they land in `git log`.
 
 Sibling roadmaps:
 - **labtris-aws** (private) — 148 AWS services: 24 verified real, ~24 persistent-state, ~99 façade
+- **labtris-network-skills** — assistant content: protocol rules, fault playbooks, device command sets, prompts. MIT; started 2026-09-27
 - `labtris-azure`, `labtris-gcp`, `labtris-oci`, `labtris-saas` — skeletons only
 
 ---
