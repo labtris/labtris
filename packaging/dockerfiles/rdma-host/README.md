@@ -122,6 +122,41 @@ So this is not a kernel-version problem and not something Labtris can fix
 from above. Two Linux network namespaces doing soft-RDMA to each other
 does not work with the in-tree soft transports as they stand.
 
+### Someone is already fixing this upstream — do not fix it here
+
+`rdma_rxe` simply did not support network namespaces. That is not a
+misconfiguration on our side, and it is being addressed by an active
+patch series on linux-rdma: *"RDMA/rxe: Add the support that rxe works
+in net namespace"*, at v7 by March 2026, with a stated goal of landing
+netns support for 7.0. It makes every rxe device exclusive to its own
+namespace, creates and tears down the UDP 4791 socket per namespace, and
+ships a selftest that runs exactly the command that fails here
+(`ip netns exec net0 rdma link add rxe0 type rxe netdev ...`).
+
+Ubuntu 26.04's 7.0.0-31 does **not** carry it yet. One check settles it:
+
+```bash
+ss -lunp | grep 4791
+```
+
+A kernel with the series gives each namespace its own listener. This one
+has a single global `0.0.0.0:4791` in init, which is precisely why a
+device created from inside a container ends up on the host and nothing
+transmits.
+
+**So there is nothing for Labtris to implement.** When the series reaches
+a shipping kernel, re-run the test — the Labtris side is already done and
+verified: `/dev/infiniband` is passed into `rdma-host` nodes, device
+names are per-node, and the RoCEv2 GID index is documented. Carrying a
+kernel patch ourselves would trade a working `curl | bash` story for
+"run our kernel", which is a bad trade for a self-hosted product.
+
+One thing to expect when it lands: the series puts every rxe device in
+exclusive mode per namespace, and `rdma system set netns exclusive`
+requires init to be the only namespace when set — on 26.04 that means
+stopping `polkit` too. That is a boot-order note for the installer, not a
+blocker.
+
 ### What this image is for, then
 
 Learning the RDMA userspace: `rdma link`, `ibv_devinfo`, the verbs API,
