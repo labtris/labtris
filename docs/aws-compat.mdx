@@ -18,14 +18,14 @@ picked. Same API surface, real behavior underneath.
 
 ## Services shipped
 
-**191 AWS services are registered**, which is not the same as 191
+**148 AWS services are registered**, which is not the same as 148
 services working. The number that matters is the tier:
 
 | Tier | Count | What it means |
 |---|---|---|
 | **A** verified real | 24 | Round-tripped with a real client tool |
-| **C** persistent state | ~18 | SDK works, state survives a restart, no real backend |
-| **D** façade | ~149 | SDK-shaped empty responses. No state, no work done |
+| **C** persistent state | ~24 | SDK works, state survives a restart, no real backend |
+| **D** façade | ~99 | SDK-shaped empty responses. No state, no work done |
 
 Tier A today: STS, IAM (read), EC2, SSM, KMS, S3, DynamoDB, RDS,
 ElastiCache, SQS, SNS, Route 53, Lambda, OpenSearch, DocumentDB,
@@ -150,24 +150,36 @@ need the per-service detail.
 
 ## Coverage vs LocalStack
 
-LocalStack implements ~90 services at roughly 85% behavioural fidelity
-each. Labtris registers 141 and genuinely implements 18. Comparing 141
-against 90 would be comparing a menu to a kitchen, so the honest framing
-is: **broader surface, narrower fidelity per service, and real
-infrastructure underneath the ones that work.**
+The comparison people ask for, with the part we can stand behind separated
+from the part we cannot.
 
-| Category | LocalStack Community | Labtris cloud-compat |
-|---|---|---|
-| Services registered | ~90 | 191 |
-| Services actually working | ~90 | **18** |
-| Real workloads (VMs) | No | **Yes (QEMU KVM)** |
-| Real network (bridges, packets, tc) | No | **Yes** |
-| Real firewall integration | No | **Yes (VyOS + others)** |
-| Multi-cloud (Azure/GCP/OCI) | No | Planned |
-| S3 | ~95% (own impl) | Real backing, verified |
-| DynamoDB | ~85% (own impl) | Real backing, verified |
-| Lambda runtime | Yes | Real backing (AWS RIE), verified |
-| P4 / RoCE / Ultra Ethernet | No | **Yes** |
+**What we will not claim.** Earlier versions of this page put a number on
+LocalStack's per-service fidelity. We had no source for it and no way to
+measure it, so it is gone. If you need that comparison, measure both
+against your own test suite — which is the only measurement that matters
+anyway, and is cheap here because the runs are free.
+
+**What is true of Labtris, and checkable.** 148 AWS services are
+registered; 24 of them are verified real, meaning a real client tool
+round-tripped them against a live backend. The tier list above says which.
+The rest are persistent-state or façade and are labelled as such, because
+a service that answers in the right shape and stores nothing is worse than
+one that is absent if you do not know which you have.
+
+**Where the difference actually is.** Not the service count. It is that
+the cloud API sits on the same box as real infrastructure:
+
+| | Labtris |
+|---|---|
+| Workloads | Real VMs under QEMU/KVM, real kernels |
+| Network | Real bridges, veths, packets, `tc` impairment |
+| Dataplane | P4 on bmv2, RoCE, Ultra Ethernet frames on the wire |
+| Cost per test run | Nothing. The thousandth run costs what the first did |
+| Blast radius | None — no credentials that reach a real account |
+
+An application under test can talk to S3 and then be cut off from it with
+a `tc` rule, or watch its own traffic through a P4 switch. That is the
+combination this exists for, rather than the service count.
 
 ## Point the AWS CLI at Labtris
 
