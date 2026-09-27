@@ -9,6 +9,50 @@ Sibling roadmaps:
 
 ---
 
+## Why this exists
+
+Labtris is a usable network lab, and it is also the instrument for a
+second project. `~/ai-study/networking-RAG-eval` (NetworkLLM) is building
+a networking system meant to answer better than a general model does,
+because it is purpose-built: 9,835 RFCs indexed, 60 golden questions, a
+retrieval eval that has to beat closed-book Claude. Docs alone will not
+get it there. The thing a general model cannot have is **recorded
+evidence of what actually happened** — real `show` output, logs, packets
+and timings from failures reproduced on purpose. Labtris is where that
+evidence is produced, at a scale no hand-built lab reaches: protocol ×
+option × fault × topology × scale × OS.
+
+The second half matters as much as the first. Running scenarios produces
+evidence; knowing **which scenarios have never run** produces honesty.
+The coverage ledger lives in NetworkLLM's todo; what Labtris owes it is
+the ability to produce any cell of that matrix on demand.
+
+Where that stands today, measured not estimated:
+
+- `labtris-network-skills` describes **124 checks** across 63 protocols —
+  each one an observable condition with a `when`, a `means` and a `next`.
+- It has **3 fault families** that can actually produce a condition
+  (`bgp_session_faults`, `link_impairment`, `lossless_class_breakdown`).
+
+So the catalog of things worth observing is two orders of magnitude ahead
+of the catalog of things we can cause. Closing that gap — an `injection/`
+entry for each check that a lab can reproduce, in the same inject /
+symptom / revert shape — is the highest-value work here, and it is the
+same work as growing the fault families for GNS3 parity (4 vs their 51).
+One effort, two reasons.
+
+Not a single-day job. Ordered by what unblocks the most:
+
+- [ ] Fault catalog per protocol, starting with OSPF (the INIT/EXSTART
+      set NetworkLLM's M1 needs), then BGP, IS-IS, BFD
+- [ ] Scenario runner: the API sequence create → wire → configure →
+      converge → inject → collect → snapshot → delete, batched and
+      parallel, so a matrix row is one command
+- [ ] Collector shape agreed with NetworkLLM's indexer, so a run record
+      is indexable without a translation step
+
+---
+
 ## Assistant parity with GNS3 Copilot
 
 GNS3 3.1 ships an AI copilot and an MCP service. Surveyed on 2026-09-27
