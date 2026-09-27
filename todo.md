@@ -3,8 +3,95 @@
 Living roadmap. Delete items as they land in `git log`.
 
 Sibling roadmaps:
-- **[labtris-aws/TODO.md](https://github.com/labtris/labtris-aws/blob/master/TODO.md)** — 141 AWS services (12 verified real, 6 real-backing, ~18 persistent, ~99 façade)
+- **labtris-aws** (private) — 148 AWS services: 24 verified real, ~24 persistent-state, ~99 façade
 - `labtris-azure`, `labtris-gcp`, `labtris-oci`, `labtris-saas` — skeletons only
+
+---
+
+## Assistant parity with GNS3 Copilot
+
+GNS3 3.1 ships an AI copilot and an MCP service. Surveyed on 2026-09-27
+against the `3.1` branch of `GNS3/gns3-server` and
+`docs.gns3.com/docs-3.1-en`, not the changelog. The honest position: they
+have **~50 MCP tool handlers** to our 46, and nine copilot features
+documented as implemented. Competing on "we have an assistant" is a
+losing position — they have more people on it. What follows is what would
+have to be true to stop being *behind*, which is a different and smaller
+goal than being ahead.
+
+Their MCP is weighted to managing a lab **as a document** — projects
+(14 handlers), symbols (6), drawings (5), images (5), templates (5),
+snapshots (4). Ours is weighted to operating a **running** lab —
+`console_exec`, `node_logs`, `capture_read`, `link_stats`, `impair_link`,
+the `vnc_*` family, `lab_generate`, `lab_snapshot`. That is a real
+difference in shape today and not a moat; it is where each project spent
+the last six months.
+
+Ordered by what we would actually gain, not by their list order.
+
+- [ ] **Skills repository.** Theirs loads skills, prompts and security
+      config from an external git repo (`github.com/gns3/gns3-skills`) at
+      startup, so content updates without redeploying the server. We have
+      `SYSTEM` as a hardcoded constant in `agent.py` — a user cannot
+      change the prompt at all. This is the one to do first: it is the
+      cheapest, it unblocks the next two, and it is the thing that was
+      already wanted under the "NetworkLLM / configurable system prompts"
+      heading.
+
+- [ ] **Protocol-oriented packet analysis.** Theirs stores tshark fields,
+      display filters and check rules as YAML in the skills repo, then has
+      the assistant diagnose a live capture against them. We have
+      `capture_start` / `capture_read` returning raw pcap and a Wireshark
+      GUI — the bytes, with no interpretation. The gap is the rule layer,
+      not the capture, and it lands naturally on top of the skills repo.
+
+- [ ] **Fault injection as a workflow.** Theirs analyses the topology,
+      picks a fault appropriate to the protocols in use, injects it, and
+      writes up what it did — for troubleshooting practice. We have every
+      primitive (`impair_link` per direction, `iface_set_state`,
+      `stop_node`, P4 program swap) and none of the workflow. Worth having
+      for the teaching case, and our primitives are richer than theirs
+      once it exists.
+
+- [ ] **Context-window management.** Theirs counts tokens with tiktoken,
+      offers conservative/balanced/aggressive trimming, and injects
+      current topology into the system prompt before each call. We pass
+      history untrimmed, so a long session eventually fails against a
+      small-context model. The topology injection is the more interesting
+      half: it is why their assistant knows the lab without spending a
+      tool call on it.
+
+- [ ] **Command security.** Theirs layers checks to stop the model running
+      commands that damage the lab. We have `CONFIRM_TOOLS` — destructive
+      *tools* need confirmation — but nothing inspects what goes into
+      `console_exec`, which is a shell. An allow/deny layer on command
+      content, configurable per instance, is the gap.
+
+- [ ] **Per-user and per-group model config.** Theirs is an API with
+      inheritance. Ours is two global settings, `llm_base_url` and
+      `llm_api_key`. On a shared instance that means one key for everyone,
+      which is wrong for a teaching box.
+
+- [ ] **Multi-vendor device drivers.** Theirs uses Netmiko and Nornir with
+      per-vendor drivers and device-type detection, so the assistant can
+      configure a Huawei box without being told how. We have raw
+      `console_exec` and interface-name schemes. This is the largest of
+      the nine and the least urgent for us: it pays off against a catalogue
+      of vendor NOSes, which is exactly the area we already say is our gap.
+
+Already covered, listed so nobody re-derives it: **node-control tools**
+(`add_node`, `start_node`, `stop_node`, `connect_nodes`) and a **chat
+API** (the pane, plus `/api/v1/labs/{id}/ai/ws`).
+
+### What not to chase
+
+The assistant is not where this product wins and should not be the
+second section on the home page. Nothing in the nine above touches the
+two things neither GNS3 nor containerlab nor CML has any answer to: an
+agent that can build and test an **application** against 24 real AWS
+services on the same box, and the AI-fabric layer underneath it — P4
+swapped under a running lab, RoCE, Ultra Ethernet on the wire. Parity
+work is defensive. Spend the rest there.
 
 ---
 
