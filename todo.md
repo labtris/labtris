@@ -110,6 +110,28 @@ Already covered, listed so nobody re-derives it: **node-control tools**
 (`add_node`, `start_node`, `stop_node`, `connect_nodes`) and a **chat
 API** (the pane, plus `/api/v1/labs/{id}/ai/ws`).
 
+### Later: emit real PFC PAUSE frames
+
+- [ ] **802.1Qbb PAUSE emission.** We ship piece one of PFC — eight
+      strict-priority bands with per-class RED and ECN marking, which is
+      what makes RoCEv2 usable. We do not ship piece two: emitting a
+      MAC-control PAUSE frame (opcode 0x0101) when a class crosses a
+      threshold, which is what makes "lossless" literally true. See
+      `docs/design/pfc-implementation.mdx`; it needs an XDP program on the
+      tap tracking per-priority depth in a bpf_map, or OVS, which we now
+      have as a network kind and did not when that note was written.
+
+      Not urgent. ECN is the signal every congestion-control algorithm we
+      care about actually reads — DCTCP, DCQCN, UET — and explicit
+      backpressure changes the shape of the lesson rather than enabling
+      it. Worth doing when someone wants to *see* the PAUSE frames rather
+      than infer the mechanism.
+
+      Reading them already works: Wireshark dissects MAC Control as
+      `macc`, with `macc.cbfc.pause_time.c0`..`c7` per priority, and
+      `labtris-network-skills/packet_analysis/pfc.yaml` is written against
+      those fields. So the day we emit them, the analysis side is done.
+
 ### What not to chase
 
 The assistant is not where this product wins and should not be the
