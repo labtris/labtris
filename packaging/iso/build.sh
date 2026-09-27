@@ -52,6 +52,13 @@ case "${RELEASE%.*}" in
   *)     SUITE_DEFAULT="" ;;
 esac
 SUITE=${SUITE:-$SUITE_DEFAULT}
+APT_MIRROR=${APT_MIRROR:-http://archive.ubuntu.com/ubuntu/}
+
+say()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Validated here rather than beside the SUITE assignment above, because
+# these call die() and it is not defined until this line.
 [ -n "$SUITE" ] || die "no codename known for Ubuntu ${RELEASE%.*}; set SUITE= explicitly"
 
 # 26.04 is not buildable yet, and the reason is not the ISO machinery: the
@@ -64,10 +71,6 @@ if [ "${RELEASE%.*}" = "26.04" ] && [ "${FORCE_SUITE:-0}" != 1 ]; then
        (resolute ships 3.14) and guacd/libguac-* (not packaged for resolute).
        Use the container install on 26.04. FORCE_SUITE=1 to try anyway."
 fi
-APT_MIRROR=${APT_MIRROR:-http://archive.ubuntu.com/ubuntu/}
-
-say()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # Everything this script starts dies with it. Without this, interrupting a
 # build can leave its curl running: the orphan keeps writing the same partial
