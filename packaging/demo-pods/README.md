@@ -106,22 +106,33 @@ IP 10.99.0.11.60883 > 10.99.0.10.4791: UDP, length 39
   0x0040:  454d 4f                                  EMO
 ```
 
-### RDMA — needs host setup that is not solved yet
+### RDMA — works on kernel 7.1 or newer
 
-The `rdma-host` nodes start and carry `rdma-core`, `ibverbs-utils` and
-`perftest`, but **soft-RoCE does not currently work end to end inside a
-Labtris container**, for two reasons found while testing this pod:
+```bash
+# host, once (7.1+ kernel required — see below)
+sudo modprobe rdma_rxe
 
-1. **The host must be in RDMA netns-exclusive mode.** In the default
-   `shared` mode, `rdma link add` run inside a container creates the
-   device in the *init* namespace, where the container's verbs library
-   cannot see it. `rdma system set netns exclusive` fixes that, but the
-   kernel only allows the change while no other namespace holds RDMA
-   state — in practice, at boot, before any container starts.
-2. **`/dev/infiniband/` does not exist in the container.** Even with the
-   device in the right namespace, verbs need the `uverbs` character
-   devices, and Docker gives a container a minimal `/dev`. Labtris does
-   not pass them through yet.
+# per node, distinct names
+labtris node exec <rdma-a> -- rdma link add rxe_a type rxe netdev eth1
+labtris node exec <rdma-b> -- rdma link add rxe_b type rxe netdev eth1
+labtris node exec <rdma-a> -- ib_send_bw -d rxe_a -x 1
+labtris node exec <rdma-b> -- ib_send_bw -d rxe_b -x 1 10.88.0.1
+```
 
-So this half of the pod is a starting point for that work, not a working
-demo. `modprobe rdma_rxe` on the host is necessary but not sufficient.
+Measured on Ubuntu 26.04.1 with a mainline 7.2.6 kernel:
+
+```
+1024 bytes  200 iterations  94.42 MB/s peak  93.74 MB/s average
+```
+
+**The kernel decides this.** `rdma_rxe` only got per-namespace UDP 4791
+sockets in Linux 7.1; before that a device created inside a container was
+bound to a socket in the host namespace and moved no packets. Check with
+`ss -lun | grep 4791` — a per-namespace listener means you are fine, one
+global `0.0.0.0:4791` means the kernel is too old. Ubuntu 24.04 (6.8) and
+26.04 (7.0) both ship kernels that are too old; install a mainline 7.1+.
+
+Use `-x 1`, not `-x 0`: GID index 0 is the IPv6 link-local RoCEv1 entry,
+index 1 is RoCE v2 over IPv4. And give each node its own device name —
+`rxe0` is global in the default netns-shared mode, so the second node
+would collide.
