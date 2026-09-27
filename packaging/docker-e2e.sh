@@ -11,8 +11,21 @@
 #   C. QEMU node        -> tap opened through /dev/net/tun, KVM accel,
 #                          serial console reachable
 #
-# Run on the Docker host, from the directory holding docker-compose.yml:
-#   ./packaging/docker-e2e.sh
+# Run on the Docker host, from the directory holding docker-compose.yml,
+# WITH THE STACK ALREADY UP — this script tests a running instance, it does
+# not start one:
+#
+#   docker compose up -d && ./packaging/docker-e2e.sh
+#
+# Running it against a stack that is down gives four identical "API
+# answering / auth-login" failures and nothing else, which reads like a
+# broken build rather than a missing precondition.
+#
+# Build the image on the architecture you will run it on. An image built on
+# an arm64 laptop and loaded onto an amd64 host fails as
+# "exec /usr/local/bin/labtris-entrypoint: exec format error" on labnet,
+# and every service that shares its namespace then fails with a confusing
+# "lstat /proc/<pid>/ns/net: no such file or directory".
 #
 # Leaves nothing behind unless KEEP=1. Overrides:
 #   LABTRIS_API   base URL                (default http://127.0.0.1:8080)
