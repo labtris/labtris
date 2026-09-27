@@ -93,6 +93,31 @@ Two things 7.0 does differently, neither of which helps:
 `siw` (SoftiWARP) was tried as an alternative transport, with and without
 `-R`. Same outcome.
 
+### Every combination tried
+
+| Kernel | RDMA netns mode | Namespaces via | Result |
+|---|---|---|---|
+| 6.8.0-139 | shared | Docker | verbs work, zero packets on the wire |
+| 6.8.0-139 | exclusive | Docker | `/sys/class/infiniband/` empty, no verbs |
+| 6.8.0-139 | exclusive | `ip netns` | device created on the host instead |
+| 7.0.0-31 | shared | `ip netns` | device visible in the namespace, zero packets |
+| 7.0.0-31 | exclusive | `ip netns` | device on the host; second add `ENFILE` |
+| 7.0.0-31 | shared | Docker (Labtris) | verbs work, zero packets on the wire |
+| 7.0.0-31 | exclusive | Docker (Labtris) | device on the host; second add `ENFILE` |
+
+Every cell reached the same place. In `shared` the device is on the host
+by design, so the transmit path resolves the peer in the host's namespace
+and nothing leaves. In `exclusive` the device is *still* placed on the
+host — `rdma system show` reports exclusive from inside the container,
+and the device lands outside it anyway — so the second namespace collides
+on the name and gets `ENFILE`.
+
+Setting `exclusive` at all needs init to be the only network namespace.
+On 26.04 that means stopping `polkit` as well as every container, because
+`polkit.service` is hardened with `PrivateNetwork=yes` there. Doing all
+of that, and confirming `netns exclusive` from inside the node, still
+produced the row above.
+
 So this is not a kernel-version problem and not something Labtris can fix
 from above. Two Linux network namespaces doing soft-RDMA to each other
 does not work with the in-tree soft transports as they stand.
