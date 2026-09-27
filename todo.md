@@ -30,13 +30,39 @@ the last six months.
 Ordered by what we would actually gain, not by their list order.
 
 - [ ] **Skills repository.** Theirs loads skills, prompts and security
-      config from an external git repo (`github.com/gns3/gns3-skills`) at
-      startup, so content updates without redeploying the server. We have
-      `SYSTEM` as a hardcoded constant in `agent.py` — a user cannot
-      change the prompt at all. This is the one to do first: it is the
-      cheapest, it unblocks the next two, and it is the thing that was
-      already wanted under the "NetworkLLM / configurable system prompts"
-      heading.
+      config from an external git repo at startup, so content updates
+      without redeploying the server. We have `SYSTEM` as a hardcoded
+      constant in `agent.py` — a user cannot change the prompt at all.
+      This is the one to do first: it is the cheapest, it unblocks the
+      next two, and it is the thing already wanted under the "NetworkLLM
+      / configurable system prompts" heading.
+
+      Looked at what is actually in `GNS3/gns3-skills` (142 files,
+      last touched 2026-09-15, **GPL-3.0**):
+
+      | Directory | Files | What they are |
+      |---|---|---|
+      | `packet_analysis/` | 61 | one YAML per protocol — bgp, ospf, arp, bfd, dhcp… |
+      | `injection/` | 51 | one YAML per fault family — bgp_issues, dhcp_snooping_dai_issues… |
+      | `device/` | 11 | per-vendor command sets — cisco_iol, cisco_xr, plus bgp/ospf |
+      | `prompts/` | 4 | lab_automation_assistant, teaching_assistant, troubleshooting_injection |
+      | `config/` | 1 | the security configuration |
+
+      A protocol skill is small and declarative — `bgp.yaml` is a name, a
+      `display_filter`, and a list of `tshark_field` entries each with a
+      label and a description. That is the whole mechanism: the model gets
+      told which fields matter for a protocol and how to filter for them.
+      Nothing clever, and it works because the content is curated rather
+      than because the loader is.
+
+      Two consequences for us. The format is worth copying and the content
+      is **not ours to take** — GPL-3.0 against our MIT core and a
+      commercial cloud half, so a Labtris skills repo starts empty and
+      gets written, or points at theirs as an optional external source and
+      keeps the licences apart. And the shape argues for doing this first:
+      112 of their 142 files are packet-analysis and injection rules, so
+      the skills loader *is* most of those two items rather than a
+      prerequisite to them.
 
 - [ ] **Protocol-oriented packet analysis.** Theirs stores tshark fields,
       display filters and check rules as YAML in the skills repo, then has
