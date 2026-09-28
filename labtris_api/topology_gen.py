@@ -55,6 +55,11 @@ _KINDS: dict[str, tuple[str, str]] = {
     "bmv2":    ("docker", "p4lang/behavioral-model:latest"),
     "ubuntu":  ("docker", "ubuntu:24.04"),
     "srlinux": ("docker", "ghcr.io/nokia/srlinux:latest"),
+    # AI-fabric endpoints. Both are local builds (see packaging/
+    # dockerfiles/), so a generated fabric using them needs the image
+    # built first — the generator does not pull them.
+    "uet-ref":   ("docker", "labtris/uet-ref:latest"),
+    "rdma-host": ("docker", "labtris/rdma-host:latest"),
 }
 
 

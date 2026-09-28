@@ -9,22 +9,22 @@
   "favicon": "/logo/favicon.svg",
   "colors": {
     "primary": "#00c0ef",
-    "light":   "#26c4ff",
-    "dark":    "#008fb3",
+    "light": "#26c4ff",
+    "dark": "#008fb3",
     "background": {
       "light": "#ffffff",
-      "dark":  "#1a2226"
+      "dark": "#1a2226"
     }
   },
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url":  "https://github.com/labtris/labtris"
+      "url": "https://github.com/labtris/labtris"
     }
   ],
   "topbarCtaButton": {
     "name": "Install",
-    "url":  "/install"
+    "url": "/install"
   },
   "font": {
     "family": "Inter"
@@ -38,7 +38,7 @@
   "feedback": {
     "thumbsRating": true,
     "suggestEdit": true,
-    "raiseIssue":  true
+    "raiseIssue": true
   },
   "footer": {
     "socials": {
@@ -48,7 +48,11 @@
   "navigation": [
     {
       "group": "Getting started",
-      "pages": ["introduction", "install", "first-lab"]
+      "pages": [
+        "introduction",
+        "install",
+        "first-lab"
+      ]
     },
     {
       "group": "Building labs",
@@ -67,7 +71,8 @@
       "group": "AI fabrics",
       "pages": [
         "p4",
-        "fabrics"
+        "fabrics",
+        "uet-lab"
       ]
     },
     {
@@ -94,7 +99,9 @@
     },
     {
       "group": "Operations",
-      "pages": ["operations"]
+      "pages": [
+        "operations"
+      ]
     },
     {
       "group": "Design notes",

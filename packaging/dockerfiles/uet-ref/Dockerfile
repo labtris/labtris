@@ -59,7 +59,13 @@ WORKDIR /src
 RUN git clone https://github.com/ultraethernet/uet-ref-prov.git uet \
  && git -C uet checkout --detach "${UET_REF_COMMIT}"
 WORKDIR /src/uet
-RUN make && make xdp
+# cc_sim is the congestion-control test app: N senders onto one receiver,
+# with link speed, RTT, queue size and drop/ECN/trim thresholds set as
+# parameters rather than inherited from whatever host you happen to be
+# on. It measures per-sender throughput to show utilisation and fairness,
+# and generates no network traffic. This is the build target that gives
+# performance numbers meaning anything outside this machine.
+RUN make && make xdp && make cc_sim
 
 FROM base AS runtime
 RUN apt-get -y install --no-install-recommends \
@@ -69,12 +75,28 @@ RUN apt-get -y install --no-install-recommends \
       tcpdump \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build-libfabric /stage /
-RUN ldconfig && fi_info > /dev/null
 COPY --from=build-uet /src/uet/uet      /usr/bin/uet
 COPY --from=build-uet /src/uet/uet_xdp  /usr/bin/uet_xdp
+COPY --from=build-uet /src/uet/uet_cc_sim /usr/bin/uet_cc_sim
+# The binaries link the provider as shared objects, and upstream's own
+# Dockerfile copies only the executables — so `uet` in that image dies
+# with "libuet_fabric.so: cannot open shared object file". Their README
+# works around it with LD_LIBRARY_PATH pointing into the build tree,
+# which a shipped container does not have. Install the libraries
+# properly instead.
+COPY --from=build-uet /src/uet/libuet_fabric.so /usr/lib/
+COPY --from=build-uet /src/uet/libuet_verbs.so  /usr/lib/
+COPY --from=build-uet /src/uet/libxdpuet.so     /usr/lib/
+# The eBPF kernel object the XDP shim loads at runtime. uet_xdp is built
+# with -DXDP_PROG=uet_xdp_kern.o, an unqualified name, so it is looked up
+# relative to the working directory: keep the CMD's WORKDIR next to it.
+COPY --from=build-uet /src/uet/uet_xdp_kern.o   /opt/uet/
 # The official Wireshark dissector. UET has no built-in tshark support,
 # so ship it here and tell people where it is — labtris-network-skills'
 # packet_analysis/uet.yaml is written against these field names.
 COPY --from=build-uet /src/uet/dissector/uet.lua /usr/share/uet/uet.lua
 
-CMD ["/bin/bash", "-lc", "echo 'uet-ref node. UET_IFNAME=<iface> uet server|client <ip>. Dissector: /usr/share/uet/uet.lua'; exec sleep infinity"]
+RUN ldconfig && fi_info > /dev/null && uet --help 2>&1 | head -1 || true
+
+WORKDIR /opt/uet
+CMD ["/bin/bash", "-lc", "echo 'uet-ref node.'; echo '  pair:  UET_IFNAME=eth0 uet server|client <ip>'; echo '  cc:    uet_cc_sim <n-senders>   # incast fairness, no traffic'; echo '  NOTE:  UET_PDS defaults to sng (stop-and-go). Set UET_PDS=pds before quoting throughput.'; echo '  dissector: /usr/share/uet/uet.lua'; exec sleep infinity"]

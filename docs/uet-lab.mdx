@@ -1,0 +1,176 @@
+---
+title: "Ultra Ethernet lab"
+description: "Real UET on the wire, from ping to a spraying fabric."
+---
+
+Ultra Ethernet Transport runs on ordinary Linux over ordinary veths. No
+NIC, no licence, no hardware. This page is the ladder from a ping to a
+UET fabric, and every rung is something you can watch on the wire.
+
+The node kind is `uet-ref`: the Ultra Ethernet Consortium's own
+[reference provider](https://github.com/ultraethernet/uet-ref-prov)
+(MIT). Build it once:
+
+```bash
+docker build -t labtris/uet-ref:latest packaging/dockerfiles/uet-ref/
+```
+
+## The smallest lab that does something
+
+Two `uet-ref` nodes on one segment.
+
+```
+          ┌───────────────┐         ┌───────────────┐
+          │    uet-a      │  eth0   │    uet-b      │
+          │ 172.30.0.10   ├────┬────┤ 172.30.0.11   │
+          │  uet-ref      │    │    │  uet-ref      │
+          └───────────────┘    │    └───────────────┘
+                          ┌────┴────┐
+                          │ fabric  │   bridge segment
+                          └─────────┘
+```
+
+Rung 1 — does it ping. Ordinary ICMP, ordinary veth.
+
+```bash
+labtris node exec uet-b -- ping -c2 172.30.0.10
+```
+
+Rung 2 — a UET transfer. One side listens, the other drives. `rma` is
+an RMA write/read exchange; `UET_PDS=pds` matters, see the warning
+below.
+
+```bash
+# uet-a
+UET_IFNAME=eth0 UET_PDS=pds uet server rma 172.30.0.11
+# uet-b
+UET_IFNAME=eth0 UET_PDS=pds uet client rma 172.30.0.10
+```
+
+The client finishes with `Completed 100 iterations` and prints TSS and
+PDS counters. That is a real Ultra Ethernet transfer between two Linux
+containers.
+
+<Warning>
+`UET_PDS` defaults to `sng` — stop-and-go. Measure throughput without
+setting `UET_PDS=pds` and you have measured a stop-and-wait protocol,
+not UET. Set it before quoting any number.
+</Warning>
+
+## Thirteen things to try on that pair
+
+The same two nodes cover the whole semantic surface. Swap the command:
+
+| Command | What it exercises |
+|---|---|
+| `rma`, `sync_rma` | RMA write and read |
+| `untag`, `tag`, `tag_any_src` | untagged and tagged messaging |
+| `unexp_untag`, `unexp_tag` | unexpected-message handling |
+| `defer_send`, `defer_tag`, `defer_tag_any_src` | deferred send |
+| `atomic`, `sync_atomic` | atomics |
+| `uud` | unreliable datagram |
+
+Delivery mode is an environment variable, so the same command run three
+ways is three different reliability contracts:
+
+```bash
+UET_PDS=pds                  uet client rma  <peer>   # ROD, reliable ordered
+UET_PDS=pds UET_FORCE_RUDI=1 uet client rma  <peer>   # RUDI, idempotent
+UET_PDS=pds UET_FORCE_UUD=1  uet client uud  <peer>   # UUD, best effort
+```
+
+Watch what changes: RUDI tolerates reordering, UUD leaves PSN gaps that
+nothing repairs. That contrast is the lesson — it is what makes UET
+different from RoCEv2, which has one answer for everything.
+
+## Reading it
+
+UET is **its own transport on IP protocol 253**, not UDP. tshark has no
+built-in dissector, so without the plugin a capture reads
+`Unknown (253)`. The image ships upstream's Lua dissector:
+
+```bash
+tshark -X lua_script:/usr/share/uet/uet.lua -r uet.pcap
+#   1  172.30.0.11 → 172.30.0.10  UET  TYPE_ROD_REQ UET_SEND
+#   2  172.30.0.10 → 172.30.0.11  UET  TYPE_ACK     UET_DEFAULT_RESPONSE
+```
+
+`labtris-network-skills/packet_analysis/uet.yaml` is written against
+these field names, so the assistant reads the same capture you do.
+
+A capture from the `rma` run above, 4,604 packets:
+
+```bash
+tshark -X lua_script:/usr/share/uet/uet.lua -r uet.pcap \
+  -T fields -e uet.pds.type | sort | uniq -c
+#  3201 0x0003   TYPE_ROD_REQ
+#  1403 0x0007   TYPE_ACK
+```
+
+## The interesting number
+
+Ask what the entropy field did:
+
+```bash
+tshark -X lua_script:/usr/share/uet/uet.lua -r uet.pcap \
+  -T fields -e uet.entropy.entropy | sort -u
+# 62042
+```
+
+One value. Across all 4,604 packets. Entropy is what switches hash on to
+pick a path, so a single value means every packet took the same path —
+no spraying. That is not a bug in your lab: upstream states multi-path
+packet delivery is not fully supported yet. It is the gap, made visible
+in one command, and it is the most useful thing this lab currently
+shows you.
+
+## Scaling it up
+
+A pair shows semantics. Spraying, incast and fairness need a fabric:
+
+```bash
+labtris lab generate spine-leaf --spines 2 --leaves 4 \
+  --hosts-per-leaf 8 --host-kind uet-ref
+```
+
+That is 2 spines, 4 leaves and 32 UET endpoints with every spine wired
+to every leaf — multiple equal-cost paths between any two hosts, which
+is the precondition for spraying to mean anything. `rail-optimised`
+gives the GPU-cluster shape instead, where hosts group by rail and each
+rail has its own spine.
+
+```
+    spine-1 ────────┬────────┬────────┬──────── spine-2
+       │            │        │        │            │
+    ┌──┴───┐    ┌───┴──┐ ┌───┴──┐ ┌───┴──┐     ┌───┴──┐
+    │leaf-1│    │leaf-2│ │leaf-3│ │leaf-4│  …  │      │
+    └──┬───┘    └───┬──┘ └───┬──┘ └───┬──┘     └──────┘
+   8 × uet-ref  8 × …    8 × …    8 × …
+```
+
+## Congestion control without a fabric
+
+`uet_cc_sim` is the other half, and it needs no topology at all. N
+senders onto one receiver, with **link speed, RTT, queue size and the
+drop/ECN/trim thresholds as parameters** rather than inherited from
+whatever host you are on. It reports per-sender throughput, so you can
+see utilisation and fair sharing directly.
+
+```bash
+uet_cc_sim 8      # eight senders, one receiver
+```
+
+This is the measurement that travels. A throughput number off a veth
+tells you about your laptop; a fairness curve at a configured 400G and
+10 µs RTT tells you about the algorithm.
+
+## What is honest to claim
+
+- **Exact, and identical on hardware:** PSN gaps, retransmission counts,
+  NACK-code distribution, ordering violations, round trips to recover a
+  loss, whether trimming fires.
+- **Meaningful relative to itself:** `uet_cc_sim` utilisation and
+  fairness at a configured operating point; A-vs-B algorithm comparisons.
+- **Not transferable:** absolute Gbps or latency measured on a veth.
+  There is no serialisation delay, no ASIC, no real buffer. Do not quote
+  it.
