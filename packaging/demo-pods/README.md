@@ -136,3 +136,33 @@ Use `-x 1`, not `-x 0`: GID index 0 is the IPv6 link-local RoCEv1 entry,
 index 1 is RoCE v2 over IPv4. And give each node its own device name —
 `rxe0` is global in the default netns-shared mode, so the second node
 would collide.
+
+## `uet-pair.pod.tar.gz`
+
+Two `uet-ref` endpoints on one link — the Ultra Ethernet Consortium's own
+reference provider, speaking real UET on IP protocol 253 over kernel
+veths.
+
+```bash
+docker build -t labtris/uet-ref:latest packaging/dockerfiles/uet-ref/
+labtris lab load packaging/demo-pods/uet-pair.pod.tar.gz
+```
+
+Then, from the UI or the CLI:
+
+```bash
+labtris node exec uet-a -- uet server rma 10.0.0.2   # addresses as assigned
+labtris node exec uet-b -- uet client rma 10.0.0.1
+```
+
+Both nodes carry `UET_IFNAME=eth0` and `UET_PDS=pds` in their environment.
+The second matters: `UET_PDS` defaults to `sng`, stop-and-go, and a
+throughput measured without it is a measurement of stop-and-wait rather
+than of UET.
+
+Cold pod, 1.4 KB — it carries no image. `labtris/uet-ref:latest` is a
+local build and has to exist on the host first.
+
+> The older `rdma-uet-demo` pod has no links at all, so its four nodes
+> arrive unwired and have to be connected by hand on the canvas. This one
+> carries a link, so it comes up as a topology.
