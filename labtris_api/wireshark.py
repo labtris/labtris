@@ -4,8 +4,10 @@ import asyncio
 import contextlib
 import os
 import shutil
+import shlex
 import socket
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from labtris_api.errors import runtime_error, unprocessable
 
@@ -13,6 +15,32 @@ from labtris_api.errors import runtime_error, unprocessable
 #: 200-300 MB. This is a lab tool, not a tenant service; the cap exists so a
 #: stuck browser tab cannot quietly consume the host.
 MAX_SESSIONS = 4
+
+#: Dissectors we ship because Wireshark has none. Ultra Ethernet is the
+#: first: it rides IP protocol 253, so without this a UET capture in the
+#: UI is a list of undecoded IPv4 frames and the lab teaches nothing.
+#: Any `.lua` dropped in here is picked up, so adding a protocol is a
+#: file rather than a code change.
+PLUGIN_DIR = Path(__file__).resolve().parent.parent / "packaging" / "wireshark"
+
+
+def _lua_args() -> str:
+    """`-X lua_script:` for each dissector we ship, or "" if none are there.
+
+    Wireshark loads several by repeating the option. Missing files are not
+    an error: a source checkout has them, and an install that dropped
+    `packaging/` should still capture, just without the extra protocols.
+    """
+    if not PLUGIN_DIR.is_dir():
+        return ""
+    # The whole command goes to `sg ... -c` as one shell string, so the
+    # path is quoted: PREFIX is /opt/labtris today, but a source checkout
+    # can live anywhere, including under a directory with a space in it.
+    return "".join(
+        f" -X lua_script:{shlex.quote(str(p))}"
+        for p in sorted(PLUGIN_DIR.glob("*.lua"))
+    )
+
 
 #: Displays live in their own range so they cannot collide with the VNC
 #: displays QEMU hands out (which start at :1 and are counted from 5900).
@@ -115,6 +143,7 @@ async def start(session_id: str, ifname: str) -> Session:
             f"wireshark -i {ifname} -k "
             f"-o gui.window_title:'labtris {ifname}' "
             "-o capture.no_interface_load:TRUE"
+            f"{_lua_args()}"
         )
         session.procs.append(
             await _spawn("sg", "wireshark", "-c", cmd, env={"DISPLAY": f":{display}"})
