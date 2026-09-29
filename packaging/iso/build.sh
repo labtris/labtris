@@ -191,9 +191,24 @@ prepare_autoinstall() {
   # authorized-keys sits under the same `ssh:` block that already sets
   # install-server and allow-pw, so this only adds a key — it does not
   # change how passwords behave.
+  # Two injections, both needed. The key alone is not enough: the overlay
+  # ships a unit that runs `chage -d 0 labtris-admin` on first boot, and an
+  # expired password makes PAM refuse every session — including one
+  # authenticated by key, with "Password change required but no TTY
+  # available". So an image built for unattended access also pre-creates
+  # the marker file that unit already guards itself with, which leaves the
+  # unit in place and simply satisfied. Passwords are unchanged; what
+  # changes is that the account is not aged out from under the key.
+  #
+  # `touch`, not `: >`: a colon-space inside an unquoted YAML scalar makes
+  # the rest a mapping, and the `>` that follows is then read as a folded
+  # block indicator. The file parses as nonsense and the install dies.
   awk -v k="$key" '
     { print }
     /^  ssh:$/ { print "    authorized-keys:"; print "      - " k }
+    /labtris-expire-admin\.service$/ {
+      print "    - curtin in-target --target=/target -- sh -c '"'"'mkdir -p /var/lib/labtris && touch /var/lib/labtris/admin-expired'"'"'"
+    }
   ' "$src" > "$dst"
   chmod 0644 "$dst"
   say "autoinstall carries an SSH key for ${key##* }"
