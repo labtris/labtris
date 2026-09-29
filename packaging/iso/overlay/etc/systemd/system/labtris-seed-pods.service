@@ -1,0 +1,24 @@
+[Unit]
+# The pods ship on the image as tarballs. Without this they stay tarballs:
+# a fresh install shows an empty lab list, and the demo labs only exist if
+# somebody already knows they are there. This turns them into labs once.
+#
+# After the API, because it needs the schema migrated and the database up.
+# It talks to the database directly rather than over HTTP: no account
+# exists on a fresh machine, so there is no session to authenticate with.
+Description=Seed the bundled Labtris demo labs
+After=labtris-api.service
+Wants=labtris-api.service
+ConditionPathExists=!/var/lib/labtris/demo-pods-seeded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Guarded like the other first-boot units: a machine that will not boot
+# because a demo lab could not be created is a far worse outcome than one
+# that boots with no demo labs.
+ExecStart=/bin/sh -c '/opt/labtris/.venv/bin/python /opt/labtris/packaging/seed-demo-pods.py || true'
+ExecStartPost=/usr/bin/systemctl disable labtris-seed-pods.service
+
+[Install]
+WantedBy=multi-user.target

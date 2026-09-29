@@ -91,3 +91,6 @@ autoinstall:
     # install after everything else has succeeded. The overlay ships a unit
     # that does it once cloud-init has actually made the account.
     - curtin in-target --target=/target -- ln -sf /etc/systemd/system/labtris-expire-admin.service /etc/systemd/system/multi-user.target.wants/labtris-expire-admin.service
+    # Same shape: enable by symlink rather than `systemctl enable`, which
+    # needs a running systemd the target does not have during install.
+    - curtin in-target --target=/target -- ln -sf /etc/systemd/system/labtris-seed-pods.service /etc/systemd/system/multi-user.target.wants/labtris-seed-pods.service
