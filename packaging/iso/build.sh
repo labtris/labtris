@@ -203,11 +203,27 @@ prepare_autoinstall() {
   # `touch`, not `: >`: a colon-space inside an unquoted YAML scalar makes
   # the rest a mapping, and the `>` that follows is then read as a folded
   # block indicator. The file parses as nonsense and the install dies.
+
+  # Third injection, and the one to think about before using this mode.
+  # A key that logs in and can then do nothing privileged is half a
+  # feature: installing a kernel, restarting a unit or reading a root-only
+  # log all need root, and every one of those is why an image gets
+  # automated in the first place. So a keyed build also drops a sudoers
+  # file granting NOPASSWD to the one admin account.
+  #
+  # The security shape, stated plainly: this only ever happens when the
+  # operator passed a key at build time. A default ISO is untouched — no
+  # key, no sudoers file. Password authentication is unchanged, so an
+  # interactive operator is prompted exactly as before. The blast radius
+  # is one account on an image the operator deliberately built for
+  # unattended use, and the key is the thing protecting it. Do not use
+  # this mode for an image that will be handed to anyone else.
   awk -v k="$key" '
     { print }
     /^  ssh:$/ { print "    authorized-keys:"; print "      - " k }
     /labtris-expire-admin\.service$/ {
       print "    - curtin in-target --target=/target -- sh -c '"'"'mkdir -p /var/lib/labtris && touch /var/lib/labtris/admin-expired'"'"'"
+      print "    - curtin in-target --target=/target -- sh -c '"'"'printf %s\\n \"labtris-admin ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/90-labtris-automation; chmod 0440 /etc/sudoers.d/90-labtris-automation'"'"'"
     }
   ' "$src" > "$dst"
   chmod 0644 "$dst"
