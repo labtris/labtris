@@ -14,11 +14,22 @@ ConditionPathExists=!/var/lib/labtris/demo-pods-seeded
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# The same environment and identity the API runs with. Without the env
+# file the script falls back to library defaults and dies on
+# "password authentication failed for user pnl"; without User= it would
+# create the labs as root and leave files the service cannot rewrite.
+EnvironmentFile=/etc/labtris/labtris.env
+User=labtris
 # Guarded like the other first-boot units: a machine that will not boot
 # because a demo lab could not be created is a far worse outcome than one
 # that boots with no demo labs.
 ExecStart=/bin/sh -c '/opt/labtris/.venv/bin/python /opt/labtris/packaging/seed-demo-pods.py || true'
-ExecStartPost=/usr/bin/systemctl disable labtris-seed-pods.service
+# No `systemctl disable` here. The sibling expire-admin unit does that,
+# but it runs as root; this one runs as `labtris` and cannot talk to
+# systemd, so the disable failed with "Interactive authentication
+# required" and the unit reported FAILURE after seeding all five labs
+# perfectly well. The stamp file in ConditionPathExists already makes
+# this run once, so the disable was redundant as well as broken.
 
 [Install]
 WantedBy=multi-user.target
