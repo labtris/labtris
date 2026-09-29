@@ -9,6 +9,62 @@ Sibling roadmaps:
 
 ---
 
+## Lab the LLM serving path
+
+Added 2026-09-30 from a systems write-up of a production inference
+request path (five request-path decisions: admission, model selection,
+response-cache reuse, replica placement, scheduling). Most of it is not
+ours — we do not serve models. But the parts that decide the latency are
+network decisions, and every one of them is something this emulator can
+already build. It is the clearest worked example yet of what an AI
+fabric lab is *for*, and it reuses what shipped this week rather than
+needing new machinery.
+
+What is genuinely labbable here, in the order the request meets it:
+
+- [ ] **Anycast and DNS steering.** One prefix announced from several
+      PoPs, FRR speaking BGP, and a host that discovers which PoP it
+      actually landed on. The article's first near-death is a request
+      landing hundreds of miles from where the operator assumed, and
+      that is a routing-table question with a definite answer.
+- [ ] **The edge/datacenter split.** The WAN crossing is a link with
+      delay on it. `impair_ab` and `impair_ba` are per-direction, so the
+      asymmetric case — cheap decisions pushed to the edge, GPU-bound
+      work kept in the datacenter — is a two-node lab with netem.
+- [ ] **Disaggregated prefill/decode KV transfer.** This is the one that
+      matters. Splitting prefill from decode puts gigabytes of KV state
+      on the fabric per request, and that transfer lands inside TTFT.
+      The traffic pattern is exactly what `uet-pair` and `rdma-pair`
+      already generate: large RDMA-style transfers between two roles
+      with a latency budget. Model it as a rail, measure what congestion
+      does to it.
+- [ ] **Incast on the KV path.** Several prefill workers finishing at
+      once onto one decode worker is textbook incast. `pfc-classes`
+      isolates the classes, `p4-trim` signals congestion by trimming
+      rather than dropping, and `uet_cc_sim` measures fairness at a
+      configured link speed. Three pieces that already exist, pointed at
+      one scenario.
+- [ ] **The buffering-proxy failure.** A proxy that waits for the whole
+      response turns streaming into batch, and the engine looks slow
+      when the last mile is at fault. Two containers and an nginx with
+      and without `X-Accel-Buffering: no` reproduce it exactly, and it
+      is the kind of fault that is obvious once seen and invisible
+      before.
+
+What is not ours, and should not be claimed: prefill and decode
+themselves, GPU scheduling, continuous batching, tokenizers. We can
+model the *traffic* those produce and the fabric they run on. We cannot
+model the arithmetic, and a lab that pretends to would be worse than no
+lab.
+
+Why it belongs here rather than in a backlog: the coverage question this
+project exists to answer — which conditions have never been produced —
+has an obvious first population in this path. Every decision in it has a
+failure mode with a network signature, and none of them are currently in
+`labtris-network-skills`.
+
+---
+
 ## Ultra Ethernet: use the reference implementation
 
 Corrected on 2026-09-27. The UE work in 0.11.0 was built without checking
