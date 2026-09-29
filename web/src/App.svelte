@@ -717,6 +717,23 @@
     };
     pan = geometry.view || pan;
     connectLabWs(id);
+    //: The URL names the open lab, so a reload keeps it, a link to a lab
+    //: is shareable, and anything driving the app — a screenshot run, an
+    //: accessibility tool, an agent — can open one without finding the
+    //: switcher. Replace rather than push: switching labs is not "back".
+    try {
+      const want = `#/lab/${id}`;
+      if (location.hash !== want) history.replaceState(null, "", want);
+    } catch {
+      //: Sandboxed frames can refuse history writes. The app is fine
+      //: without the URL; it just loses the deep link.
+    }
+  }
+
+  //: `#/lab/<id>` — the only route. Anything else opens the first lab.
+  function labIdFromHash() {
+    const m = /^#\/lab\/([0-9A-Za-z]{1,32})$/.exec(location.hash || "");
+    return m ? m[1] : null;
   }
 
   let geoTimer = null;
@@ -3876,6 +3893,15 @@
   }
 
   onMount(async () => {
+    //: Typing a different #/lab/<id>, or using back/forward, switches labs
+    //: rather than leaving the URL disagreeing with the canvas.
+    const onHash = () => {
+      const id = labIdFromHash();
+      if (id && lab && id !== lab.id && labs.some((l) => l.id === id)) loadLab(id);
+    };
+    window.addEventListener("hashchange", onHash);
+    onDestroy(() => window.removeEventListener("hashchange", onHash));
+
     await checkAuth();
     if (!currentUser) return;
     await boot();
@@ -3899,7 +3925,11 @@
     // for as long as that took to time out.
     try {
       await refreshLabs();
-      if (labs[0]) await loadLab(labs[0].id);
+      //: A lab named in the URL wins, as long as it still exists — a
+      //: stale link should land you somewhere rather than nowhere.
+      const wanted = labIdFromHash();
+      const target = (wanted && labs.some((l) => l.id === wanted) && wanted) || labs[0]?.id;
+      if (target) await loadLab(target);
     } catch (e) {
       error = e.message;
     }
