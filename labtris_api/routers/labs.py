@@ -277,6 +277,10 @@ async def export_lab_payload(session: AsyncSession, lab_id: str) -> dict[str, An
             continue
         node["startup_config"] = row.startup_config
         node["qemu_opts"] = dict(row.qemu_opts or {})
+        # And opts, for the same reason: it holds p4_program, so without
+        # it a bmv2 node round-trips through a pod with its wiring intact
+        # and no P4 program — the switch comes up with nothing loaded.
+        node["opts"] = dict(row.opts or {})
 
     return {
         "format": "labtris-lab-v1",
@@ -738,6 +742,10 @@ async def _clone_topology(
             nic_model=n.get("nic_model"),
             qemu_opts=n.get("qemu_opts") or {},
             startup_config=n.get("startup_config"),
+            # opts was the fifth field this path dropped. It carries
+            # p4_program for bmv2 nodes, so a pod that selected `trim`
+            # arrived with source "none" and a switch with no program.
+            opts=n.get("opts") or {},
             state="defined",
         )
         session.add(node)

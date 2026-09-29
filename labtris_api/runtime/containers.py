@@ -282,24 +282,49 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         ContainerImage(
             id="bmv2",
             label="P4 switch (bmv2)",
-            image="p4lang/behavioral-model:latest",
+            # p4lang/p4c, not p4lang/behavioral-model. The latter ships
+            # simple_switch, simple_switch_CLI and simple_switch_grpc and
+            # NO compiler at all, so `p4c-bm2-ss` was "command not found"
+            # on every start and the fallback below kept the container
+            # alive with a dead switch — a node that reported `running`
+            # and forwarded nothing. p4c carries both the compiler and
+            # simple_switch.
+            image="p4lang/p4c:latest",
             cap_add=("SYS_ADMIN", "NET_BIND_SERVICE"),
             cmd=[
                 "/bin/bash",
                 "-c",
-                # Compile whichever prog.p4 the mount surfaced (curated
-                # built-in or user upload — same shape either way), then
-                # exec simple_switch with the interfaces the runtime will
-                # hot-plug in as s1, s2, … Naming is set by the "s"
-                # iface_scheme in naming.py so the CLI's --interface
-                # argument line matches the names on the canvas.
+                # Three things this has to get right, each of which was
+                # wrong before:
+                #
+                # 1. Compile. p4c-bm2-ss turns prog.p4 into prog.json.
+                # 2. Load it. The old line passed `--no-p4`, which tells
+                #    simple_switch to start *without* a program — it
+                #    logs "ignoring input config" and forwards nothing.
+                # 3. Attach ports. Nothing ever passed `-i`, so the
+                #    switch had no interfaces. Labtris hot-plugs the
+                #    veths in after the container starts, so the ports
+                #    cannot be named at exec time; wait for s1 to appear
+                #    and build the list from what is actually there.
+                #
+                # `--enable-swap` is a *target* option, hence after `--`.
+                # With it, simple_switch_CLI can load_new_config_file and
+                # swap_configs at runtime.
                 (
-                    "cd /p4 && p4c-bm2-ss -o prog.json prog.p4 && "
-                    "exec simple_switch --log-console --no-p4 prog.json || "
-                    "exec tail -f /dev/null"
+                    "cd /p4 && "
+                    "{ p4c-bm2-ss -o prog.json prog.p4 || "
+                    "  { echo 'P4 COMPILE FAILED — switch not started'; "
+                    "    exec tail -f /dev/null; }; } && "
+                    "for _ in $(seq 1 30); do "
+                    "  [ -e /sys/class/net/s1 ] && break; sleep 1; done; "
+                    "ARGS=''; "
+                    "for f in $(ls /sys/class/net | grep -E '^s[0-9]+$' | sort -V); do "
+                    "  ARGS=\"$ARGS -i ${f#s}@$f\"; done; "
+                    "echo \"attaching ports:$ARGS\"; "
+                    "exec simple_switch --log-console prog.json $ARGS -- --enable-swap"
                 ),
             ],
-            source="Docker Hub (p4lang/behavioral-model)",
+            source="Docker Hub (p4lang/p4c — compiler and simple_switch)",
             iface_scheme="s",
             per_node_mounts=(("p4", "/p4"),),
             notes=(
@@ -307,10 +332,12 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
                 "container mounts a per-node directory at /p4 that "
                 "carries prog.p4 — either one of the curated built-ins "
                 "(basic_switch, ecmp, ecn, trim) or a file uploaded via "
-                "POST /nodes/{id}/p4. p4c-bm2-ss compiles on start; a "
-                "compile failure leaves the container up but the "
-                "switch stopped, so the logs stay reachable via the "
-                "console."
+                "POST /nodes/{id}/p4. p4c-bm2-ss compiles on start and "
+                "the switch runs with --enable-swap, so a program can "
+                "also be replaced at runtime through simple_switch_CLI "
+                "without restarting the node. A compile failure leaves "
+                "the container up with the switch stopped and the reason "
+                "in the node log."
             ),
             boot_seconds=5,
         ),
