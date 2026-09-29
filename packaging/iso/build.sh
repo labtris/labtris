@@ -162,12 +162,49 @@ say "Staging additions"
 rm -rf "$WORK"
 mkdir -p "$WORK/add/nocloud" "$WORK/add/labtris" "$WORK/add/labtris-overlay" "$WORK/grub"
 
-install -m 0644 "$HERE/autoinstall/user-data" "$WORK/add/nocloud/user-data"
+# An optional SSH key for the installed machine, so a built ISO can be
+# driven without a console. Off unless asked for: SSH_AUTHORIZED_KEY=...
+# or SSH_AUTHORIZED_KEY_FILE=~/.ssh/id_ed25519.pub. Nothing is baked in by
+# default — an ISO that shipped somebody's key would be a back door, and
+# an ISO that shipped a *generated* key would be worse, because everyone
+# would have the same one.
+#
+# This exists because testing the ISO means logging into the machine it
+# builds, and the only account is one whose password must be changed on
+# first use — which a script cannot do and an automated test should not.
+prepare_autoinstall() {
+  local src=$1 dst=$2 key=""
+  if [ -n "${SSH_AUTHORIZED_KEY_FILE:-}" ]; then
+    [ -r "$SSH_AUTHORIZED_KEY_FILE" ] || die "SSH_AUTHORIZED_KEY_FILE unreadable: $SSH_AUTHORIZED_KEY_FILE"
+    key=$(head -1 "$SSH_AUTHORIZED_KEY_FILE")
+  elif [ -n "${SSH_AUTHORIZED_KEY:-}" ]; then
+    key=$SSH_AUTHORIZED_KEY
+  fi
+  if [ -z "$key" ]; then
+    install -m 0644 "$src" "$dst"
+    return
+  fi
+  case $key in
+    ssh-*|ecdsa-*|sk-*) : ;;
+    *) die "SSH_AUTHORIZED_KEY does not look like a public key" ;;
+  esac
+  # authorized-keys sits under the same `ssh:` block that already sets
+  # install-server and allow-pw, so this only adds a key — it does not
+  # change how passwords behave.
+  awk -v k="$key" '
+    { print }
+    /^  ssh:$/ { print "    authorized-keys:"; print "      - " k }
+  ' "$src" > "$dst"
+  chmod 0644 "$dst"
+  say "autoinstall carries an SSH key for ${key##* }"
+}
+
+prepare_autoinstall "$HERE/autoinstall/user-data" "$WORK/add/nocloud/user-data"
 install -m 0644 "$HERE/autoinstall/meta-data" "$WORK/add/nocloud/meta-data"
 # Subiquity looks here by itself, which is what lets the kernel command line
 # stay free of the ds= argument and its semicolon. The nocloud directory above
 # is kept as the fallback path for anyone who does pass ds= by hand.
-install -m 0644 "$HERE/autoinstall/user-data" "$WORK/add/autoinstall.yaml"
+prepare_autoinstall "$HERE/autoinstall/user-data" "$WORK/add/autoinstall.yaml"
 
 # Build the web UI here rather than on the target. It is static output — a
 # few hundred kilobytes of JS and CSS — so shipping the result removes Node,
