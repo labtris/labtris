@@ -213,7 +213,7 @@ def p4_trim() -> dict:
         "timeout. Swap the program with PUT /nodes/{id}/p4 and restart "
         "that node — p4c-bm2-ss compiles at start, so the running switch "
         "keeps its old program until then.",
-        [node(sw, "p4-switch", "p4lang/behavioral-model:latest", ifaces=2,
+        [node(sw, "p4-switch", "p4lang/p4c:latest", ifaces=2,
               opts={"p4_program": "trim"}, iface_scheme="s"),
          node(h1, "host-1", "alpine:3.20"),
          node(h2, "host-2", "alpine:3.20")],
