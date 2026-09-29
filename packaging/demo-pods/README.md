@@ -166,3 +166,28 @@ local build and has to exist on the host first.
 > The older `rdma-uet-demo` pod has no links at all, so its four nodes
 > arrive unwired and have to be connected by hand on the canvas. This one
 > carries a link, so it comes up as a topology.
+
+## The AI-fabric pods
+
+Built by `build-ai-pods.py`, which is checked in so they are regenerable
+rather than hand-edited JSON. Every one arrives **wired** — the loader
+builds networks from `links` and ignores `interfaces[].network_id`, so a
+pod without links lands as loose boxes on the canvas.
+
+| Pod | Shape | What it is for |
+|---|---|---|
+| `uet-pair` | 2 nodes, 1 link | Real Ultra Ethernet on IP protocol 253. 13 tests × 10 PDS configs × 2 NIC shims via `scripts/uet_test.sh` |
+| `rdma-pair` | 2 nodes, 1 link | Soft-RoCE, `ib_send_bw`. Needs Linux 7.1+ on the host |
+| `p4-trim` | 3 nodes, 2 links | bmv2 running the UEC packet-trimming primitive |
+| `pfc-classes` | 2 nodes, 1 link | Eight priority bands with per-band RED/ECN on a shaped link |
+| `ai-fabric-uet` | 8 nodes, 8 links | 2 spines × 2 leaves × 4 UET hosts — two equal-cost paths, so spraying is observable |
+
+Local images must exist on the host first: `labtris/uet-ref` and
+`labtris/rdma-host` are built from `packaging/dockerfiles/`. The rest
+pull from public registries.
+
+    labtris lab load packaging/demo-pods/ai-fabric-uet.pod.tar.gz
+
+> The older `rdma-uet-demo` pod has 4 nodes, **0 links** and half its
+> interfaces unattached, so it arrives unwired and points at the
+> superseded `ue-stack` image. `uet-pair` and `rdma-pair` replace it.
