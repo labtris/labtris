@@ -218,12 +218,18 @@ prepare_autoinstall() {
   # is one account on an image the operator deliberately built for
   # unattended use, and the key is the thing protecting it. Do not use
   # this mode for an image that will be handed to anyone else.
+  #
+  # echo, not printf: a first attempt used `printf %s\\n` and the escape
+  # did not survive Python, awk, YAML and sh in series — the installed
+  # file read `NOPASSWD:ALLn`, sudo rejected it as a malformed path, and
+  # the machine had a sudoers drop-in that did nothing. Verify the file
+  # content, not just that the command ran.
   awk -v k="$key" '
     { print }
     /^  ssh:$/ { print "    authorized-keys:"; print "      - " k }
     /labtris-expire-admin\.service$/ {
       print "    - curtin in-target --target=/target -- sh -c '"'"'mkdir -p /var/lib/labtris && touch /var/lib/labtris/admin-expired'"'"'"
-      print "    - curtin in-target --target=/target -- sh -c '"'"'printf %s\\n \"labtris-admin ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/90-labtris-automation; chmod 0440 /etc/sudoers.d/90-labtris-automation'"'"'"
+      print "    - curtin in-target --target=/target -- sh -c '"'"'echo \"labtris-admin ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/90-labtris-automation; chmod 0440 /etc/sudoers.d/90-labtris-automation'"'"'"
     }
   ' "$src" > "$dst"
   chmod 0644 "$dst"
