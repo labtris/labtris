@@ -83,6 +83,17 @@ CLONE_NEWNET = 0x40000000
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
 
+def _root_kw(parent: str | None) -> dict[str, str]:
+    """`{"parent": p}`, or `{}` when this qdisc attaches to the root.
+
+    pyroute2 0.8 runs `parent` through an integer conversion, so passing
+    None — which older versions read as "root" — raises "required
+    argument is not an integer" from inside the netlink packer. Omitting
+    the key entirely is what 0.8 wants, and older versions accept it too.
+    """
+    return {"parent": parent} if parent else {}
+
+
 def _kbit_to_bytes(kbit: Any) -> int:
     """tbf speaks bytes per second; the UI and the API speak kbit."""
     return max(1, int(int(kbit) * 1000 / 8))
@@ -818,13 +829,19 @@ class PyrouteNet:
                         kw["prob_corrupt"] = corrupt
                     ipr.tc("add", "netem", **kw)
                 if rate:
-                    parent = "1:0" if netem else None
+                    # `parent` is OMITTED for a root qdisc, never passed as
+                    # None. pyroute2 used to read None as root; 0.8 puts it
+                    # through an int conversion and raises "required
+                    # argument is not an integer" from deep in the packer.
+                    # The effect was that every shaped link failed — rate,
+                    # ecn and pfc alike — with that one opaque message and
+                    # nothing in the netd log. See _root_kw below.
                     ipr.tc(
                         "add",
                         "tbf",
                         index=idx,
                         handle="2:0" if netem else "1:0",
-                        parent=parent,
+                        **_root_kw("1:0" if netem else None),
                         # tbf's rate is BYTES per second, so a kbit figure has
                         # to be divided by 8. Passing kbit*1000 straight in ran
                         # every shaped link at eight times the requested
@@ -852,7 +869,7 @@ class PyrouteNet:
                         "red",
                         index=idx,
                         handle=handle,
-                        parent=parent,
+                        **_root_kw(parent),
                         limit=ecn_max * 4,
                         min=ecn_min,
                         max=ecn_max,
