@@ -13,15 +13,23 @@ name: docker-image
 #   * tag v*             → :<version> + :latest
 #   * manual dispatch    → :<sha>
 #
-# Architectures: amd64 on every push, amd64+arm64 on a version tag.
+# linux/amd64 only, deliberately.
 #
-# `docker pull` on an arm64 machine fails outright against an amd64-only
-# manifest — "no matching manifest for linux/arm64/v8" — which is a poor
-# first contact even though Labtris itself needs a Linux host with KVM.
-# So releases are multi-arch. Main is not, because arm64 here means QEMU
-# emulation in Actions and uet-ref compiles libfabric from source; paying
-# that on every push buys nothing, since the thing people pull by tag is
-# the release.
+# `docker pull` on an arm64 machine fails with "no matching manifest for
+# linux/arm64/v8" — worth knowing, and documented in the install guide
+# with the --platform flag that works around it.
+#
+# The reason it is all-or-nothing: docker-compose.yml runs this same core
+# image three times, as labnet, netd and api. netd is what creates the
+# veths and starts lab nodes, so the core image's architecture *is* the
+# host's. An arm64 uet-ref or rdma-host would have no host to run on
+# unless the core were arm64 too — there is no split where an amd64
+# controller schedules arm64 nodes.
+#
+# So arm64 means all three, and the core is the expensive one: qemu-utils,
+# wireshark-qt, and a full Python and Node build, emulated. Nobody has
+# asked yet, and whether uet-ref even builds on arm64 is unknown — it
+# links XDP and eBPF. Revisit when a user needs it, not before.
 
 on:
   push:
@@ -64,12 +72,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Only needed for the emulated arm64 leg, so it is skipped on the
-      # amd64-only path rather than run unconditionally.
-      - name: Set up QEMU for cross-build
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -103,4 +105,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: linux/amd64
