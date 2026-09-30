@@ -1,4 +1,4 @@
-Labtris 0.11.0 — Ultra Ethernet on a real wire, and several things
+Labtris 0.12.0 — Ultra Ethernet on a real wire, and several things
 that had never actually run.
 
 `uet-ref` packages the Ultra Ethernet Consortium's own reference
@@ -43,15 +43,15 @@ work there at all.
 curl -fsSL https://labtris.com/install | sudo bash
 ```
 
-Or from the ISO — `labtris-0.11.0-amd64.iso.part-*` on the release
+Or from the ISO — `labtris-0.12.0-amd64.iso.part-*` on the release
 page. Reassemble and verify:
 
 ```
-cat labtris-0.11.0-amd64.iso.part-* > labtris-0.11.0-amd64.iso
-sha256sum -c labtris-0.11.0-amd64.sha256
+cat labtris-0.12.0-amd64.iso.part-* > labtris-0.12.0-amd64.iso
+sha256sum -c labtris-0.12.0-amd64.sha256
 ```
 
-Upgrading from 0.10.0: `cd /opt/labtris && git pull && sudo
+Upgrading from 0.11.0: `cd /opt/labtris && git pull && sudo
 systemctl restart labtris-api`. No migration.
 
 ## Ultra Ethernet node kinds

@@ -132,7 +132,10 @@ def manifest(p: dict, mode: str = "cold") -> dict:
     nodes = p["lab"]["nodes"]
     return {
         "format": "labtris-pod-v1",
-        "labtris_version": "0.11.0",
+        # Informational only — the loader does not gate on it. Kept in
+        # step with pyproject rather than pinned, so a pod built today
+        # does not claim to come from a release it predates.
+        "labtris_version": "0.12.0",
         "pod_id": _id("POD", abs(hash(p["lab"]["name"])) % 9999),
         "lab_id": p["lab"]["id"],
         "lab_name": p["lab"]["name"],
