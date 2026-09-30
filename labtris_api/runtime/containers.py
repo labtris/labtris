@@ -227,6 +227,34 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             boot_seconds=3,
         ),
         ContainerImage(
+            id="uet-htsim",
+            label="UET congestion-control simulator (UEC htsim)",
+            image="ghcr.io/labtris/uet-htsim:latest",
+            source=(
+                "ghcr.io/labtris/uet-htsim — built by CI from "
+                "packaging/dockerfiles/uet-htsim/ (upstream: "
+                "github.com/ultraethernet/uet-htsim, BSD-2-Clause, itself "
+                "a fork of Broadcom/csg-htsim)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "The counterpart to uet-ref, not a replacement. uet-ref "
+                "puts real UET frames on a real veth, so every sequence "
+                "number and NACK code is a genuine protocol fact — but "
+                "the link is the host's memory bandwidth, so a throughput "
+                "figure from it describes the machine. htsim models "
+                "packets instead: nothing touches the wire, but the link "
+                "is 800 Gbps because you said so, and incast and fairness "
+                "at that rate mean something. uet-ref answers 'is the "
+                "protocol correct', this answers 'is the algorithm good'. "
+                "Nine congestion-control algorithms to compare — NSCC "
+                "(UEC's own, default), DCTCP, DCQCN, NDP, EQDS, RoCE, "
+                "PFC, Swift, HPCC — over fat trees, default 3-tier with "
+                "12us RTT. Examples in /opt/htsim/sim/datacenter."
+            ),
+            boot_seconds=3,
+        ),
+        ContainerImage(
             id="ue-sim",
             label="UE-Sim (Ultra Ethernet simulator on ns-3)",
             image="labtris/ue-sim:latest",

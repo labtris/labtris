@@ -65,6 +65,9 @@ jobs:
           - name: rdma-host
             context: packaging/dockerfiles/rdma-host
             file: packaging/dockerfiles/rdma-host/Dockerfile
+          - name: uet-htsim
+            context: packaging/dockerfiles/uet-htsim
+            file: packaging/dockerfiles/uet-htsim/Dockerfile
     permissions:
       contents: read
       packages: write
