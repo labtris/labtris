@@ -1,8 +1,41 @@
-Labtris 0.11.0 — Ultra Ethernet lands: `ue-sim` (Kaima Lab's ns-3
-simulator, packaged as a Labtris node) for deterministic protocol
-work, and `ue-stack` (a new PoC userspace UET daemon in this repo)
-for real-packet labs. Plus FreeRADIUS as a container profile for
-AAA-shaped labs.
+Labtris 0.11.0 — Ultra Ethernet on a real wire, and several things
+that had never actually run.
+
+`uet-ref` packages the Ultra Ethernet Consortium's own reference
+provider (MIT): SES with tagged and untagged messages and RMA, PDS,
+TSS with AES-GCM, all four delivery modes, and a partial
+implementation of UET congestion control. It needs no hardware — a
+raw Ethernet socket on an ordinary veth is enough. UET is its own
+transport on IP protocol 253, and the reference Wireshark dissector
+ships alongside, so a capture decodes 103 fields instead of reading
+`Unknown (253)`.
+
+Five AI-fabric labs now arrive bundled and wired on first boot: a UET
+pair, an RDMA pair, a bmv2 switch running the UEC packet-trimming
+program, a link with eight priority classes, and a two-spine
+two-leaf fabric with four UET endpoints. Every image they need pulls
+from a public registry.
+
+### Three things that were broken and are not any more
+
+**P4 never ran.** The bmv2 node used `p4lang/behavioral-model`, which
+ships no compiler at all, so `p4c-bm2-ss` was "command not found" on
+every start. A fallback kept the container alive, so Labtris reported
+the node `running` while the switch was dead. The command also passed
+`--no-p4`, which tells simple_switch to start *without* a program,
+and never passed `-i`, so it had no ports either. All three fixed;
+`simple_switch_CLI` now shows the program's own match table.
+
+**Link impairment never applied** on any install with a current
+pyroute2. The tbf and red calls passed `parent=None` for a root
+qdisc; 0.8 puts that through an integer conversion and raises
+"required argument is not an integer". Rate, ECN and PFC all failed
+with that one opaque message and nothing in the log.
+
+**The container shipped none of the runtime packaging data** — no
+demo pods, no dissector, no P4 built-ins — so a compose install was a
+materially different product from an ISO install, and P4 could not
+work there at all.
 
 ## Install
 
@@ -21,7 +54,7 @@ sha256sum -c labtris-0.11.0-amd64.sha256
 Upgrading from 0.10.0: `cd /opt/labtris && git pull && sudo
 systemctl restart labtris-api`. No migration.
 
-## New: two Ultra Ethernet node kinds, deliberately different
+## Ultra Ethernet node kinds
 
 | | `ue-sim` | `ue-stack` |
 |---|---|---|
