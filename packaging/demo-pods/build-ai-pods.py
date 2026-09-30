@@ -328,12 +328,60 @@ def ai_fabric() -> dict:
     )
 
 
+def fw_vwire() -> dict:
+    """A container firewall inline on a virtual wire — the DPU/IoT shape.
+
+    Not in SEED: this is a development lab, not something every install
+    should find on its canvas.
+
+    Both hosts sit in one subnet and do not know the firewall is there.
+    It has two interfaces, no IP on the data path, and bridges between
+    them — which is how a DPU or an inline gateway actually inserts, and
+    means a function can be added or removed without re-addressing
+    anything.
+
+    Filter with nftables' `bridge` family rather than br_netfilter. The
+    latter needs net.bridge.bridge-nf-call-iptables on the *host*, so a
+    lab depending on it filters on one machine and silently forwards
+    everything on another.
+
+        fw:   ip link add br0 type bridge
+              ip link set eth0 master br0; ip link set eth1 master br0
+              ip link set br0 up
+              nft add table bridge filter
+              nft add chain bridge filter forward '{ type filter hook forward priority 0; }'
+              nft add rule bridge filter forward tcp dport 23 drop
+    """
+    a, b = _id("FWHA", 1), _id("FWHB", 2)
+    fw = _id("FWFW", 3)
+    return pod(
+        "fw-vwire",
+        "A firewall container inline on a virtual wire. Two hosts in one "
+        "subnet, a two-interface bridging node between them with no IP on "
+        "the data path — the shape a BlueField DPU or an inline IoT "
+        "gateway takes. Filter with nftables' bridge family; br_netfilter "
+        "depends on a host sysctl and fails silently where it is not set.",
+        # All three on the same image: the hosts want socat and tcpdump to
+        # be a usable test rig, and a listener backgrounded from busybox sh
+        # does not survive a console exec, so alpine hosts could not hold a
+        # port open long enough to prove a rule.
+        [node(a, "host-a", "ghcr.io/labtris/fw:latest"),
+         node(fw, "fw", "ghcr.io/labtris/fw:latest", ifaces=2),
+         node(b, "host-b", "ghcr.io/labtris/fw:latest")],
+        [link(_id("FWL", 1), iface(a), iface(fw, 0)),
+         link(_id("FWL", 2), iface(fw, 1), iface(b))],
+        {a: {"x": 80, "y": 180}, fw: {"x": 360, "y": 180},
+         b: {"x": 640, "y": 180}},
+    )
+
+
 PODS = {
     "uet-pair": uet_pair,
     "rdma-pair": rdma_pair,
     "p4-trim": p4_trim,
     "pfc-classes": pfc_classes,
     "ai-fabric-uet": ai_fabric,
+    "fw-vwire": fw_vwire,
 }
 
 
