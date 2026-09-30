@@ -51,7 +51,12 @@ async def main() -> int:
     from labtris_api.db import SessionLocal
     from labtris_api.models import Lab
 
-    pod_dir = ROOT / "packaging" / "demo-pods"
+    # Same resolution problem as the P4 builtins: on the container the
+    # package is a wheel in site-packages and packaging/ lives at
+    # /opt/labtris, so a __file__-relative path finds nothing.
+    from labtris_api.config import packaging_dir
+
+    pod_dir = packaging_dir("demo-pods")
     if not pod_dir.is_dir():
         print(f"no pod directory at {pod_dir}; nothing to seed")
         return 0

@@ -9,6 +9,7 @@ import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from labtris_api.config import packaging_dir
 from labtris_api.errors import runtime_error, unprocessable
 
 #: Each session is a whole X server plus a Wireshark process — on the order of
@@ -21,7 +22,7 @@ MAX_SESSIONS = 4
 #: UI is a list of undecoded IPv4 frames and the lab teaches nothing.
 #: Any `.lua` dropped in here is picked up, so adding a protocol is a
 #: file rather than a code change.
-PLUGIN_DIR = Path(__file__).resolve().parent.parent / "packaging" / "wireshark"
+PLUGIN_DIR = packaging_dir("wireshark")
 
 
 def _lua_args() -> str:

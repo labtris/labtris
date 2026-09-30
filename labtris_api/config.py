@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,6 +97,32 @@ class Settings(BaseSettings):
     # /api/v1 — and disabling it removes a documented URL. Flip via
     # LABTRIS_RESTCONF_ENABLED=false when there is a reason to.
     restconf_enabled: bool = True
+
+
+def packaging_dir(name: str) -> Path:
+    """Locate a directory under `packaging/` that the running product reads.
+
+    Three layouts have to work, and one of them broke silently:
+
+    * a source checkout and the ISO install, where `packaging/` sits beside
+      the Python package — `__file__`-relative resolution finds it;
+    * the container, where the package is installed as a wheel into
+      site-packages and `packaging/` is copied to /opt/labtris. Relative
+      resolution lands in site-packages and finds nothing, so every P4
+      built-in lookup 404'd and UET captures never got their dissector;
+    * anywhere else, via LABTRIS_PACKAGING_DIR.
+
+    Returns the first that exists, else the `__file__`-relative path so a
+    caller's own "is it there" check reports a sensible location.
+    """
+    env = os.environ.get("LABTRIS_PACKAGING_DIR")
+    candidates = [Path(env) / name] if env else []
+    candidates.append(Path(__file__).resolve().parent.parent / "packaging" / name)
+    candidates.append(Path("/opt/labtris/packaging") / name)
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[-2] if len(candidates) > 1 else candidates[0]
 
 
 settings = Settings()

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import User, get_current_user
+from labtris_api.config import packaging_dir
 from labtris_api.db import get_session
 from labtris_api.errors import bad_request, not_found
 from labtris_api.lifecycle import get_node
@@ -31,7 +32,10 @@ from labtris_api.runtime.docker import per_node_dir
 router = APIRouter(tags=["p4"])
 
 
-_P4_BUILTINS_DIR = Path(__file__).resolve().parents[2] / "packaging" / "p4-programs"
+#: Resolved through config.packaging_dir so the container layout works.
+#: __file__-relative alone lands in site-packages on the image, where
+#: this directory does not exist — every builtin lookup 404'd.
+_P4_BUILTINS_DIR = packaging_dir("p4-programs")
 _P4_MOUNT_NAME = "p4"
 _P4_FILE = "prog.p4"
 

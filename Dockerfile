@@ -118,6 +118,27 @@ COPY --from=webbuild /web/dist /opt/labtris/web/dist
 # installer ISO.
 COPY packaging/recipes /opt/labtris/recipes
 
+# Everything else under packaging/ that the running product reads at
+# runtime. The ISO ships the whole source tree, so an ISO install has had
+# these all along; the container did not, which meant the same version of
+# Labtris behaved differently depending on how it was installed:
+#
+#   demo-pods/   the five AI-fabric labs. The ISO seeds them on first
+#                boot and the container had no pods to seed at all, so a
+#                compose install started with an empty lab list.
+#   wireshark/   uet.lua. Without it a UET capture in the container reads
+#                "Unknown (253)" — the dissector fix reached ISO users
+#                only.
+#   p4-programs/ the built-ins PUT /nodes/{id}/p4 selects from.
+#                _P4_BUILTINS_DIR resolves relative to __file__, so on the
+#                container that directory did not exist and every builtin
+#                lookup 404'd. P4 could not work in a container at all.
+#   seed-demo-pods.py  so a container deployment can seed the same labs.
+COPY packaging/demo-pods /opt/labtris/packaging/demo-pods
+COPY packaging/wireshark /opt/labtris/packaging/wireshark
+COPY packaging/p4-programs /opt/labtris/packaging/p4-programs
+COPY packaging/seed-demo-pods.py /opt/labtris/packaging/seed-demo-pods.py
+
 # Non-root user for the API (matches the ISO's `labtris` user).
 # netd itself still needs root for netlink; the compose file overrides
 # `user:` for that container.
@@ -130,6 +151,14 @@ RUN groupadd --system labtris \
  && useradd  --system --gid labtris --home-dir /opt/labtris labtris \
  && mkdir -p /opt/labtris /run/labtris /var/lib/labtris \
  && chown labtris:labtris /opt/labtris /var/lib/labtris
+
+# An orchestrator needs to tell "the container is up" from "the API
+# answers", and without this they are the same thing — the failure shape
+# that let a dead P4 switch report `running` for months. /api/v1/auth/state
+# is the one endpoint that needs no session, so it works before an account
+# exists. start-period covers the migrations the entrypoint runs first.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+  CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/v1/auth/state', timeout=4).status==200 else 1)" || exit 1
 
 # Entrypoint dispatch.
 COPY packaging/docker/entrypoint.sh /usr/local/bin/labtris-entrypoint
