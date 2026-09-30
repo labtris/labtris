@@ -236,8 +236,17 @@ labtris_mcp/     the MCP server and the tool definitions
 web/             the Svelte interface
 migrations/      Alembic schema history
 packaging/       the installer, the ISO build, the systemd units
-tests/           306 tests: unit, plus acceptance against a real Postgres
+tests/           343 unit, plus 110 acceptance against a real Postgres
 ```
+
+## Contact
+
+| | |
+|---|---|
+| Bugs and feature requests | [GitHub issues](https://github.com/labtris/labtris/issues) |
+| Security | **contact@labtris.com** — see [`SECURITY.md`](SECURITY.md). Please do not open a public issue for anything exploitable |
+| Anything else | **contact@labtris.com** |
+| Docs | [docs.labtris.com](https://docs.labtris.com) |
 
 ## Licence
 
