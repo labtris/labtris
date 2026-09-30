@@ -15,3 +15,17 @@ dist/
 docs/_site/
 # wrangler's local deploy cache
 .wrangler/
+
+# Built by packaging/build-guacd.sh from the Apache release tarball. Not
+# committed: it is a ~350 KB binary that anyone can reproduce with one
+# command, the script pins and checks the source digest, and a binary in git
+# is a thing reviewers cannot read. The ISO build and a 26.04 native install
+# both call the script.
+packaging/guacd-debs/
+
+# The upstream Guacamole tree, unpacked here by build-guacd.sh so the build
+# can COPY it in (extracting inside an emulated amd64 container fails on
+# every file). The script removes it when it finishes, but a commit made
+# WHILE a build is running would otherwise sweep ~30 MB of third-party
+# source into the repo — which nearly happened, hence this line.
+packaging/dockerfiles/guacd/src/

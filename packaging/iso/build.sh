@@ -61,14 +61,28 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # these call die() and it is not defined until this line.
 [ -n "$SUITE" ] || die "no codename known for Ubuntu ${RELEASE%.*}; set SUITE= explicitly"
 
-# 26.04 is not buildable yet, and the reason is not the ISO machinery: the
-# package set in packaging/packages.txt names python3.12 and the Guacamole
-# libraries, and resolute has neither — it ships Python 3.14 and does not
-# package Guacamole at all. Left as an explicit refusal rather than a
-# build that fails an hour in on an apt resolve.
+# 26.04 is not buildable yet, and the reason is not the ISO machinery.
+#
+# Guacamole USED to be half of this and no longer is: packaging/build-guacd.sh
+# builds guacd 1.6.0 from the Apache release tarball for resolute, and
+# install-labtris.sh installs that .deb when the release has no guacd of its
+# own. What it cannot build is the RDP plugin — 1.6.0 does not compile against
+# FreeRDP 3, the only FreeRDP resolute has — so a 26.04 image would have VNC,
+# SSH and telnet consoles and no RDP.
+#
+# What still blocks it outright is Python: packages.txt needs python3.12 and
+# python3.12-venv, and resolute has the interpreter but NOT the venv package,
+# so the virtualenv step fails. That is a pyproject pin (>=3.12,<3.13) to
+# lift and a test pass on a newer interpreter, not a packaging fix.
+#
+# Left as an explicit refusal rather than a build that fails an hour in on an
+# apt resolve.
 if [ "${RELEASE%.*}" = "26.04" ] && [ "${FORCE_SUITE:-0}" != 1 ]; then
-  die "Ubuntu 26.04 ISOs are not buildable yet: packages.txt needs python3.12
-       (resolute ships 3.14) and guacd/libguac-* (not packaged for resolute).
+  die "Ubuntu 26.04 ISOs are not buildable yet: packages.txt needs
+       python3.12-venv, which resolute does not package (python3.12 itself is
+       there, so installing that alone will not help).
+       guacd is no longer a blocker — packaging/build-guacd.sh builds it,
+       though without RDP, which needs FreeRDP 2.
        Use the container install on 26.04. FORCE_SUITE=1 to try anyway."
 fi
 

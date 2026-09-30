@@ -237,6 +237,49 @@ fi
 # fails with "Unable to locate package" even though nginx is installed and
 # running. A complete set of media packages must mean no network call, not a
 # network call that happens to be redundant.
+# Guacamole is not in every release, and where it is absent we carry our own.
+#
+# Ubuntu stopped packaging guacd after noble: 26.04 has no guacd,
+# libguac-client-vnc0 or libguac-client-rdp0 at all. Leaving them in the list
+# there makes apt fail the whole install on "Unable to locate package", and
+# dropping them silently gives a machine whose VNC console fails at connect
+# with nothing explaining why.
+#
+# So: ask apt whether it has a candidate, and if not, use the .deb that
+# packaging/build-guacd.sh builds from the Apache release tarball. That
+# package Provides the libguac-client-* names, so one file covers all three.
+#
+# Checked per-release rather than by version number — when Ubuntu packages it
+# again this reverts to the archive copy with no edit here.
+GUAC_PKGS="guacd libguac-client-vnc0 libguac-client-rdp0"
+if ! apt-cache policy guacd 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+  LOCAL_GUACD=""
+  for d in "$DEBS" "$(dirname "$0")/guacd-debs"; do
+    [ -n "$d" ] || continue
+    for f in "$d"/guacd_*_"$(dpkg --print-architecture)".deb; do
+      [ -f "$f" ] && LOCAL_GUACD="$f"
+    done
+  done
+  if [ -n "$LOCAL_GUACD" ]; then
+    say "  no guacd in this release — installing $(basename "$LOCAL_GUACD")"
+    # Let apt resolve its dependencies rather than dpkg -i, which would
+    # install it and leave the libraries missing.
+    # No `|| die` — this file defines only say(), and set -e already aborts
+    # here. guacd is not decoration: without it every VNC and RDP console
+    # fails at connect, so stopping is right.
+    apt-get install -y --no-install-recommends "$LOCAL_GUACD"
+  else
+    say "  WARNING: no guacd in this release and no bundled .deb for $(dpkg --print-architecture)."
+    say "           VNC and RDP consoles will fail at connect. Build one with:"
+    say "             ./packaging/build-guacd.sh"
+  fi
+  # Either way they must leave the apt list, or the fetch below fails on names
+  # this release does not have.
+  for g in $GUAC_PKGS; do
+    PACKAGES=$(printf '%s' "$PACKAGES" | tr ' ' '\n' | grep -vx "$g" | tr '\n' ' ')
+  done
+fi
+
 MISSING=""
 for pkg in $PACKAGES; do
   dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
