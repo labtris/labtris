@@ -9,6 +9,61 @@ Sibling roadmaps:
 
 ---
 
+## Decisions taken, with the reasoning
+
+Written down because each was evaluated properly once and would
+otherwise be re-argued from zero.
+
+### amd64 only — 2026-09-30
+
+`docker pull` on an arm64 machine fails with "no matching manifest for
+linux/arm64/v8". That is known and documented, not an oversight.
+
+It is all-or-nothing rather than per-image: `docker-compose.yml` runs the
+core image three times, as `labnet`, `netd` and `api`. `netd` creates the
+veths and starts lab nodes, so the core image's architecture *is* the
+host's. An arm64 `uet-ref` would have no host to run on unless the core
+were arm64 too — there is no split where an amd64 controller schedules
+arm64 nodes. And the core is the expensive one to emulate: qemu-utils,
+wireshark-qt, a full Python and Node build.
+
+The case that will bring this back: **BlueField DPUs and IoT gateways are
+Arm**, and someone developing a containerised network function for one
+would want an Arm host. The counter-argument, and why this stays closed
+for now: what a lab proves is the network design — topology, rules,
+protocol behaviour, packet-level results — and none of that changes with
+the CPU. The arm64 binary still has to be built and smoke-tested in their
+own CI before it ships, and that was never Labtris's job.
+
+Revisit when someone runs Labtris on an Arm host, not before. Also
+unknown: whether `uet-ref` builds on arm64 at all, since it links XDP and
+eBPF.
+
+### Do not build on IPDK — 2026-09-30
+
+IPDK (`github.com/ipdk-io`) looked like the natural source of a real P4
+control plane — P4Runtime, gRPC, DPDK and IPU targets. It is winding
+down:
+
+| repo | stars | state |
+|---|---|---|
+| `networking-recipe` (the P4 Control Plane) | 41 | archived 2026-05-11 |
+| `k8s-infra-offload` | 26 | archived 2026-02-24 |
+| `stratum-dev` | 7 | archived 2026-05-11 |
+| `krnlmon` | 5 | archived 2026-05-13 |
+| `ipdk` | 194 | last push 2025-12-15 |
+
+What remains active is documentation (`p4cp-userguide`) and a playbook.
+The storage half already moved to OPI. Licensing was never the obstacle —
+Apache-2.0 sits fine beside MIT — maintenance is.
+
+If a P4 control plane beyond bmv2's Thrift CLI is wanted: P4Runtime
+directly, or `p4lang/PI`. bmv2 already ships `simple_switch_grpc` in the
+image we publish; we simply do not use it yet. Read IPDK for how
+infrastructure offload is structured; do not depend on it.
+
+---
+
 ## Lab the LLM serving path
 
 Added 2026-09-30 from a systems write-up of a production inference
