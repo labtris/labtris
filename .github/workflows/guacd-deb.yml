@@ -1,0 +1,73 @@
+# Build the guacd .deb on a native amd64 runner.
+#
+# It cannot be built on the maintainer's arm64 Mac: under qemu-user the
+# compile succeeds and then dpkg-deb's tar cannot stat a symlink
+# ("Function not implemented"), so the package never gets written.
+# packaging/build-guacd.sh refuses that combination outright and points here.
+#
+# Ubuntu stopped packaging guacd after noble, so on 26.04 this .deb is the
+# only thing standing between a fresh install and dead VNC consoles.
+name: guacd .deb
+
+on:
+  push:
+    paths:
+      - packaging/build-guacd.sh
+      - packaging/dockerfiles/guacd/Dockerfile
+      - .github/workflows/guacd-deb.yml
+  workflow_dispatch:
+    inputs:
+      guac_version:
+        description: Guacamole version to build
+        default: "1.6.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # ubuntu-latest is amd64, which is the whole point of building here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the package
+        env:
+          GUAC_VERSION: ${{ inputs.guac_version || '1.6.0' }}
+        run: ARCH=amd64 ./packaging/build-guacd.sh
+
+      # The build already refuses to package without dependencies or without
+      # the VNC, SSH and telnet plugins. This checks the other half: that the
+      # result installs on a clean 26.04 and the daemon actually starts.
+      # A .deb that builds and cannot run is the failure mode this whole
+      # thing exists to avoid.
+      - name: Install and run it on a clean 26.04
+        run: |
+          docker run --rm -v "$PWD/packaging/guacd-debs:/debs:ro" ubuntu:26.04 bash -eux -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq /debs/guacd_*_amd64.deb
+            guacd -v
+            # Every shipped object must resolve. Note the -e: if the file is
+            # missing, ldd prints nothing and a naive grep -c counts zero,
+            # which reads as success.
+            for f in /usr/sbin/guacd /usr/lib/libguac-client-vnc.so.0 \
+                     /usr/lib/libguac.so.25 /usr/lib/libguac-terminal.so.2; do
+              [ -e "$f" ] || { echo "MISSING: $f"; exit 1; }
+              # `if`, not `ldd | grep && exit`: under set -e that form aborts
+              # when grep finds NOTHING, which is the passing case.
+              if ldd "$f" | grep -q "not found"; then
+                echo "unresolved libraries in $f"; ldd "$f" | grep "not found"; exit 1
+              fi
+            done
+            guacd -b 127.0.0.1 -l 4822 &
+            sleep 3
+            (exec 3<>/dev/tcp/127.0.0.1/4822) || { echo "guacd is not listening"; exit 1; }
+            echo "guacd listening on 4822"
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guacd-deb-amd64
+          path: packaging/guacd-debs/*.deb
+          if-no-files-found: error

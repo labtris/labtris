@@ -83,6 +83,35 @@ mkdir -p "$WORK/src"
 tar xzf "$CACHE/$TARBALL" -C "$WORK/src" --strip-components=1
 [ -f "$WORK/src/configure" ] || die "no configure script in the unpacked tree"
 
+# Refuse the one combination that cannot work, rather than spending twenty
+# minutes compiling and failing at the last step.
+#
+# Under qemu-user (linux/amd64 on an arm64 machine) the compile and the
+# dependency computation both succeed, and then dpkg-deb shells out to tar,
+# which cannot stat a symlink:
+#
+#   tar: ./usr/lib/libguac.so.25: Cannot stat: Function not implemented
+#   dpkg-deb: error: tar -cf subprocess failed with exit status 2
+#
+# The same gap broke extraction at the start, which is why the tarball is
+# unpacked on the host. There is no host-side workaround for this one: the
+# symlinks are created by `make install` inside the container.
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH:$PLATFORM" in
+  arm64:linux/amd64|aarch64:linux/amd64)
+    [ "${ALLOW_EMULATED:-0}" = 1 ] || die "cannot build an amd64 package on an arm64 host.
+
+       qemu-user does not implement the syscall tar uses to stat a symlink,
+       so dpkg-deb fails at the final step after a full compile. Build it
+       where it will run:
+
+         - CI: .github/workflows/guacd-deb.yml builds it on a native runner
+         - or on any amd64 Linux box: ./packaging/build-guacd.sh
+
+       ALLOW_EMULATED=1 to attempt it anyway and see the failure yourself."
+    ;;
+esac
+
 say "Building for $PLATFORM (this is slow under emulation)"
 docker build --platform "$PLATFORM" \
   --build-arg "GUAC_VERSION=$GUAC_VERSION" \
