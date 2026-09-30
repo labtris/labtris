@@ -104,13 +104,13 @@ def iface(nid: str, i: int = 0) -> str:
 
 
 def pod(name: str, description: str, nodes: list[dict], links: list[dict],
-        geometry: dict[str, dict]) -> dict:
+        geometry: dict[str, dict], hooks: str | None = None) -> dict:
     lab_id = _id("LAB", abs(hash(name)) % 9999)
     for n in nodes:
         n["lab_id"] = lab_id
     for l in links:
         l["lab_id"] = lab_id
-    return {
+    out = {
         "format": "labtris-lab-v1",
         "geometry": {"nodes": geometry, "links": {},
                      "view": {"x": 80, "y": 40, "k": 1}},
@@ -126,6 +126,9 @@ def pod(name: str, description: str, nodes: list[dict], links: list[dict],
             "nodes": nodes,
         },
     }
+    if hooks:
+        out["_hooks"] = hooks
+    return out
 
 
 def manifest(p: dict, mode: str = "cold") -> dict:
@@ -155,7 +158,14 @@ def manifest(p: dict, mode: str = "cold") -> dict:
 
 def write(p: dict, out: Path) -> int:
     man = manifest(p)
+    man["has_hooks"] = bool(p.get("_hooks"))
     with tarfile.open(out, "w:gz") as tar:
+        if p.get("_hooks"):
+            raw = p["_hooks"].encode()
+            ti = tarfile.TarInfo("hooks.yml")
+            ti.size = len(raw)
+            ti.mtime = 0
+            tar.addfile(ti, BytesIO(raw))
         for fname, obj in (("lab.json", p), ("snapshot.json", man),
                            ("templates.json", [])):
             raw = json.dumps(obj, indent=2).encode()
@@ -201,6 +211,27 @@ def rdma_pair() -> dict:
          node(b, "rdma-b", "ghcr.io/labtris/rdma-host:latest")],
         [link(_id("RDML", 1), iface(a), iface(b))],
         {a: {"x": 120, "y": 180}, b: {"x": 520, "y": 180}},
+        # The one lab here that can start cleanly and then do nothing.
+        # soft-RoCE needs a 7.1+ host kernel and no distribution ships one,
+        # so the likely first experience is a transfer that connects and
+        # moves zero bytes with nothing to read. A container shares the
+        # host kernel, so `uname -r` inside a node reports the host's — the
+        # check costs nothing and turns a silent dead end into a sentence.
+        hooks="""ready_when: all_nodes_running
+hooks:
+  - name: "host kernel is 7.1+ (below this, soft-RoCE moves no data)"
+    kind: command
+    node: rdma-a
+    command: "sh -c 'k=$(uname -r); maj=${k%%.*}; r=${k#*.}; min=${r%%.*};
+              if [ \\"$maj\\" -gt 7 ] || { [ \\"$maj\\" -eq 7 ] && [ \\"$min\\" -ge 1 ]; };
+              then echo \\"kernel $k supports soft-RoCE\\";
+              else echo \\"kernel $k is too old — rdma_rxe gained its
+              per-namespace UDP 4791 socket in 7.1. ib_send_bw will connect
+              and transfer nothing. Install a mainline 7.x kernel.\\"; exit 1; fi'"
+    expect_rc: 0
+    expect_stdout_regex: "supports soft-RoCE"
+    timeout_s: 15
+""",
     )
 
 
