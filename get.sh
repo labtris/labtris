@@ -64,6 +64,27 @@ if [ "$FORCE_OS" != 1 ]; then
   fi
 fi
 
+# Not a gate. Everything in Labtris runs on any kernel this OS ships —
+# except soft-RoCE, which needs the per-namespace UDP 4791 socket that
+# rdma_rxe gained in 7.1. Saying so here, before a five-minute install,
+# beats letting someone discover it when an ib_send_bw moves zero bytes
+# and prints no error. The installer repeats it in the closing summary.
+KREL=$(uname -r)
+case "${KREL%%.*}" in
+  ''|*[!0-9]*) : ;;                       # unparseable — say nothing
+  *)
+    # No dot means no minor: without this a bare "7" parses as 7.7.
+    _kmaj=${KREL%%.*}
+    case "$KREL" in *.*) _krest=${KREL#*.}; _kmin=${_krest%%.*} ;; *) _kmin=0 ;; esac
+    case "$_kmin" in ''|*[!0-9]*) _kmin=0 ;; esac
+    if [ "$_kmaj" -lt 7 ] || { [ "$_kmaj" -eq 7 ] && [ "$_kmin" -lt 1 ]; }; then
+      say "Note: kernel $KREL is below 7.1, so the RDMA lab will start and
+    move no data. Every other lab, Ultra Ethernet included, is unaffected.
+    https://labtris.com/install/guide#rdma-kernel"
+    fi
+    ;;
+esac
+
 say "Installing git, curl, ca-certificates (needed to clone)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq

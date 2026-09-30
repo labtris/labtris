@@ -132,8 +132,24 @@ finalise() {
   # then find again in a week. A file at 0600 in /root because the DB
   # password path is on it — nothing secret in it directly, but everything
   # pointing at things that are.
-  local ip version summary
+  local ip version summary krel kmaj kmin krest rdma_note
   ip=$(hostname -I | awk '{print $1}')
+  # soft-RoCE needs the per-namespace UDP 4791 socket rdma_rxe gained in
+  # Linux 7.1. Below that a transfer connects, exchanges GIDs and moves
+  # nothing, with no error anywhere — so the number is worth printing
+  # even when it is fine, to save the reader checking.
+  krel=$(uname -r)
+  # `${krel#*.}` returns the whole string when there is no dot, which
+  # would read a bare "7" as 7.7 and call it supported. Hence the case.
+  kmaj=${krel%%.*}
+  case "$krel" in *.*) krest=${krel#*.}; kmin=${krest%%.*} ;; *) kmin=0 ;; esac
+  case "$kmaj" in ''|*[!0-9]*) kmaj=0 ;; esac
+  case "$kmin" in ''|*[!0-9]*) kmin=0 ;; esac
+  if [ "$kmaj" -gt 7 ] || { [ "$kmaj" -eq 7 ] && [ "$kmin" -ge 1 ]; }; then
+    rdma_note="kernel $krel — soft-RoCE supported"
+  else
+    rdma_note="kernel $krel is below 7.1 — RDMA lab moves no data (others fine)"
+  fi
   version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$PREFIX/pyproject.toml" | head -1)
   summary=/root/labtris-install-summary.txt
   {
@@ -151,6 +167,11 @@ finalise() {
     printf '  %-20s %s\n' "Service user:"    "$LABTRIS_USER"
     printf '  %-20s %s\n' "Prefix:"          "$PREFIX"
     printf '  %-20s %s\n' "Health check:"    "labtris-doctor"
+    # Reported rather than warned about, and reported for THIS machine.
+    # It is the one bundled lab with a host prerequisite, and the ISO
+    # route shares this summary — which is the case where the reader had
+    # no say over the kernel at all.
+    printf '  %-20s %s\n' "RDMA labs:"       "$rdma_note"
     printf '  %-20s %s\n' "Logs:"            "journalctl -u labtris-api -u labtris-netd -f"
     printf '  %-20s %s\n' "Restart:"         "systemctl restart labtris-api labtris-netd"
     echo
