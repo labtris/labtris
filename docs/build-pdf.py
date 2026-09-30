@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -585,34 +586,71 @@ def main() -> None:
     return
 
 
+#: Everything that stops Chrome doing anything but rendering. The
+#: background-networking ones matter most: without them it registers with
+#: GCM after writing the PDF and keeps the process alive.
+CHROME_FLAGS = [
+    "--headless",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-default-apps",
+    "--disable-component-update",
+    "--disable-extensions",
+]
+
+
 def _render(doc: str, out: Path) -> None:
     with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
         src = Path(tmp) / "handbook.html"
         src.write_text(doc)
         pdf = Path(tmp) / "handbook.pdf"
         log = Path(tmp) / "chrome.log"
-        subprocess.run(
+        # Chrome writes the PDF and then does not exit: it stays alive
+        # doing background work — GCM registration, component updates —
+        # so waiting for the process to finish waits forever. The flags
+        # above cut most of the chatter but not reliably all of it, so
+        # rather than trust them, watch for the artefact and stop the
+        # process ourselves once it is written and has stopped growing.
+        proc = subprocess.Popen(
             [
                 chrome(),
-                "--headless",
-                "--disable-gpu",
-                "--no-sandbox",
+                *CHROME_FLAGS,
                 f"--user-data-dir={tmp}/profile",
                 "--no-pdf-header-footer",
                 f"--print-to-pdf={pdf}",
                 src.as_uri(),
             ],
-            check=True,
-            # NOT capture_output. Chrome leaves a child holding the pipe
-            # open, so reading to EOF never returns — this hung for 70
-            # minutes with no Chrome process alive, and still timed out at
-            # 300s when a timeout was added, because the deadlock is the
-            # pipe rather than the render. Redirecting to files closes the
-            # loop: Chrome writes, nothing waits on a reader.
             stdout=log.open("wb"),
             stderr=subprocess.STDOUT,
-            timeout=300,
         )
+        deadline, last, stable = time.monotonic() + 300, -1, 0
+        try:
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                cur = pdf.stat().st_size if pdf.exists() else 0
+                # Two consecutive identical non-zero sizes means the write
+                # has finished; Chrome writes the whole file in one go.
+                stable = stable + 1 if cur and cur == last else 0
+                last = cur
+                if stable >= 2:
+                    break
+                time.sleep(1)
+            else:
+                raise SystemExit("chrome did not produce a PDF in 300s")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        if not pdf.exists():
+            raise SystemExit("chrome exited without writing a PDF; see the log")
         size = pdf.stat().st_size
         if size < 32 * 1024:
             raise SystemExit(
