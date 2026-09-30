@@ -32,12 +32,24 @@ die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # failing on a missing package six minutes in is the polite thing to do.
 #
 # 26.04 gets its own message rather than the generic one, because the two
-# reasons it cannot work yet are concrete and neither is the user's fault:
-# resolute ships Python 3.14 while this tree is pinned to >=3.12,<3.13,
-# and Guacamole is not packaged for resolute at all, so the VNC and RDP
-# consoles have nothing to install. The container install has neither
-# problem — it carries its own Python 3.12 and pulls guacd as an image —
-# so that is where 26.04 users are pointed.
+# reasons it cannot work yet are concrete and neither is the user's fault.
+# Both re-checked against packages.ubuntu.com on 2026-09-30:
+#
+#   python3.12-venv  absent from resolute. python3.12 ITSELF IS THERE, which
+#                    is why this is worth stating precisely — the obvious
+#                    fix, `apt install python3.12`, succeeds and changes
+#                    nothing, because packages.txt and the `python3.12 -m
+#                    venv` in install-labtris.sh both need the venv package.
+#   guacd            absent from resolute; noble's 1.3.0-1.3ubuntu1 is the
+#                    last one packaged. The VNC and RDP consoles have
+#                    nothing to install.
+#
+# The container install has neither problem — it carries its own Python and
+# pulls guacd as an image — so that is where 26.04 users are pointed.
+#
+# LABTRIS_FORCE_OS stays. It is the escape hatch, not the gate: removing it
+# would leave someone on an untested distribution with no way through at
+# all, which is the opposite of opening things up.
 if [ "$FORCE_OS" != 1 ]; then
   . /etc/os-release 2>/dev/null || true
   if [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = "26.04" ]; then
@@ -46,10 +58,15 @@ if [ "$FORCE_OS" != 1 ]; then
        curl -fsSL https://raw.githubusercontent.com/labtris/labtris/main/docker-compose.yml \\
          | docker compose -f - up -d
 
-       The native install cannot work on resolute yet: it ships Python
-       3.14 and Labtris is pinned to 3.12, and Guacamole is not packaged
-       there so the VNC and RDP consoles have nothing to install. The
-       container install carries both itself.
+       Verified on 24.04 and 26.04, and it needs nothing from the host
+       but Docker and /dev/kvm.
+
+       The native install cannot work on resolute yet: python3.12-venv is
+       not packaged there, so the virtualenv step fails — note that
+       python3.12 itself IS available, so installing that alone will not
+       help — and guacd is not packaged either, leaving the VNC and RDP
+       consoles with nothing to install. The container install carries
+       both itself.
        Set LABTRIS_FORCE_OS=1 to attempt it anyway."
   fi
   if [ "${ID:-}" != ubuntu ] || [ "${VERSION_ID:-}" != "24.04" ]; then
