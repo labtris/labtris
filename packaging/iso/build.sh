@@ -61,29 +61,26 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # these call die() and it is not defined until this line.
 [ -n "$SUITE" ] || die "no codename known for Ubuntu ${RELEASE%.*}; set SUITE= explicitly"
 
-# 26.04 is not buildable yet, and the reason is not the ISO machinery.
+# 26.04 was refused here until both of its blockers were dealt with, and the
+# history is worth keeping because each was a different kind of problem.
 #
-# Guacamole USED to be half of this and no longer is: packaging/build-guacd.sh
-# builds guacd 1.6.0 from the Apache release tarball for resolute, and
-# install-labtris.sh installs that .deb when the release has no guacd of its
-# own. What it cannot build is the RDP plugin — 1.6.0 does not compile against
-# FreeRDP 3, the only FreeRDP resolute has — so a 26.04 image would have VNC,
-# SSH and telnet consoles and no RDP.
+#   guacd     Ubuntu stopped packaging it after noble. Now built from the
+#             Apache release tarball by packaging/build-guacd.sh, which
+#             install-labtris.sh falls back to when a release has no guacd.
+#             Caveat: no RDP. 1.6.0 does not compile against FreeRDP 3, the
+#             only FreeRDP resolute has, so a 26.04 image has VNC, SSH and
+#             telnet consoles and no RDP.
 #
-# What still blocks it outright is Python: packages.txt needs python3.12 and
-# python3.12-venv, and resolute has the interpreter but NOT the venv package,
-# so the virtualenv step fails. That is a pyproject pin (>=3.12,<3.13) to
-# lift and a test pass on a newer interpreter, not a packaging fix.
+#   python    packages.txt named python3.12, which resolute does not package
+#             in any form. It now names the distribution's own python3 —
+#             3.12 on noble, 3.14 on resolute — and pyproject accepts both.
+#             Five dependencies needed newer pins to get cp314 wheels.
 #
-# Left as an explicit refusal rather than a build that fails an hour in on an
-# apt resolve.
-if [ "${RELEASE%.*}" = "26.04" ] && [ "${FORCE_SUITE:-0}" != 1 ]; then
-  die "Ubuntu 26.04 ISOs are not buildable yet: packages.txt needs
-       python3.12-venv, which resolute does not package (python3.12 itself is
-       there, so installing that alone will not help).
-       guacd is no longer a blocker — packaging/build-guacd.sh builds it,
-       though without RDP, which needs FreeRDP 2.
-       Use the container install on 26.04. FORCE_SUITE=1 to try anyway."
+# Not left as a refusal any more, but the RDP gap is real and the ISO says so
+# in its own summary rather than only here.
+if [ "${RELEASE%.*}" = "26.04" ]; then
+  say "Building a 26.04 image: consoles will be VNC, SSH and telnet."
+  say "  RDP is not available — guacd 1.6.0 does not build against FreeRDP 3."
 fi
 
 # Everything this script starts dies with it. Without this, interrupting a
@@ -393,17 +390,30 @@ fi
 # will not install on 3.12 and the failure comes much later than the mistake.
 WHEELS_DIR="$WORK/add/labtris-wheels"
 mkdir -p "$WHEELS_DIR"
-if [ "${BUNDLE_WHEELS:-1}" = "1" ] && command -v python3.12 >/dev/null 2>&1; then
-  say "Downloading Python wheels for offline install"
+# Which interpreter the TARGET will run, which is not necessarily one this
+# build host has. A cp312 wheel does not install on 3.14 and the failure lands
+# during the install, long after the mistake — so when the matching
+# interpreter is absent, skip bundling rather than bundle the wrong ABI.
+case "$SUITE" in
+  noble)    TARGET_PY=python3.12 ;;
+  resolute) TARGET_PY=python3.14 ;;
+  *)        TARGET_PY=python3 ;;
+esac
+if [ "${BUNDLE_WHEELS:-1}" != "1" ]; then
+  say "  skipping wheel bundling — pip will fetch from PyPI during the install"
+elif ! command -v "$TARGET_PY" >/dev/null 2>&1; then
+  say "  no $TARGET_PY on this build host — skipping wheel bundling."
+  say "  ($SUITE targets $TARGET_PY; bundling a different ABI would fail at install.)"
+  say "  The install will fetch from PyPI, so the image is no longer air-gapped."
+else
+  say "Downloading Python wheels for offline install ($TARGET_PY)"
   # setuptools and wheel first: with --no-index pip cannot fetch a build
   # backend, so installing the project itself needs them already present.
-  python3.12 -m pip download --quiet --dest "$WHEELS_DIR" \
+  "$TARGET_PY" -m pip download --quiet --dest "$WHEELS_DIR" \
     setuptools wheel pip >/dev/null 2>&1 || true
-  python3.12 -m pip download --quiet --dest "$WHEELS_DIR" "$ROOT" >/dev/null 2>&1 \
+  "$TARGET_PY" -m pip download --quiet --dest "$WHEELS_DIR" "$ROOT" >/dev/null 2>&1 \
     || say "  some wheels could not be fetched — the install will fall back to PyPI"
   say "  $(find "$WHEELS_DIR" -type f | wc -l) wheels, $(du -sh "$WHEELS_DIR" | cut -f1)"
-else
-  say "  skipping wheel bundling — pip will fetch from PyPI during the install"
 fi
 
 # The boot splash is all-or-nothing. A theme whose script calls

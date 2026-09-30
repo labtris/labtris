@@ -1,6 +1,6 @@
 ---
 title: "Install"
-description: "One line on Ubuntu 24.04, Docker on any Linux host including 26.04, or the ISO for bare metal."
+description: "One line on Ubuntu 24.04 or 26.04, Docker on any Linux host, or the ISO for bare metal."
 ---
 
 Labtris is server software. It runs on a Linux machine, boots your containers
@@ -14,7 +14,7 @@ is installed on the machines people use it from.
 | **CPU** | x86-64. Virtualisation extensions if you want QEMU nodes to run at useful speed |
 | **RAM** | 8 GB is a comfortable floor. Each QEMU guest wants what its image wants; containers want almost nothing |
 | **Disk** | 40 GB plus whatever your images take. A desktop OS image is 2–6 GB |
-| **OS** | Ubuntu 24.04 for the one-line installer and the ISO. Any Linux with Docker for the container install — including Ubuntu 26.04, which the native installer does not support (see below) |
+| **OS** | Ubuntu 24.04 or 26.04 for the one-line installer and the ISO. Any Linux with Docker for the container install |
 
 Labtris will run without hardware virtualisation — QEMU falls back to software
 emulation — but a guest that boots in twelve seconds with KVM can take four
@@ -22,18 +22,30 @@ minutes without it.
 
 ## Ubuntu 26.04
 
-Use the container install. The native installer and the ISO cannot work
-on 26.04 yet, for two reasons that are nothing to do with the emulator:
+Supported by every install route. It used to be container-only, for two
+reasons that have both been dealt with:
 
-* **Python.** 26.04 ships 3.14; this tree is pinned to `>=3.12,<3.13`.
-* **Guacamole.** It is not packaged for resolute at all, so the VNC and
-  RDP consoles have nothing to install.
+* **Python.** Resolute packages no `python3.12` at all — not the interpreter,
+  not the venv module. The package list now asks for the distribution's own
+  `python3`, which is 3.12 on noble and 3.14 on resolute, and `pyproject.toml`
+  accepts `>=3.12,<3.15`. Five dependencies needed newer pins to get 3.14
+  wheels: `asyncpg`, `PyYAML`, `Pillow`, `pydantic` and `SQLAlchemy`.
+* **Guacamole.** Ubuntu stopped packaging `guacd` after noble, so Labtris
+  builds it from the Apache release tarball — see
+  [Building guacd](/reference/building-guacd). The installer uses the
+  archive's copy where there is one and the built package where there is not.
 
-The container install has neither problem — it carries its own Python
-3.12 and pulls `guacamole/guacd` as an image. Verified end to end on
-Ubuntu 26.04.1, kernel 7.0.0-31.
+**One thing does not work on 26.04: the RDP console.** Guacamole 1.6.0 does
+not compile against FreeRDP 3, which is the only FreeRDP resolute ships, so a
+26.04 machine gets VNC, SSH and telnet consoles and no RDP. QEMU consoles are
+VNC, so this only affects connecting to a Windows guest over RDP. If you need
+that today, use 24.04 or the container install, which pulls
+`guacamole/guacd` as a prebuilt image with RDP in it.
 
-## One line, on a fresh Ubuntu 24.04 machine
+The unit suite runs identically on both: 332 passed, 1 skipped, and the same
+10 pre-existing environment-dependent failures on 3.12 and 3.14 alike.
+
+## One line, on a fresh Ubuntu 24.04 or 26.04 machine
 
 ```
 $ curl -fsSL https://labtris.com/install | sudo bash

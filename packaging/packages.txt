@@ -4,8 +4,14 @@
 # and the ISO build downloads it so the packages ride on the disc instead of
 # being fetched during the install. Two copies of this list would drift, and
 # the drift would show up as a missing binary on a machine with no network.
-python3.12
-python3.12-venv
+# The distribution's own python3, not a version-specific name. noble's is
+# 3.12 and resolute's is 3.14, and pyproject accepts >=3.12,<3.15, so the
+# default is right on both. Naming python3.12 explicitly is what made 26.04
+# uninstallable: resolute packages no python3.12 at all — not the interpreter
+# and not the venv module. install-labtris.sh checks the version it finds
+# rather than trusting this.
+python3
+python3-venv
 python3-pip
 git
 curl

@@ -53,7 +53,7 @@ my own work. Turned out other people wanted the same shape.
 
 ## Install
 
-### One line, on a fresh Ubuntu 24.04 machine
+### One line, on a fresh Ubuntu 24.04 or 26.04 machine
 
 ```bash
 curl -fsSL https://labtris.com/install | sudo bash
@@ -92,7 +92,8 @@ make dev-db          # Postgres in Docker (LABTRIS_PG_PORT=55432 if 5432 is take
 sudo make netd       # the privileged network daemon
 make api             # http://localhost:8080
 make web             # the interface, on http://localhost:5173
-make guacd           # optional: VNC/RDP consoles (apt install guacd)
+make guacd           # optional: VNC/RDP consoles (apt install guacd;
+                     #   on 26.04 see packaging/build-guacd.sh — no RDP there)
 
 make test
 ```

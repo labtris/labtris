@@ -357,7 +357,22 @@ fi
 
 say "Python environment"
 # 3.12 specifically: pyproject pins >=3.12,<3.13 and the dependency set with it.
-[ -d "$PREFIX/.venv" ] || python3.12 -m venv "$PREFIX/.venv"
+# Use whatever python3 this release ships, after checking it is one we
+# support. Hardcoding python3.12 worked on noble and made resolute
+# uninstallable — it has no python3.12 package at all. The check matters
+# both ways: too old fails at install with a clear reason instead of at
+# import, and too new is refused rather than silently untested.
+PY=${PYTHON:-python3}
+command -v "$PY" >/dev/null 2>&1 || { say "  ERROR: no $PY on PATH"; exit 1; }
+PYVER=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+case "$PYVER" in
+  3.12|3.13|3.14) say "  using $PY ($PYVER)" ;;
+  *) say "  ERROR: Python $PYVER is outside the supported range (3.12 to 3.14)."
+     say "         pyproject.toml says requires-python = \">=3.12,<3.15\"."
+     say "         Install a supported interpreter and re-run with PYTHON=python3.X"
+     exit 1 ;;
+esac
+[ -d "$PREFIX/.venv" ] || "$PY" -m venv "$PREFIX/.venv"
 if [ -n "$WHEELS" ] && [ -d "$WHEELS" ] && ls "$WHEELS"/* >/dev/null 2>&1; then
   say "  installing from $(ls "$WHEELS" | wc -l) bundled wheels"
   # --no-index: never reach for PyPI. --no-build-isolation: pip cannot fetch a

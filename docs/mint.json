@@ -94,7 +94,8 @@
         "reference/docker",
         "reference/containerlab",
         "reference/install-from-source",
-        "reference/building-the-iso"
+        "reference/building-the-iso",
+        "reference/building-guacd"
       ]
     },
     {

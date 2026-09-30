@@ -3,7 +3,7 @@ title: "Install from source"
 description: "The from-source path: what every service is, how it fits together, and every knob the install exposes."
 ---
 
-Written against Ubuntu 24.04 LTS. Every step below was run on a clean 24.04
+Written against Ubuntu 24.04 LTS and checked on 26.04. Every step below was run on a clean 24.04
 host; where something bites, the reason is given rather than a workaround you
 have to trust.
 
@@ -27,7 +27,7 @@ netd's fixed verb list.
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  python3.12-venv python3-pip git \
+  python3 python3-venv python3-pip git \
   qemu-system-x86 qemu-utils \
   guacd libguac-client-vnc0 libguac-client-rdp0 \
   p7zip-full tcpdump iproute2 \
@@ -42,6 +42,14 @@ sudo usermod -aG docker "$USER"   # log out and back in for this to take effect
 tunnels fine and then fails at connect time, because guacd only advertises the
 protocols whose plugins are installed.
 
+<Note>
+**On Ubuntu 26.04 the three Guacamole lines will fail**: resolute packages none
+of them. Drop them from the command above and build the daemon instead —
+`./packaging/build-guacd.sh`, then `sudo apt-get install ./packaging/guacd-debs/guacd_*.deb`.
+See [Building guacd](/reference/building-guacd). That package has no RDP
+client, so RDP consoles do not work on 26.04.
+</Note>
+
 ## 2. The code
 
 The repository is currently private and still under its working name, so the
@@ -55,8 +63,12 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-Python 3.12 specifically — `pyproject.toml` pins `>=3.12,<3.13`, and the
-dependency set is pinned with it.
+`pyproject.toml` accepts `>=3.12,<3.15`, so the distribution's own `python3`
+is right on both supported releases — 3.12 on 24.04, 3.14 on 26.04. The
+dependency set is pinned, and five of those pins exist specifically because
+older versions have no 3.14 wheel: `asyncpg`, `PyYAML`, `Pillow`, `pydantic`
+and `SQLAlchemy`. The ceiling is `<3.15` rather than open-ended so a newer
+interpreter is not called supported before anything has been run on it.
 
 ## 3. Database
 

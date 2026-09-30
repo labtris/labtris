@@ -1,0 +1,100 @@
+---
+title: "Building guacd"
+description: "Why Labtris builds the Guacamole proxy daemon from source for Ubuntu 26.04, and what the resulting package does and does not include."
+---
+
+`guacd` is the Apache Guacamole proxy daemon. It is what turns a VM's VNC
+port or a container's shell into something a browser can draw, so every
+console tab in Labtris goes through it.
+
+Ubuntu stopped packaging it after noble. On 24.04 you get
+`guacd 1.3.0-1.3ubuntu1` from the archive; on 26.04 there is no `guacd`, no
+`libguac-client-vnc0` and no `libguac-client-rdp0` at all. Without something
+in its place, a 26.04 install comes up with working serial consoles and VNC
+tabs that fail at connect.
+
+So Labtris builds it.
+
+## Building it
+
+```
+$ ./packaging/build-guacd.sh
+```
+
+The result lands in `packaging/guacd-debs/`. The script fetches
+`guacamole-server` from the Apache mirror, checks it against a SHA-256 pinned
+in the script, unpacks it, builds it in a `ubuntu:26.04` container and emits a
+`.deb`.
+
+The digest is pinned in the script rather than fetched next to the tarball on
+purpose. A checksum served from the same host as the file it describes proves
+the download was not corrupted; it proves nothing about authenticity, because
+whoever could substitute one could substitute both.
+
+<Note>
+You cannot build the amd64 package on an Apple Silicon Mac. Under emulation
+the compile succeeds and then `dpkg-deb` fails, because qemu-user does not
+implement the syscall `tar` uses to stat a symlink. The script refuses that
+combination up front and points at CI, which builds it on a native amd64
+runner (`.github/workflows/guacd-deb.yml`).
+</Note>
+
+## RDP is not in it
+
+This is the one real limitation, and it is upstream's, not ours.
+
+Guacamole 1.6.0's RDP plugin does not compile against FreeRDP 3, and FreeRDP 3
+is the only FreeRDP resolute ships. FreeRDP 3 removed `rdp_freerdp.input` and
+the plugin still uses it:
+
+```
+keyboard.c:110: error: 'freerdp' has no member named 'input'
+input-queue.c:79: error: 'freerdp' has no member named 'input'
+```
+
+What makes this worth knowing rather than just fixing: `./configure` reports
+`RDP ... yes` regardless, because it finds `freerdp3` through `pkg-config` and
+never compiles anything against it. The build is the only real check, which is
+why the Dockerfile does not trust the configure summary on its own.
+
+The alternatives were carrying an upstream port in this tree, or building
+FreeRDP 2 from source alongside it and owning an end-of-life RDP stack's
+security updates. Neither is a good trade for one console type. So the package
+ships **VNC, SSH and telnet**, and RDP is a `WITH_RDP=yes` build argument for
+whenever upstream lands FreeRDP 3 support.
+
+If you need RDP on 26.04 today, the container install pulls
+`guacamole/guacd:1.5.5` as a prebuilt image, which has it.
+
+## What the package contains
+
+One package rather than Ubuntu's four, because splitting a single build into
+`guacd` plus three `libguac-client-*` packages only matters to a distribution
+that ships them separately. It `Provides` those names so anything depending on
+them is satisfied.
+
+| | |
+|---|---|
+| `guacd` | the daemon, listening on 4822 |
+| `libguac` | the core protocol library |
+| `libguac-terminal` | terminal emulation for the SSH and telnet clients |
+| `libguac-client-vnc` | VNC — what QEMU consoles use |
+| `libguac-client-ssh` | SSH |
+| `libguac-client-telnet` | telnet |
+| `libguac-client-kubernetes` | Kubernetes attach |
+
+Dependencies are computed with `dpkg-shlibdeps` rather than written by hand,
+and the build fails if that produces nothing — an earlier version silently
+shipped a package with no `Depends:` at all, which installed cleanly on a bare
+machine and then died at first use with `libcairo.so.2: cannot open shared
+object file`.
+
+## How the installer chooses
+
+`packaging/install-labtris.sh` asks apt whether the release has a `guacd`
+candidate. If it does, the archive copy is used and nothing here is involved.
+If it does not, the built `.deb` is installed from `packaging/guacd-debs/` or
+from the ISO's bundled packages.
+
+There is no version check in that logic. When Ubuntu packages Guacamole again,
+installs go back to the archive copy with no change here.

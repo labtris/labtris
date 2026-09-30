@@ -41,7 +41,7 @@ logo; without either the build succeeds and the splash is plain.
 
 | variable | default | |
 |---|---|---|
-| `RELEASE` | `24.04.3` | Ubuntu point release. Pinned on purpose — a build whose base image changes between runs is not reproducible. |
+| `RELEASE` | `24.04.3` | Ubuntu point release. Pinned on purpose — a build whose base image changes between runs is not reproducible. `26.04` builds too; see the note below. |
 | `ARCH` | `amd64` | |
 | `OUT` | `dist/labtris-<version>-amd64.iso` | |
 | `MIRROR` | `releases.ubuntu.com` | Point at a local mirror to skip the download. |
@@ -137,3 +137,33 @@ The Subiquity installer itself is barely themeable and still says Ubuntu in
 places. That is not worth fighting, and Ubuntu's trademark policy is the
 reason the banner says "Built on Ubuntu. Not affiliated with Canonical."
 rather than dressing the installer up as an official flavour.
+
+
+## Building a 26.04 image
+
+`RELEASE=26.04.1 ./packaging/iso/build.sh` is no longer refused — the two
+things that blocked it, the missing `guacd` and the missing `python3.12`, are
+both handled now.
+
+<Warning>
+Not yet built end to end. The refusal is lifted and every piece it depends on
+is tested on its own — the package builds, the installer picks the right
+interpreter, and the guacd fallback resolves correctly on resolute — but
+nobody has yet produced a 26.04 image and booted it. Treat the first one as
+something to verify, not something to ship.
+</Warning>
+
+Two differences worth knowing before you build one.
+
+**No RDP console.** Ubuntu packages no `guacd` after noble, so the image
+carries the one `packaging/build-guacd.sh` builds — and that cannot include
+the RDP client, because Guacamole 1.6.0 does not compile against FreeRDP 3.
+VNC, SSH and telnet consoles work. See [Building guacd](/reference/building-guacd).
+
+**Wheels have to match the target's interpreter.** The bundled wheels are
+downloaded by the build host, and a `cp312` wheel does not install on 3.14.
+The build picks `python3.12` for a noble target and `python3.14` for resolute,
+and if that interpreter is not on the build host it skips wheel bundling and
+says so. The image still installs — it just fetches from PyPI, so it is no
+longer air-gapped. Build a 26.04 image on a machine with `python3.14`, or
+accept that the install needs a network.
