@@ -69,7 +69,9 @@ Four nodes on one bridge: `rdma-a`, `rdma-b` (soft-RoCE hosts) and
 labtris lab load packaging/demo-pods/rdma-uet-demo.pod.tar.gz --name rdma-uet
 ```
 
-Both images are local builds. Build them first, from the repo root:
+Every node image these pods use is public — alpine, frr and bmv2
+from Docker Hub, `uet-ref` and `rdma-host` from `ghcr.io/labtris`
+where CI publishes them on each push. Nothing to build first.
 
 ```bash
 docker build -t labtris/rdma-host:latest packaging/dockerfiles/rdma-host/
@@ -161,7 +163,7 @@ throughput measured without it is a measurement of stop-and-wait rather
 than of UET.
 
 Cold pod, 1.4 KB — it carries no image. `labtris/uet-ref:latest` is a
-local build and has to exist on the host first.
+published by CI to ghcr.io/labtris, so it pulls like any other image.
 
 > The older `rdma-uet-demo` pod has no links at all, so its four nodes
 > arrive unwired and have to be connected by hand on the canvas. This one
@@ -182,9 +184,9 @@ pod without links lands as loose boxes on the canvas.
 | `pfc-classes` | 2 nodes, 1 link | Eight priority bands with per-band RED/ECN on a shaped link |
 | `ai-fabric-uet` | 8 nodes, 8 links | 2 spines × 2 leaves × 4 UET hosts — two equal-cost paths, so spraying is observable |
 
-Local images must exist on the host first: `labtris/uet-ref` and
-`labtris/rdma-host` are built from `packaging/dockerfiles/`. The rest
-pull from public registries.
+All images pull from public registries: `ghcr.io/labtris/uet-ref` and
+`ghcr.io/labtris/rdma-host` are built and published by CI, the rest come
+from Docker Hub.
 
     labtris lab load packaging/demo-pods/ai-fabric-uet.pod.tar.gz
 

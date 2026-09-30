@@ -8,9 +8,9 @@ nodes and no links lands on the canvas as loose boxes. The older
 `rdma-uet-demo` pod has exactly that shape — 4 nodes, 0 links, half its
 interfaces unattached — which is why it is superseded here.
 
-Pods are cold: they carry no image. Node images are either public
-(alpine, frr, bmv2) or local builds the host needs first
-(labtris/uet-ref, labtris/rdma-host). A *hot* pod can carry
+Pods are cold: they carry no image. Every node image is now
+public: alpine, frr and bmv2 from Docker Hub, uet-ref and rdma-host from
+ghcr.io/labtris where CI publishes them. A *hot* pod can carry
 `nodes/<id>/image.tar` and the loader will `docker load` it, which is how
 you move a local build onto a machine with no registry — see
 `--with-image`.
@@ -176,9 +176,9 @@ def uet_pair() -> dict:
         "`UET_IFNAME=eth0 UET_PDS=pds uet server rma <peer>` on one, "
         "`uet client rma <peer>` on the other. 13 tests x 10 PDS configs "
         "x 2 NIC shims via scripts/uet_test.sh.",
-        [node(a, "uet-a", "labtris/uet-ref:latest",
+        [node(a, "uet-a", "ghcr.io/labtris/uet-ref:latest",
               env={"UET_IFNAME": "eth0", "UET_PDS": "pds"}),
-         node(b, "uet-b", "labtris/uet-ref:latest",
+         node(b, "uet-b", "ghcr.io/labtris/uet-ref:latest",
               env={"UET_IFNAME": "eth0", "UET_PDS": "pds"})],
         [link(_id("UETL", 1), iface(a), iface(b))],
         {a: {"x": 120, "y": 180}, b: {"x": 520, "y": 180}},
@@ -194,8 +194,8 @@ def rdma_pair() -> dict:
         "is RoCEv2; index 0 is IPv6 link-local RoCEv1 and will not route. "
         "Needs Linux 7.1+ on the HOST — before that rdma_rxe bound UDP "
         "4791 in the init netns only and a lab node moves no data.",
-        [node(a, "rdma-a", "labtris/rdma-host:latest"),
-         node(b, "rdma-b", "labtris/rdma-host:latest")],
+        [node(a, "rdma-a", "ghcr.io/labtris/rdma-host:latest"),
+         node(b, "rdma-b", "ghcr.io/labtris/rdma-host:latest")],
         [link(_id("RDML", 1), iface(a), iface(b))],
         {a: {"x": 120, "y": 180}, b: {"x": 520, "y": 180}},
     )
@@ -260,7 +260,7 @@ def ai_fabric() -> dict:
         node(l1, "leaf-1", "frrouting/frr:v8.4.0", ifaces=4),
         node(l2, "leaf-2", "frrouting/frr:v8.4.0", ifaces=4),
     ] + [
-        node(h, f"uet-{i+1}", "labtris/uet-ref:latest",
+        node(h, f"uet-{i+1}", "ghcr.io/labtris/uet-ref:latest",
              env={"UET_IFNAME": "eth0", "UET_PDS": "pds"})
         for i, h in enumerate(hosts)
     ]

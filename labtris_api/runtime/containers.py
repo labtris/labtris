@@ -195,15 +195,17 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
         ContainerImage(
             id="uet-ref",
             label="UET reference provider (UEC, real CC)",
-            image="labtris/uet-ref:latest",
+            image="ghcr.io/labtris/uet-ref:latest",
             # Raw Ethernet sockets need NET_RAW, already in BASE_CAPS.
             # The XDP shim loads an eBPF program, which wants BPF and
             # SYS_ADMIN; `uet` (rawsock only) runs without them, so a
             # lab that only needs the rawsock path costs nothing extra.
             cap_add=("BPF", "SYS_ADMIN", "SYS_RESOURCE"),
             source=(
-                "Local build — see packaging/dockerfiles/uet-ref/README.md "
-                "(upstream: github.com/ultraethernet/uet-ref-prov, MIT)"
+                "ghcr.io/labtris/uet-ref — built by CI from "
+                "packaging/dockerfiles/uet-ref/ (upstream: "
+                "github.com/ultraethernet/uet-ref-prov, MIT). Pulls like "
+                "any other image; no local build needed."
             ),
             iface_scheme="eth",
             notes=(
@@ -256,7 +258,7 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             # install in cmd) failed silently on every lab whose bridge
             # had no NAT — every user hit it. See
             # packaging/dockerfiles/rdma-host/README.md.
-            image="labtris/rdma-host:latest",
+            image="ghcr.io/labtris/rdma-host:latest",
             source=(
                 "Local build — see packaging/dockerfiles/rdma-host/"
                 "README.md (Dockerfile in this repo)"
