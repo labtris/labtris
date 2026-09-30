@@ -1,6 +1,13 @@
 name: docker-image
 
-# Builds and pushes the Labtris core image to ghcr.io/labtris/labtris.
+# Builds and pushes the Labtris images to ghcr.io/labtris/*.
+#
+# Three images, because two of them were costing every user a long local
+# build before they could start a bundled lab:
+#   labtris     the core API, netd and web interface
+#   uet-ref     the UEC reference Ultra Ethernet provider — compiles
+#               libfabric from source, roughly twenty minutes
+#   rdma-host   rdma-core and perftest, needed by the rdma-pair lab
 # Triggers:
 #   * push to main       → :latest + :sha-<short>
 #   * tag v*             → :<version> + :latest
@@ -17,16 +24,32 @@ on:
     paths:
       - 'Dockerfile'
       - 'packaging/docker/**'
+      - 'packaging/dockerfiles/**'
       - '.github/workflows/docker-image.yml'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: labtris/labtris
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      # Independent images: one failing should not hide the others, and
+      # uet-ref's libfabric compile is long enough that serialising them
+      # would double the wall clock for no reason.
+      fail-fast: false
+      matrix:
+        include:
+          - name: labtris
+            context: .
+            file: ./Dockerfile
+          - name: uet-ref
+            context: packaging/dockerfiles/uet-ref
+            file: packaging/dockerfiles/uet-ref/Dockerfile
+          - name: rdma-host
+            context: packaging/dockerfiles/rdma-host
+            file: packaging/dockerfiles/rdma-host/Dockerfile
     permissions:
       contents: read
       packages: write
@@ -49,7 +72,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/labtris/${{ matrix.name }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-,format=short
@@ -57,11 +80,11 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Build and push ${{ matrix.name }}
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
