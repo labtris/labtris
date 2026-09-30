@@ -575,10 +575,22 @@ def main() -> None:
     # source under /tmp it renders an "ERR_FILE_NOT_FOUND" error page and
     # writes a 1-page PDF, which used to ship silently. So the scratch dir
     # goes under $HOME, and we sanity-check the byte count after.
+    try:
+        _render(doc, out)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            "chrome did not finish in 300s — it is stuck, not slow. "
+            "Kill any stray headless chrome and retry."
+        )
+    return
+
+
+def _render(doc: str, out: Path) -> None:
     with tempfile.TemporaryDirectory(dir=Path.home()) as tmp:
         src = Path(tmp) / "handbook.html"
         src.write_text(doc)
         pdf = Path(tmp) / "handbook.pdf"
+        log = Path(tmp) / "chrome.log"
         subprocess.run(
             [
                 chrome(),
@@ -591,7 +603,15 @@ def main() -> None:
                 src.as_uri(),
             ],
             check=True,
-            capture_output=True,
+            # NOT capture_output. Chrome leaves a child holding the pipe
+            # open, so reading to EOF never returns — this hung for 70
+            # minutes with no Chrome process alive, and still timed out at
+            # 300s when a timeout was added, because the deadlock is the
+            # pipe rather than the render. Redirecting to files closes the
+            # loop: Chrome writes, nothing waits on a reader.
+            stdout=log.open("wb"),
+            stderr=subprocess.STDOUT,
+            timeout=300,
         )
         size = pdf.stat().st_size
         if size < 32 * 1024:

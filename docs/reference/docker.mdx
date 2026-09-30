@@ -48,10 +48,28 @@ itself is off unless `LABTRIS_SSH_PROXY_ENABLED=true`.
 
 | | |
 |---|---|
-| Host OS | Linux. Kernel 5.3 or newer. |
+| Host OS | Linux. Kernel 5.3 or newer for everything except the RDMA labs — see below. |
 | Virtualisation | `/dev/kvm` must exist **and work**. |
 | Docker | Engine 24+ with the compose plugin. |
 | Disk | 20GB for the images plus whatever your labs need. |
+
+<Warning>
+**The bundled `rdma-pair` lab needs a newer kernel than any of this.**
+Soft-RoCE requires **Linux 7.1 or newer**, where `rdma_rxe` gained a
+per-namespace UDP 4791 socket. Below that a transfer between two lab
+nodes connects and then moves nothing, with no error to read —
+`ss -lun | grep 4791` inside a node is the check, and `host.capabilities`
+reports it too.
+
+No distribution ships 7.1 yet: Ubuntu 24.04 is on 6.8, and so is the
+ISO. Since 0.12.0 seeds `rdma-pair` on first boot, that lab will be on
+your canvas and will not work until the host kernel is upgraded. Every
+other bundled lab — UET, P4, the priority-queueing link, the spine-leaf
+fabric — works on 5.3+.
+
+Measured on a mainline 7.2 guest: `ib_send_bw` between two lab nodes,
+596–714 MB/sec over soft-RoCE with no hardware.
+</Warning>
 
 The compose file maps `/dev/kvm` unconditionally, so on a host without it
 the `api` container fails to start. That is the intended behaviour: QEMU
