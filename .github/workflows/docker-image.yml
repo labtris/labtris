@@ -13,8 +13,15 @@ name: docker-image
 #   * tag v*             → :<version> + :latest
 #   * manual dispatch    → :<sha>
 #
-# The image is multi-arch when possible; the QEMU package is huge so
-# we ship linux/amd64 first and add arm64 once someone actually asks.
+# Architectures: amd64 on every push, amd64+arm64 on a version tag.
+#
+# `docker pull` on an arm64 machine fails outright against an amd64-only
+# manifest — "no matching manifest for linux/arm64/v8" — which is a poor
+# first contact even though Labtris itself needs a Linux host with KVM.
+# So releases are multi-arch. Main is not, because arm64 here means QEMU
+# emulation in Actions and uet-ref compiles libfabric from source; paying
+# that on every push buys nothing, since the thing people pull by tag is
+# the release.
 
 on:
   push:
@@ -57,6 +64,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only needed for the emulated arm64 leg, so it is skipped on the
+      # amd64-only path rather than run unconditionally.
+      - name: Set up QEMU for cross-build
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -90,4 +103,4 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64
+          platforms: ${{ startsWith(github.ref, 'refs/tags/v') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
