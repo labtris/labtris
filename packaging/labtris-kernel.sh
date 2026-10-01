@@ -142,8 +142,91 @@ else
   exit 1
 fi
 
+# WORK AROUND AN UPSTREAM PACKAGING BUG BEFORE INSTALLING
+#
+# Mainline's linux-image maintainer scripts contain, in both preinst and
+# postinst:
+#
+#   run-parts ... /etc/kernel/<phase>.d /usr/share/kernel/<phase>.d
+#
+# run-parts takes exactly ONE directory ("Usage: run-parts [OPTION]...
+# DIRECTORY"), so two gives "run-parts: missing operand", `set -e` fires and
+# dpkg leaves the kernel half-installed. It is an upstream packaging bug, not
+# something wrong with the machine.
+#
+# Hiding the hook directories fixes the preinst and breaks the postinst:
+# /etc/kernel/postinst.d holds the initramfs and GRUB hooks, and a kernel
+# installed without those has no initrd and no boot entry. So instead, make
+# run-parts do what the scripts assume for the duration of the install: a
+# wrapper that accepts several directories and calls the real one for each
+# that exists. The hooks still run, which is the point.
+#
+# Restored by the EXIT trap whatever happens, including on failure or ^C —
+# leaving a shim in /usr/bin would be far worse than a failed install.
+RP=/usr/bin/run-parts
+RP_SAVED=""
+restore_runparts() {
+  [ -n "$RP_SAVED" ] || return 0
+  mv -f "$RP_SAVED" "$RP" 2>/dev/null
+  RP_SAVED=""
+}
+trap 'restore_runparts; rm -rf "$WORK"' EXIT INT TERM
+
+if [ -x "$RP" ]; then
+  say "Patching run-parts for the install (restored afterwards)"
+  RP_SAVED="$RP.labtris-real"
+  cp -a "$RP" "$RP_SAVED" || die "could not back up $RP"
+  cat > "$RP" <<'WRAP'
+#!/bin/sh
+# Temporary shim installed by labtris-kernel. The real binary is at
+# /usr/bin/run-parts.labtris-real and is restored when the install finishes.
+# Upstream mainline kernel scripts pass several directories; real run-parts
+# takes one. Split them and call it once per directory that exists.
+real=/usr/bin/run-parts.labtris-real
+opts=""
+dirs=""
+for a in "$@"; do
+  case "$a" in
+    -*) opts="$opts $a" ;;
+    *)  dirs="$dirs $a" ;;
+  esac
+done
+rc=0
+for d in $dirs; do
+  [ -d "$d" ] || continue
+  # shellcheck disable=SC2086
+  "$real" $opts "$d" || rc=$?
+done
+exit $rc
+WRAP
+  chmod 0755 "$RP"
+fi
+
 say "Installing"
-dpkg -i "$WORK"/*.deb || { apt-get -f install -y; die "dpkg reported errors — check the output above"; }
+# apt-get, not `dpkg -i`: the modules package depends on wireless-regdb, which
+# dpkg will not fetch — it stops with "dependency problems - leaving
+# unconfigured" and the kernel is half-installed.
+if ! apt-get install -y "$WORK"/*.deb; then
+  restore_runparts
+  apt-get -f install -y >/dev/null 2>&1 || true
+  die "the install failed — see the output above.
+       Nothing was removed, so the running kernel $KREL is untouched.
+       To clear a half-installed package:
+         sudo dpkg --remove --force-remove-reinstreq linux-image-unsigned-$VER-generic
+         sudo apt-get -f install"
+fi
+restore_runparts
+
+# The hooks are the whole reason for the shim, so check they did their job
+# rather than trusting a zero exit.
+if [ ! -f "/boot/initrd.img-$VER-generic" ]; then
+  warn "no /boot/initrd.img-$VER-generic — the initramfs hook did not run."
+  warn "Generate it before rebooting:  sudo update-initramfs -c -k $VER-generic"
+fi
+if command -v update-grub >/dev/null 2>&1 &&
+   ! grep -q "$VER-generic" /boot/grub/grub.cfg 2>/dev/null; then
+  warn "no GRUB entry for $VER-generic. Run:  sudo update-grub"
+fi
 
 say "Done"
 cat <<TXT
