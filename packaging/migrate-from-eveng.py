@@ -14,6 +14,26 @@ connection up front and lets ssh do its own authentication, so a password goes
 from your terminal to ssh and nowhere near this script. Every later operation
 reuses that one connection, so you authenticate once.
 
+COLD AND HOT
+
+  cold (default)  the topology and the pristine base images. You get the
+                  lab's shape and factory-default devices, and you configure
+                  them yourself. Small, fast, and what you want when the
+                  point is the topology.
+
+  hot             the topology and each node's WORKING disk — the one with
+                  the configuration actually applied to it. Someone forty
+                  hours into a CCIE lab does not want the shape; they want
+                  their configuration. Much larger, because a working disk
+                  has to be flattened to stand alone.
+
+Hot is not simply "copy a different file". EVE-NG's runtime disks are qcow2
+deltas whose backing file is the base image at an /opt/unetlab path that does
+not exist here, so copying a delta alone produces a disk that will not open.
+They are flattened with `qemu-img convert` ON the EVE-NG box first, which
+needs free space there and takes time proportional to what the guest has
+written.
+
 WHY ONE COMMAND AND NOT THREE
 
 The manual route is: scan on EVE-NG, rsync the tree, scan the copy, register.
@@ -154,14 +174,66 @@ def scan_labs(r: Remote, root: str) -> list[dict]:
         rc2, xml = r.run(f"cat {shlex.quote(path)}", timeout=60)
         templates = sorted(set(re.findall(r'template="([^"]+)"', xml)))
         nodes = len(re.findall(r"<node\b", xml))
+        # The lab's own id is how a runtime directory is tied back to it:
+        # EVE-NG names the working-state directory after this uuid.
+        m = re.search(r'<lab\b[^>]*\bid="([^"]+)"', xml)
         labs.append({
             "path": path,
             "name": Path(path).stem,
             "bytes": int(size or 0),
             "nodes": nodes,
             "templates": templates,
+            "uuid": m.group(1) if m else "",
         })
     return sorted(labs, key=lambda l: l["name"])
+
+
+def scan_runtime_disks(r: Remote, root: str) -> list[dict]:
+    """Per-node working disks, found rather than assumed.
+
+    EVE-NG puts running state under /opt/unetlab/tmp/<pod>/<lab-uuid>/<node>/,
+    but that shape has changed across versions and some installs relocate it.
+    So: find the qcow2 files and ask qemu-img what each one is. A disk with a
+    backing file is a delta over a base image and is the interesting case; one
+    without is already standalone.
+
+    `qemu-img info` per file is a round trip each, which is why this only runs
+    when hot mode is actually asked for.
+    """
+    rc, out = r.run(
+        f"find {shlex.quote(root)}/tmp -name '*.qcow2' -type f 2>/dev/null | head -400",
+        timeout=120,
+    )
+    paths = [l.strip() for l in out.splitlines() if l.strip()]
+    if not paths:
+        return []
+
+    # One shell loop rather than one ssh per file.
+    script = (
+        "for f in " + " ".join(shlex.quote(p) for p in paths) + "; do "
+        "  b=$(qemu-img info --output=json \"$f\" 2>/dev/null | "
+        "      sed -n 's/.*\"backing-filename\": \"\\([^\"]*\\)\".*/\\1/p' | head -1); "
+        "  s=$(stat -c %s \"$f\" 2>/dev/null); "
+        "  printf '%s\\t%s\\t%s\\n' \"$f\" \"${s:-0}\" \"${b:-}\"; done"
+    )
+    rc, out = r.run(script, timeout=300)
+    disks = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2 or not parts[0]:
+            continue
+        path, size = parts[0], parts[1]
+        backing = parts[2] if len(parts) > 2 else ""
+        pp = Path(path)
+        disks.append({
+            "path": path,
+            "bytes": int(size or 0),
+            "backing": backing,
+            # The parent directory is the node id; its parent is the lab uuid.
+            "node": pp.parent.name,
+            "lab_uuid": pp.parent.parent.name,
+        })
+    return disks
 
 
 def images_for_templates(templates: list[str], images: list[dict]) -> list[dict]:
@@ -225,6 +297,9 @@ def main() -> int:
                     help="where to put the copied disks on this host")
     ap.add_argument("--image-cmd", default="/opt/labtris/.venv/bin/labtris-image")
     ap.add_argument("--labtris-cmd", default="/opt/labtris/.venv/bin/labtris")
+    ap.add_argument("--mode", choices=("cold", "hot"), default="cold",
+                    help="cold: topology + pristine base images (default). "
+                         "hot: topology + each node's configured working disk.")
     ap.add_argument("--dry-run", action="store_true",
                     help="scan and show the plan, copy and import nothing")
     args = ap.parse_args()
@@ -251,6 +326,15 @@ def main() -> int:
     images = scan_images(r, args.eveng_root)
     say("Reading the labs")
     labs = scan_labs(r, args.eveng_root)
+
+    runtime: list[dict] = []
+    if args.mode == "hot":
+        say("Looking for working disks (hot mode)")
+        runtime = scan_runtime_disks(r, args.eveng_root)
+        if not runtime:
+            print(f"  {Y}none found{N} — no lab has been started on that box, or its")
+            print(f"  runtime directory is elsewhere. Falling back to cold.")
+            args.mode = "cold"
 
     if not images and not labs:
         return die("found no images and no labs — is this an EVE-NG install?")
@@ -284,6 +368,21 @@ def main() -> int:
     if needed:
         print(f"\n{D}Those labs need:{N} " + ", ".join(i["name"] for i in needed))
 
+    hot_for_labs: list[dict] = []
+    if args.mode == "hot" and chosen_labs:
+        uuids = {l["uuid"] for l in chosen_labs if l["uuid"]}
+        hot_for_labs = [d for d in runtime if d["lab_uuid"] in uuids]
+        if hot_for_labs:
+            hot_bytes = sum(d["bytes"] for d in hot_for_labs)
+            print(f"\n{G}Working disks{N} for the labs you picked: "
+                  f"{len(hot_for_labs)} node(s), {human(hot_bytes)} before flattening")
+            print(f"  {D}flattened copies are larger — a delta only holds what the"
+                  f" guest wrote{N}")
+        else:
+            print(f"\n  {Y}No working disks for those labs.{N} They have not been")
+            print(f"  started on that box, so there is no configured state to bring.")
+            print(f"  The topology and base images still come across.")
+
     extra_pick = choose("Any other images? (beyond the ones above)",
                         [i["name"] for i in images]) if images else []
     for i in extra_pick:
@@ -295,9 +394,14 @@ def main() -> int:
         return 0
 
     copy_bytes = sum(i["bytes"] for i in needed)
-    print(f"\n{G}Plan{N}")
+    print(f"\n{G}Plan{N}  ({args.mode})")
     print(f"  labs to import:   {len(chosen_labs)}")
     print(f"  images to copy:   {len(needed)}  ({human(copy_bytes)})")
+    if hot_for_labs:
+        print(f"  working disks:    {len(hot_for_labs)}  "
+              f"({human(sum(d['bytes'] for d in hot_for_labs))} before flattening)")
+        print(f"  {D}each is flattened on the EVE-NG box first, which needs free"
+              f" space there{N}")
     print(f"  destination:      {args.dest}")
 
     if args.dry_run:
@@ -329,6 +433,40 @@ def main() -> int:
             print(f"  {Y}not registered{N}: {args.image_cmd} not found — the disk is at")
             print(f"    {dest_q / im['name']}")
 
+    # -------------------------------------------------- working disks (hot)
+    #
+    # Flattened on the EVE-NG side, not here. A delta's backing file is an
+    # absolute /opt/unetlab path; copy the delta alone and qemu cannot open
+    # it, and copying base+delta would mean rewriting the backing path after
+    # transfer. `qemu-img convert` produces a disk that stands on its own,
+    # which is the only form worth carrying to another machine.
+    for d in hot_for_labs:
+        label = f"{d['lab_uuid'][:8]}/{d['node']}"
+        say(f"Flattening working disk {label}")
+        flat = f"/tmp/labtris-hot-{d['lab_uuid'][:8]}-{d['node']}.qcow2"
+        rc, _ = r.run(
+            f"qemu-img convert -O qcow2 {shlex.quote(d['path'])} {shlex.quote(flat)}",
+            timeout=3600,
+        )
+        if rc != 0:
+            failed.append(f"flatten {label}")
+            print(f"  {R}failed{N} — out of space on the EVE-NG box, or qemu-img missing")
+            continue
+
+        lab_name = next((l["name"] for l in chosen_labs
+                         if l["uuid"] == d["lab_uuid"]), d["lab_uuid"][:8])
+        name = f"{lab_name}-{d['node']}"
+        dest = Path(args.dest) / "hot" / f"{name}.qcow2"
+        say(f"Copying {label}")
+        if r.pull(flat, dest) != 0:
+            failed.append(f"copy {label}")
+        elif Path(args.image_cmd).exists():
+            if subprocess.call([args.image_cmd, "add", str(dest), "--name", name]) != 0:
+                failed.append(f"register {label}")
+        # Remove the flattened copy either way: it is a full-size duplicate
+        # sitting in /tmp on someone else's machine.
+        r.run(f"rm -f {shlex.quote(flat)}", timeout=60)
+
     # -------------------------------------------------------------- labs
     for l in chosen_labs:
         say(f"Importing lab {l['name']}")
@@ -351,6 +489,9 @@ def main() -> int:
     print(f"{G}Done.{N} Open the Labtris canvas — the imported labs are there.")
     print(f"{D}Vendor nodes whose image was not copied import as placeholders;{N}")
     print(f"{D}re-run and pick those images to replace them.{N}")
+    if hot_for_labs:
+        print(f"{D}Working disks were registered as <lab>-<node>. Point each node at{N}")
+        print(f"{D}its own disk to get the configuration back, rather than the base.{N}")
     return 0
 
 
