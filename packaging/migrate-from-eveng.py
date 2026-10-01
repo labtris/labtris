@@ -263,28 +263,64 @@ def images_for_templates(templates: list[str], images: list[dict]) -> list[dict]
     return out
 
 
-def choose(prompt: str, items: list[str]) -> list[int]:
-    """Numbers, names, 'all', or empty for none."""
+def letter_labels(n: int) -> list[str]:
+    """a, b, ... z, aa, ab — spreadsheet style.
+
+    Images are lettered and labs are numbered so a selection can only mean
+    one list. Typing `3` when the images were also numbered 1..n was the
+    problem: it was impossible to tell from the input which list was meant,
+    and the only recovery was asking twice.
+    """
+    out = []
+    for i in range(n):
+        label, k = "", i
+        while True:
+            label = chr(ord("a") + k % 26) + label
+            k = k // 26 - 1
+            if k < 0:
+                break
+        out.append(label)
+    return out
+
+
+def choose(prompt: str, items: list[str], labels: list[str]) -> list[int]:
+    """Pick by label, range, name substring, 'all', or nothing.
+
+    Labels are matched case-insensitively and a range works for either kind:
+    `2-4` over numbers and `a-d` over letters, by position in the label list
+    rather than by arithmetic — `y-ab` has to work as well as `a-c`.
+    """
+    kind = "numbers" if labels and labels[0].isdigit() else "letters"
+    example = "2-4" if kind == "numbers" else "a-d"
     print(f"\n{prompt}")
-    print(f"  {D}numbers (1 3 5), ranges (1-4), names, 'all', or Enter for none{N}")
+    print(f"  {D}{kind} ({' '.join(labels[:3])}), a range ({example}), "
+          f"names, 'all', or Enter for none{N}")
     raw = input("  > ").strip()
     if not raw:
         return []
     if raw.lower() == "all":
         return list(range(len(items)))
+
+    index = {l.lower(): i for i, l in enumerate(labels)}
     picked: list[int] = []
     for tok in raw.replace(",", " ").split():
-        if "-" in tok and all(p.isdigit() for p in tok.split("-", 1)):
-            a, b = (int(p) for p in tok.split("-", 1))
-            picked += [i - 1 for i in range(a, b + 1) if 1 <= i <= len(items)]
-        elif tok.isdigit():
-            i = int(tok) - 1
-            if 0 <= i < len(items):
-                picked.append(i)
+        low = tok.lower()
+        if "-" in low:
+            a, b = low.split("-", 1)
+            if a in index and b in index:
+                lo, hi = sorted((index[a], index[b]))
+                picked += list(range(lo, hi + 1))
+                continue
+        if low in index:
+            picked.append(index[low])
+            continue
+        # Not a label — treat it as a name search, which is how someone
+        # selects six related labs without reading off six labels.
+        hits = [i for i, name in enumerate(items) if low in name.lower()]
+        if hits:
+            picked += hits
         else:
-            for i, name in enumerate(items):
-                if tok.lower() in name.lower():
-                    picked.append(i)
+            print(f"  {Y}ignored{N} {tok!r} — not a label and matches no name")
     return sorted(set(picked))
 
 
@@ -363,17 +399,19 @@ def main() -> int:
                 t += f" +{len(l['templates']) - 4}"
             print(f"  {i:>3}  {l['name'][:34]:<34} {l['nodes']:>5}  {t[:46]}")
 
+    img_labels = letter_labels(len(images))
     if images:
         total = sum(i["bytes"] for i in images)
         print(f"\n{G}Images{N} ({len(images)}, {human(total)} total)\n")
-        print(f"  {'#':>3}  {'directory':<42} {'size':>9}")
-        for i, im in enumerate(images, 1):
+        print(f"  {'id':>3}  {'directory':<42} {'size':>9}")
+        for lbl, im in zip(img_labels, images):
             flag = "" if im["has_disk"] else f"  {Y}no disk file{N}"
-            print(f"  {i:>3}  {im['name'][:42]:<42} {human(im['bytes']):>9}{flag}")
+            print(f"  {lbl:>3}  {im['name'][:42]:<42} {human(im['bytes']):>9}{flag}")
 
     # -------------------------------------------------------------- choose
     lab_pick = choose("Which labs? Their images are copied automatically.",
-                      [l["name"] for l in labs]) if labs else []
+                      [l["name"] for l in labs],
+                      [str(i) for i in range(1, len(labs) + 1)]) if labs else []
     chosen_labs = [labs[i] for i in lab_pick]
 
     needed = images_for_templates(
@@ -398,7 +436,7 @@ def main() -> int:
             print(f"  The topology and base images still come across.")
 
     extra_pick = choose("Any other images? (beyond the ones above)",
-                        [i["name"] for i in images]) if images else []
+                        [i["name"] for i in images], img_labels) if images else []
     for i in extra_pick:
         if images[i] not in needed:
             needed.append(images[i])
