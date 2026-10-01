@@ -95,7 +95,16 @@ esac
 current_version() {
   sed -n 's/^version *= *"\(.*\)"/\1/p' "$PREFIX/pyproject.toml" 2>/dev/null | head -1
 }
-current_ref() { git -C "$PREFIX" rev-parse --short HEAD 2>/dev/null; }
+# -c safe.directory: install-labtris.sh chowns $PREFIX to the labtris service
+# user, and this runs as root, so git refuses with "detected dubious
+# ownership in repository" and every command fails. Passing it per-invocation
+# rather than telling the operator to run
+# `git config --global --add safe.directory /opt/labtris` — that edits root's
+# global config to work around something this script already knows about, and
+# it would persist long after the upgrade.
+GIT=(git -C "$PREFIX" -c "safe.directory=$PREFIX")
+
+current_ref() { "${GIT[@]}" rev-parse --short HEAD 2>/dev/null; }
 
 # The newest release tag, from the API rather than `git tag`: a --depth 1
 # clone has no tags to sort, and `git tag | tail` sorts lexically anyway,
@@ -158,9 +167,9 @@ fi
 
 # ---------------------------------------------------------------------- update
 say "Fetching $TARGET"
-git -C "$PREFIX" fetch --depth 1 origin "$TARGET" \
+"${GIT[@]}" fetch --depth 1 origin "$TARGET" \
   || die "could not fetch '$TARGET'. Is it a real tag or branch?"
-git -C "$PREFIX" checkout -f FETCH_HEAD \
+"${GIT[@]}" checkout -f FETCH_HEAD \
   || die "checkout failed — $PREFIX may have local modifications"
 
 NEW_VER=$(current_version)
@@ -199,7 +208,7 @@ if [ -n "$FAILED" ] || [ "${CODE:-000}" = "000" ]; then
       systemctl status$FAILED
 
   To go back, the previous commit and the dump are both kept:
-      git -C $PREFIX checkout -f $CUR_REF
+      git -C $PREFIX -c safe.directory=$PREFIX checkout -f $CUR_REF
       $PREFIX/packaging/install-labtris.sh --source $PREFIX
       gunzip -c ${DUMP:-<none>} | sudo -u postgres psql
 TXT
@@ -209,4 +218,4 @@ fi
 say "Upgraded ${CUR_VER:-unknown} -> $NEW_VER"
 printf '  %-20s %s\n' "web interface:" "https://${IP}:8443"
 printf '  %-20s %s\n' "db backup:"     "${DUMP:-none taken}"
-printf '  %-20s %s\n' "previous code:" "git -C $PREFIX checkout -f $CUR_REF"
+printf '  %-20s %s\n' "previous code:" "git -C $PREFIX -c safe.directory=$PREFIX checkout -f $CUR_REF"

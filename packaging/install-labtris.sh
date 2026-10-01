@@ -159,7 +159,9 @@ finalise() {
       printf '  %-20s %s\n' "Web UI:"        "NOT INSTALLED — REST API only"
       printf '  %-20s %s\n' ""               "cd $PREFIX/web && npm install && npm run build"
     else
-      printf '  %-20s %s\n' "Web UI:"        "http://${ip}:8081"
+      printf '  %-20s %s\n' "Web UI:"        "https://${ip}/"
+      printf '  %-20s %s\n' ""               "(self-signed — your browser warns once)"
+      printf '  %-20s %s\n' "Also on:"       "http://${ip}:8081  (plain HTTP, handy over an ssh -L tunnel)"
       printf '  %-20s %s\n' "First login:"   "create it at that URL"
     fi
     printf '  %-20s %s\n' "Config:"          "$CONFDIR/labtris.env"
@@ -484,9 +486,52 @@ install -m 0644 "$PREFIX/packaging/systemd/labtris-ksm.service" /etc/systemd/sys
 install -m 0644 "$PREFIX/packaging/systemd/labtris-netd.service" /etc/systemd/system/
 install -m 0644 "$PREFIX/packaging/systemd/labtris-api.service" /etc/systemd/system/
 install -m 0644 "$PREFIX/packaging/nginx/labtris.conf" /etc/nginx/sites-available/labtris
+# The proxy body, included by both serving blocks. nginx refuses to start on a
+# missing include, so this has to land before the reload — and before the
+# site is enabled, or a reload between the two steps fails.
+install -d -m 0755 /etc/nginx/snippets
+install -m 0644 "$PREFIX/packaging/nginx/snippets/labtris-location.conf" \
+  /etc/nginx/snippets/labtris-location.conf
 mkdir -p /etc/nginx/sites-enabled
 ln -sf /etc/nginx/sites-available/labtris /etc/nginx/sites-enabled/labtris
+# Ubuntu's default site is also `default_server` on 80. Two of those on one
+# port is a hard nginx failure, not a warning.
 rm -f /etc/nginx/sites-enabled/default
+
+# TLS, self-signed, generated once.
+#
+# Labtris carries session cookies and console streams, so plain HTTP across a
+# network was the wrong default — the interface now faces 443 with 80
+# redirecting to it. Self-signed rather than ACME because the common case is a
+# lab box on a private address with no public DNS name, where ACME cannot
+# issue at all. Swap in a real certificate by replacing these two files; the
+# paths are what nginx reads and nothing regenerates them once they exist.
+#
+# The SAN list is what makes a browser accept it after the click-through, and
+# what makes `curl --cacert` work for anyone who wants to pin it. Without a
+# SAN at all, modern browsers reject the certificate outright regardless of
+# the CN — a CN-only certificate is not a working certificate any more.
+TLS_DIR=/etc/labtris/tls
+if [ -s "$TLS_DIR/labtris.crt" ] && [ -s "$TLS_DIR/labtris.key" ]; then
+  say "  TLS: keeping the existing certificate at $TLS_DIR"
+else
+  say "  TLS: generating a self-signed certificate"
+  install -d -m 0750 "$TLS_DIR"
+  HOSTN=$(hostname -f 2>/dev/null || hostname)
+  SANS="DNS:$HOSTN,DNS:localhost,IP:127.0.0.1"
+  for a in $(hostname -I 2>/dev/null); do
+    case "$a" in *:*) SANS="$SANS,IP:$a" ;; *) SANS="$SANS,IP:$a" ;; esac
+  done
+  # 10 years: this is a lab appliance, and an expired certificate on one is a
+  # support question rather than a security improvement.
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout "$TLS_DIR/labtris.key" -out "$TLS_DIR/labtris.crt" \
+    -subj "/CN=$HOSTN" -addext "subjectAltName=$SANS" >/dev/null 2>&1 \
+    && say "  TLS: $TLS_DIR/labtris.crt ($SANS)" \
+    || say "  TLS: openssl failed — nginx will not start on 443. Check: openssl version"
+  chmod 0640 "$TLS_DIR/labtris.key" 2>/dev/null || true
+  chmod 0644 "$TLS_DIR/labtris.crt" 2>/dev/null || true
+fi
 chown -R "$LABTRIS_USER:$LABTRIS_USER" "$PREFIX"
 
 # The media directory is deleted after the install, so a sources.list entry
