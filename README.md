@@ -74,13 +74,17 @@ them and check the result — GitHub refuses release assets of 2 GiB or more,
 so the image ships in two pieces:
 
 ```bash
-cat labtris-*-amd64.iso.part-* > labtris-amd64.iso
-sha256sum -c labtris-*-amd64.sha256     # macOS: shasum -a 256 -c
-sudo dd if=labtris-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+# Substitute the version you downloaded. The joined name has to match the
+# one inside the .sha256 file, or `sha256sum -c` looks for a file that is
+# not there.
+cat labtris-0.13.9-amd64.iso.part-* > labtris-0.13.9-amd64.iso
+sha256sum -c labtris-0.13.9-amd64.sha256      # macOS: shasum -a 256 -c
+sudo dd if=labtris-0.13.9-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 The checksum covers the finished image, so it verifies the join as well as
-the download. Boot it, and when it finishes open `https://<host>` — port 443
+the download — a truncated part boots and then fails partway through the
+install, which is a far worse way to find out. Boot it, and when it finishes open `https://<host>` — port 443
 with a self-signed certificate, so the browser warns once. `http://<host>`
 redirects there, and `http://<host>:8081` is plain HTTP for use over an
 `ssh -L` tunnel. First login is `labtris-admin` / `labtris`, and it will make
