@@ -89,6 +89,9 @@ class GenerateIn(BaseModel):
     #:   k=8    128 hosts +  80 switches =   208 nodes
     #:   k=12   432 hosts + 180 switches =   612 nodes
     #:   k=16  1024 hosts + 320 switches =  1344 nodes
+    #:   k=20  2000 hosts + 500 switches =  2500 nodes
+    #:   k=22  2662 hosts + 605 switches =  3267 nodes
+    #:   k=24  3456 hosts + 720 switches =  4176 nodes
     #:
     #: The old ceiling was 8, "kept modest for a browser-usable lab", which
     #: made the largest fat-tree 208 nodes and sent anyone wanting a big
@@ -101,7 +104,18 @@ class GenerateIn(BaseModel):
     #: node, dominated by per-node netlink work, so a k=16 fat-tree is an
     #: hour of starting. The cap is not what makes that slow, and raising it
     #: does not pretend otherwise.
-    k: int = Field(4, ge=2, le=16)
+    #:
+    #: Then 16 turned out to be the ceiling again the moment someone wanted
+    #: 3000 nodes: k=16 is 1344 and the next even k is the only way up,
+    #: because the host count is k^3/4 and nothing else in a fat-tree is
+    #: adjustable. 24 is the new cap, which reaches 4176 — chosen because it
+    #: is the first value that clears 4000 and because 3k^3/4 links at k=24
+    #: is 10368, within what the generator has been run at. It is a ceiling
+    #: on what you may ASK for, not a promise the host can start it: measure
+    #: the per-node cost of the kind you are using before committing to a
+    #: big k. For FRR with zebra+staticd+bgpd+ospfd that was ~20 MB a node,
+    #: so a k=22 all-FRR fabric wants 65 GB before any routes exist.
+    k: int = Field(4, ge=2, le=24)
     #: What to run each role as. Free choice — a spine can be a bmv2
     #: switch (programmable data plane) or a plain FRR router.
     spine_kind: str = "bmv2"
