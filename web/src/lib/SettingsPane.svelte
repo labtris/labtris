@@ -63,13 +63,14 @@
     ...sections,
     { id: "management-network", label: "Management network" },
     { id: "uplink-bridges", label: "Uplink bridges" },
-    //: This was admin-only, on the reasoning that GET /users refuses
-    //: non-admins so a tab that could only say "forbidden" was dishonest.
-    //: That was right about the list and wrong about the section: changing
-    //: your own password lives here too, and hiding the tab left a regular
-    //: user no way to do it at all. Everyone gets the tab now; only an admin
-    //: gets the roster inside it.
-    { id: "users", label: currentUser?.is_admin ? "Users" : "Your account" },
+    //: This was admin-only on the belief that GET /users refuses non-admins,
+    //: so a tab that could only say "forbidden" would be dishonest. The
+    //: endpoint does no such thing — it is visible to everyone on purpose,
+    //: because you cannot search labs by owner without knowing who the
+    //: owners are. Hiding the tab bought nothing and cost a regular user any
+    //: way to change their own password. Everyone gets it; what differs is
+    //: which buttons are on it.
+    { id: "users", label: "Users" },
     { id: "host", label: "Host & diagnostics", badge: diagFailures },
     { id: "backup", label: "Backup & restore" },
   ]);
@@ -345,7 +346,7 @@
   }
 
   $effect(() => {
-    if (section === "users" && users === null && currentUser?.is_admin) {
+    if (section === "users" && users === null) {
       loadUsers();
     }
   });
@@ -804,7 +805,7 @@
 
     {:else if section === "users"}
       <div class="users-hd">
-        <h4>{currentUser?.is_admin ? "Users" : "Your account"}</h4>
+        <h4>Users</h4>
         {#if currentUser?.is_admin}
           <button class="primary" onclick={openAddUser}>Add user</button>
         {/if}
@@ -840,9 +841,7 @@
       {#if pwDone}
         <p class="hint tiny">{pwDone}</p>
       {/if}
-      {#if !currentUser?.is_admin}
-        <!-- nothing: the password control above is the whole section -->
-      {:else if users === null}
+      {#if users === null}
         <p class="hint tiny">loading…</p>
       {:else if users.length === 0}
         <p class="hint tiny">no accounts yet — that would only happen mid-migration.</p>
@@ -860,8 +859,10 @@
                   {u.role}{u.is_admin ? " · admin" : ""}
                 </td>
                 <td class="row-actions">
-                  <button class="ghost" disabled={usersBusy} onclick={() => startPassword(u)}>Password</button>
-                  {#if u.id !== currentUser?.id}
+                  {#if currentUser?.is_admin || u.id === currentUser?.id}
+                    <button class="ghost" disabled={usersBusy} onclick={() => startPassword(u)}>Password</button>
+                  {/if}
+                  {#if currentUser?.is_admin && u.id !== currentUser?.id}
                     <button class="ghost" disabled={usersBusy} onclick={() => removeUser(u)}>Remove</button>
                   {/if}
                 </td>
