@@ -6901,13 +6901,17 @@
   /* Mirror of the palette's, on the other side. */
   .inspector .collapse { left: 6px; }
   /* Sits against the right edge of the canvas, where the panel used to be. */
+  /* Same height as the collapse control it replaces. Putting the reopen at
+     the vertical middle while the close sat at the top meant the control
+     moved when you used it — you look where you clicked and it is not
+     there. It reappears where it went. */
   .reopen-inspector {
-    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-    z-index: 6; width: 16px; height: 46px; padding: 0;
+    position: absolute; right: 0; top: 6px;
+    z-index: 6; width: 16px; height: 20px; padding: 0;
     border: 1px solid var(--stroke); border-right: none;
-    border-radius: 6px 0 0 6px;
+    border-radius: 5px 0 0 5px;
     background: var(--panel); color: var(--muted);
-    font-size: 13px; line-height: 1; cursor: pointer;
+    font-size: 11px; line-height: 1; cursor: pointer;
   }
   .reopen-inspector:hover { color: var(--fg); background: var(--panel-2, var(--panel)); }
   .inspector {
