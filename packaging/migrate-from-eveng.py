@@ -130,7 +130,11 @@ def labtris_env(confdir: str) -> dict:
     invocation that otherwise bury the one line that matters.
     """
     env = dict(os.environ)
-    env["LABTRIS_SKIP_PLUGINS"] = "1"
+    # The real name. LABTRIS_SKIP_PLUGINS is read by nothing: plugins.py looks
+    # at LABTRIS_PLUGINS_DISABLED, a comma-separated list of plugin names. The
+    # wrong spelling is why every labtris-image call still printed 150 lines of
+    # AWS service registration after 0.13.6 claimed to have silenced it.
+    env["LABTRIS_PLUGINS_DISABLED"] = "aws"
     try:
         for line in Path(confdir, "labtris.env").read_text().splitlines():
             line = line.strip()
@@ -389,7 +393,10 @@ def main() -> int:
     ap.add_argument("--image-cmd", default="/opt/labtris/.venv/bin/labtris-image")
     ap.add_argument("--confdir", default="/etc/labtris",
                     help="where labtris.env lives (for the database URL)")
-    ap.add_argument("--labtris-cmd", default="/opt/labtris/.venv/bin/labtris")
+    ap.add_argument("--python", default="/opt/labtris/.venv/bin/python",
+                    help="the Labtris virtualenv python, used for the import")
+    ap.add_argument("--keep-names", action="store_true",
+                    help="do not offer to rename each lab on import")
     ap.add_argument("--mode", choices=("cold", "hot"), default=None,
                     help="skip the question: cold is topology + base images, "
                          "hot also brings each node's configured disk.")
@@ -595,6 +602,8 @@ def main() -> int:
         r.run(f"rm -f {shlex.quote(flat)}", timeout=60)
 
     # -------------------------------------------------------------- labs
+    importer = str(Path(__file__).resolve().parent / "import-unl.py")
+    python = args.python
     for l in chosen_labs:
         say(f"Importing lab {l['name']}")
         rc, xml = r.run(f"cat {shlex.quote(l['path'])}", timeout=60)
@@ -603,12 +612,23 @@ def main() -> int:
             continue
         tmp = Path(tempfile.gettempdir()) / f"{l['name']}.unl"
         tmp.write_text(xml)
-        if Path(args.labtris_cmd).exists():
-            if subprocess.call([args.labtris_cmd, "lab", "import", str(tmp)],
-                               env=env) != 0:
-                failed.append(f"import {l['name']}")
-        else:
-            print(f"  {Y}not imported{N}: {args.labtris_cmd} not found. The file is at {tmp}")
+
+        # EVE-NG lab names carry whatever they carried — spaces, a stray
+        # timestamp, someone's first name. Offering the rename here is the
+        # only moment the operator is looking at the list and knows which is
+        # which; afterwards it is a row in a table they have to find again.
+        name = l["name"]
+        if not args.keep_names:
+            typed = input(f"  name for this lab [{name}]: ").strip()
+            if typed:
+                name = typed
+
+        if not Path(python).exists():
+            print(f"  {Y}not imported{N}: {python} not found. The file is at {tmp}")
+            failed.append(f"import {l['name']}")
+            continue
+        if subprocess.call([python, importer, str(tmp), "--name", name], env=env) != 0:
+            failed.append(f"import {l['name']}")
 
     print()
     if failed:

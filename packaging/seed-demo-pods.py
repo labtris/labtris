@@ -143,5 +143,7 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("LABTRIS_SKIP_PLUGINS", "1")
+    # LABTRIS_PLUGINS_DISABLED is the name plugins.py actually reads;
+    # LABTRIS_SKIP_PLUGINS, which this set before, is read by nothing.
+    os.environ.setdefault("LABTRIS_PLUGINS_DISABLED", "aws")
     raise SystemExit(asyncio.run(main()))
