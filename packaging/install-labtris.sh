@@ -131,11 +131,30 @@ finalise() {
   # Run it now rather than waiting for a reboot. On an upgrade nobody
   # reboots, and "the new labs arrive next time you restart the machine" is
   # indistinguishable from "they never arrived".
-  if systemctl list-unit-files 2>/dev/null | grep -q '^labtris-seed-pods'; then
+  # A file test, not `systemctl list-unit-files | grep`. That guard silently
+  # evaluated false on a real 0.12 -> 0.13 upgrade — the unit had just been
+  # installed and enabled in phase one, and the block still did not run — and
+  # `|| true` on the start meant nothing said so. The labs did not appear and
+  # the log showed no reason. Whether the cause was systemctl's output format,
+  # a pager or the bus does not matter: the unit file either exists or it does
+  # not, and that is what this now asks.
+  if [ -f /etc/systemd/system/labtris-seed-pods.service ]; then
     say "Demo labs"
-    systemctl start labtris-seed-pods.service >/dev/null 2>&1 || true
-    journalctl -u labtris-seed-pods -n 3 --no-pager 2>/dev/null |
-      sed -n 's/.*seed-demo-pods.*: /  /p' | head -3
+    # The file may have been written moments ago in phase one, so systemd has
+    # to be told before `start` can resolve the name.
+    systemctl daemon-reload
+    if systemctl start labtris-seed-pods.service 2>/tmp/seed-start.err; then
+      journalctl -u labtris-seed-pods -n 20 --no-pager 2>/dev/null |
+        sed -n 's/.*sh\[[0-9]*\]: \(loaded\|skipped\|failed\):/  \1:/p' | tail -3
+    else
+      say "  could not start labtris-seed-pods:"
+      sed 's/^/    /' /tmp/seed-start.err 2>/dev/null | head -3
+      say "  the demo labs are not loaded. Run it by hand:"
+      say "    sudo systemctl start labtris-seed-pods"
+    fi
+    rm -f /tmp/seed-start.err
+  else
+    say "  no seed unit — demo labs not loaded"
   fi
 
   # Print (and save) the one page every operator wants to read once and

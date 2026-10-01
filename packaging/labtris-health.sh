@@ -176,7 +176,7 @@ case "$KMIN" in ''|*[!0-9]*) KMIN=0 ;; esac
 if [ "$KMAJ" -gt 7 ] || { [ "$KMAJ" -eq 7 ] && [ "$KMIN" -ge 1 ]; }; then
   ok "kernel" "$KREL — soft-RoCE supported"
 else
-  note "kernel" "$KREL is below 7.1 — the RDMA lab moves no data"
+  note "kernel" "$KREL below 7.1 — sudo labtris-kernel --install"
 fi
 command -v docker >/dev/null 2>&1 && ok "docker" "$(docker --version 2>/dev/null | cut -d, -f1)" \
                                   || bad "docker" "absent — container nodes cannot start"
