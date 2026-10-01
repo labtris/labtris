@@ -41,7 +41,43 @@ SEED = (
     "ai-fabric-uet",
 )
 
+#: Which pods this machine has already been offered, one name per line.
+#:
+#: It used to be an empty file whose mere existence meant "done", and the
+#: unit carried ConditionPathExists=! on it. That made the first boot work
+#: and every later release fail quietly: a pod added in 0.13 never reached a
+#: machine installed on 0.12, because the stamp from the first boot said the
+#: job was finished.
+#:
+#: Recording the names instead separates the two things that file was being
+#: asked to mean. A pod listed here has been offered once and is never
+#: offered again, so a lab someone deleted on purpose stays deleted. A pod
+#: NOT listed here is new to this machine and gets seeded, which is what an
+#: upgrade should do. Old empty stamps are read as "all of 0.12's pods",
+#: which is what they meant.
 STAMP = Path("/var/lib/labtris/demo-pods-seeded")
+
+#: What an empty (pre-0.13) stamp file stands for: the set that existed when
+#: the stamp was only a marker. Without this, upgrading a 0.12 machine would
+#: re-offer all five and resurrect any the operator had deleted.
+LEGACY_STAMP_MEANS = (
+    "uet-pair",
+    "rdma-pair",
+    "p4-trim",
+    "pfc-classes",
+    "ai-fabric-uet",
+)
+
+
+def already_offered() -> set[str]:
+    """Pod names this machine has been offered before."""
+    try:
+        text = STAMP.read_text()
+    except OSError:
+        return set()
+    names = {line.strip() for line in text.splitlines() if line.strip()}
+    # An empty stamp is the old format and means the 0.12 set.
+    return names or set(LEGACY_STAMP_MEANS)
 
 
 async def main() -> int:
@@ -61,6 +97,7 @@ async def main() -> int:
         print(f"no pod directory at {pod_dir}; nothing to seed")
         return 0
 
+    offered = already_offered()
     loaded, skipped, failed = [], [], []
     async with SessionLocal() as session:
         existing = set(
@@ -71,12 +108,20 @@ async def main() -> int:
             if not archive.exists():
                 failed.append(f"{name}: missing {archive.name}")
                 continue
-            if name in existing:
+            if name in offered:
+                # Offered before. Whether it is still there is the operator's
+                # business — this is the line that stops an upgrade undoing
+                # someone's deletion.
                 skipped.append(name)
+                continue
+            if name in existing:
+                skipped.append(f"{name} (a lab of that name already exists)")
+                offered.add(name)
                 continue
             try:
                 info = await pods.load(session, archive)
                 loaded.append(f"{info['name']} ({info['node_count']} nodes)")
+                offered.add(name)
             except Exception as exc:  # noqa: BLE001 — one bad pod must not stop the rest
                 failed.append(f"{name}: {exc}")
 
@@ -84,12 +129,13 @@ async def main() -> int:
         if items:
             print(f"{label}: {', '.join(items)}")
 
-    # Stamp regardless: this runs once by design. An operator who wants it
-    # again deletes the stamp, which is easier to discover than a unit that
-    # silently re-seeds every boot and fights their deletions.
+    # Record what has now been offered, including pods skipped because a lab
+    # of that name already existed — those have been accounted for and should
+    # not be offered again either. A pod that FAILED is deliberately not
+    # recorded, so the next run retries it.
     try:
         STAMP.parent.mkdir(parents=True, exist_ok=True)
-        STAMP.write_text("")
+        STAMP.write_text("\n".join(sorted(offered)) + "\n")
     except OSError as exc:
         print(f"could not write {STAMP}: {exc}")
 

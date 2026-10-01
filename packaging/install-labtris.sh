@@ -128,6 +128,16 @@ finalise() {
   say "Reverse proxy"
   nginx -t && systemctl reload nginx
 
+  # Run it now rather than waiting for a reboot. On an upgrade nobody
+  # reboots, and "the new labs arrive next time you restart the machine" is
+  # indistinguishable from "they never arrived".
+  if systemctl list-unit-files 2>/dev/null | grep -q '^labtris-seed-pods'; then
+    say "Demo labs"
+    systemctl start labtris-seed-pods.service >/dev/null 2>&1 || true
+    journalctl -u labtris-seed-pods -n 3 --no-pager 2>/dev/null |
+      sed -n 's/.*seed-demo-pods.*: /  /p' | head -3
+  fi
+
   # Print (and save) the one page every operator wants to read once and
   # then find again in a week. A file at 0600 in /root because the DB
   # password path is on it — nothing secret in it directly, but everything
@@ -463,6 +473,22 @@ fi
 # that shipped with the code now installed. A copy would leave the old
 # script in place after an upgrade, which is the one file where being a
 # version behind is actively confusing.
+# The demo labs. This was previously only wired up by the ISO's
+# late-commands, which meant a shell install never got them at all and an
+# upgrade never got the ones added since. Enabling it here covers both: the
+# unit is a no-op when every bundled pod has already been offered.
+say "Demo labs"
+if [ -f "$PREFIX/packaging/iso/overlay/etc/systemd/system/labtris-seed-pods.service" ]; then
+  install -m 0644 \
+    "$PREFIX/packaging/iso/overlay/etc/systemd/system/labtris-seed-pods.service" \
+    /etc/systemd/system/labtris-seed-pods.service
+  systemctl enable labtris-seed-pods.service >/dev/null 2>&1 \
+    && say "  labtris-seed-pods enabled" \
+    || say "  could not enable labtris-seed-pods"
+else
+  say "  unit not in this tree — skipped"
+fi
+
 say "Upgrade command"
 if [ -x "$PREFIX/packaging/labtris-upgrade.sh" ]; then
   ln -sf "$PREFIX/packaging/labtris-upgrade.sh" /usr/local/bin/labtris-upgrade

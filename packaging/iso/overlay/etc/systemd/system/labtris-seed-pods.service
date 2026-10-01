@@ -9,7 +9,12 @@
 Description=Seed the bundled Labtris demo labs
 After=labtris-api.service
 Wants=labtris-api.service
-ConditionPathExists=!/var/lib/labtris/demo-pods-seeded
+# No ConditionPathExists any more. The stamp used to mean "this machine has
+# been seeded", so a pod added in a later release never reached a machine
+# installed before it — which is exactly what an upgrade is for. The stamp now
+# records WHICH pods have been offered and seed-demo-pods.py skips those
+# itself, so the unit can run every boot and is a no-op when there is nothing
+# new. Cheap: it opens the database, compares two small sets and exits.
 
 [Service]
 Type=oneshot
