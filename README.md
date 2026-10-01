@@ -85,20 +85,15 @@ The checksum covers the finished image, so it verifies the join as well as
 the download — a truncated part boots and then fails partway through the
 install, which is a far worse way to find out.
 
-Then boot a machine from it. **On a hypervisor there is nothing else to do:**
-attach the `.iso` as virtual media in Proxmox, ESXi, VMware, Hyper-V,
-VirtualBox or QEMU and boot. That is how most people install this, and no
-`dd` is involved.
+Then attach the `.iso` to a VM and boot it — **Proxmox, ESXi, VMware,
+Hyper-V, VirtualBox or QEMU**. Give it 6+ vCPU, 12 GB RAM and 60 GB of disk,
+and turn on nested virtualisation if you want QEMU nodes inside it to run at
+useful speed. The install is unattended and takes six to ten minutes.
 
-For **bare metal**, write it to a USB stick. [Etcher](https://etcher.balena.io/)
-on any OS and [Rufus](https://rufus.ie/) on Windows do this with a device
-picker, which is the safer route. If you prefer the command line:
-
-```bash
-# ⚠ `of=` is the DEVICE, not a partition, and dd will not ask twice.
-#   Check it with `lsblk` first — the wrong letter overwrites that disk.
-sudo dd if=labtris-0.13.9-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
-```
+For bare metal, write the image to a USB stick with
+[Etcher](https://etcher.balena.io/) or, on Windows,
+[Rufus](https://rufus.ie/) — both give you a device picker, so there is no
+chance of naming the wrong disk.
 
 When the install finishes, open `https://<host>` — port 443 with a
 self-signed certificate, so the browser warns once. `http://<host>` redirects

@@ -118,14 +118,24 @@ and the built interface. Nothing is fetched while it installs.
 Grab it from the [latest release](https://github.com/labtris/labtris/releases/latest).
 The image is ~3.2 GB, over GitHub's 2 GiB per-asset cap, so it is attached
 in two parts (`labtris-<version>-amd64.iso.part-00` and `part-01`) with a
-`sha256` checksum of the finished ISO alongside. Join and verify in one
-step, then write it to a USB stick:
+`sha256` checksum of the finished ISO alongside. Join and verify:
 
 ```
-$ cat labtris-0.4.0-amd64.iso.part-* > labtris-0.4.0-amd64.iso
-$ sha256sum -c labtris-0.4.0-amd64.sha256
-$ sudo dd if=labtris-0.4.0-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+$ cat labtris-0.13.9-amd64.iso.part-* > labtris-0.13.9-amd64.iso
+$ sha256sum -c labtris-0.13.9-amd64.sha256
 ```
+
+The joined file has to keep the versioned name — that is what the `.sha256`
+names inside it, and `sha256sum -c` checks that filename rather than whatever
+you piped into.
+
+Then **attach the `.iso` to a VM and boot it** — Proxmox, ESXi, VMware,
+Hyper-V, VirtualBox or QEMU. 6+ vCPU, 12 GB RAM, 60 GB of disk, and nested
+virtualisation on if you want QEMU nodes inside it to run at useful speed.
+
+For bare metal, write the image to a USB stick with
+[Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/) — both have
+a device picker, so there is no chance of naming the wrong disk.
 
 The checksum is of the *finished* image, so it verifies the join as well
 as the download — do not skip it, a truncated part produces an ISO that
@@ -151,7 +161,7 @@ would not match `127.0.0.1` anyway. Both ports reach the same instance.
 The same ISO boots under QEMU, and touches no disk of yours:
 
 ```
-$ ./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+$ ./packaging/iso/test-boot.sh dist/labtris-*-amd64.iso
 ```
 
 It prints a serial console address, a VNC address, and forwards the web

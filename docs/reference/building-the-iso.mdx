@@ -50,8 +50,15 @@ logo; without either the build succeeds and the splash is plain.
 ## Installing from it
 
 ```bash
-sudo dd if=dist/labtris-0.4.0-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+# Boot the image you just built in QEMU, touching no disk at all.
+./packaging/iso/test-boot.sh dist/labtris-*-amd64.iso
 ```
+
+That is the right check after a build: it boots the actual artefact and runs
+the unattended install, which is what you want to know before anyone writes
+it anywhere. To install it for real, attach the `.iso` to a VM — Proxmox,
+ESXi, VMware, Hyper-V, VirtualBox or QEMU — or write it to a USB stick with
+[Etcher](https://etcher.balena.io/) or [Rufus](https://rufus.ie/).
 
 Boot it and walk away: the answer file covers locale, keyboard, disk layout
 and user, so nothing is asked. It ships as `/autoinstall.yaml` on the media,
@@ -112,7 +119,7 @@ how every product in this category ends up with the same credentials.
 ## Testing a build
 
 ```bash
-./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+./packaging/iso/test-boot.sh dist/labtris-*-amd64.iso
 ```
 
 Boots the ISO under QEMU against a throwaway qcow2, with UEFI firmware if
