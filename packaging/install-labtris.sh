@@ -532,6 +532,23 @@ for _cmd in upgrade health kernel; do
   fi
 done
 
+# The migration helpers. Separate from the loop above because their files are
+# named for what they do rather than labtris-<cmd>.sh, and because they are
+# python rather than shell — the pattern would have to bend to include them,
+# and a bent pattern is how the stale-symlink branch got broken before.
+for _pair in "migrate-eveng:migrate-from-eveng.py" "adopt-eveng-images:adopt-eveng-images.py"; do
+  _name=${_pair%%:*}
+  _src="$PREFIX/packaging/${_pair#*:}"
+  _dst="/usr/local/bin/labtris-$_name"
+  if [ -x "$_src" ]; then
+    ln -sf "$_src" "$_dst"
+    say "  labtris-$_name -> $_src"
+  elif [ -L "$_dst" ]; then
+    rm -f "$_dst"
+    say "  labtris-$_name not in this tree — removed the stale symlink"
+  fi
+done
+
 say "Unit and proxy files"
 install -m 0644 "$PREFIX/packaging/systemd/labtris-ksm.service" /etc/systemd/system/
 install -m 0644 "$PREFIX/packaging/systemd/labtris-netd.service" /etc/systemd/system/
