@@ -184,6 +184,30 @@ say "Running the installer ($NEW_VER)"
 # ----------------------------------------------------------------- did it work
 say "Checking it came up"
 sleep 5
+
+# Prefer the real health check when the tree has one — it looks at the
+# schema revision, the certificate and the listeners, not just whether a
+# unit is active. Two definitions of "healthy" drift; this keeps one.
+HEALTH="$PREFIX/packaging/labtris-health.sh"
+if [ -x "$HEALTH" ]; then
+  if "$HEALTH"; then
+    say "Upgraded ${CUR_VER:-unknown} -> $NEW_VER"
+    printf '  %-20s %s\n' "db backup:"     "${DUMP:-none taken}"
+    printf '  %-20s %s\n' "previous code:" "git -C $PREFIX -c safe.directory=$PREFIX checkout -f $CUR_REF"
+    exit 0
+  fi
+  warn "upgraded to $NEW_VER, but the health check failed."
+  cat <<TXT
+
+  To go back, the previous commit and the dump are both kept:
+      git -C $PREFIX -c safe.directory=$PREFIX checkout -f $CUR_REF
+      $PREFIX/packaging/install-labtris.sh --source $PREFIX
+      gunzip -c ${DUMP:-<none>} | sudo -u postgres psql
+TXT
+  exit 1
+fi
+
+# Fallback for a target release that predates labtris-health.
 FAILED=""
 for u in labtris-api labtris-netd; do
   if systemctl is-active --quiet "$u"; then

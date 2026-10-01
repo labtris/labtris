@@ -178,7 +178,7 @@ finalise() {
     printf '  %-20s %s\n' "DB password:"     "$CONFDIR/db-password"
     printf '  %-20s %s\n' "Service user:"    "$LABTRIS_USER"
     printf '  %-20s %s\n' "Prefix:"          "$PREFIX"
-    printf '  %-20s %s\n' "Health check:"    "labtris-doctor"
+    printf '  %-20s %s\n' "Health check:"    "labtris-health"
     printf '  %-20s %s\n' "Upgrade:"         "sudo labtris-upgrade"
     # Reported rather than warned about, and reported for THIS machine.
     # It is the one bundled lab with a host prerequisite, and the ISO
@@ -493,6 +493,12 @@ say "Upgrade command"
 if [ -x "$PREFIX/packaging/labtris-upgrade.sh" ]; then
   ln -sf "$PREFIX/packaging/labtris-upgrade.sh" /usr/local/bin/labtris-upgrade
   say "  labtris-upgrade -> $PREFIX/packaging/labtris-upgrade.sh"
+fi
+if [ -x "$PREFIX/packaging/labtris-health.sh" ]; then
+  ln -sf "$PREFIX/packaging/labtris-health.sh" /usr/local/bin/labtris-health
+  say "  labtris-health  -> $PREFIX/packaging/labtris-health.sh"
+elif [ -L /usr/local/bin/labtris-health ]; then
+  rm -f /usr/local/bin/labtris-health
 else
   # Remove a stale symlink rather than leave it dangling. This happens for
   # real: `labtris-upgrade --to v0.12.0` checks out a tag that predates the
