@@ -40,8 +40,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import subprocess
 import sys
 from pathlib import Path
+
+
+def die(msg: str) -> None:
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(2)
 
 #: prefix -> (ram_mb, cpus, nic_model, graphical)
 #: Values are EVE-NG's own template defaults for the common images. Where a
@@ -162,6 +169,11 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true",
                     help="create the templates. Without this, nothing is written.")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--print-commands", action="store_true",
+                    help="show the labtris-image commands and stop")
+    ap.add_argument("--image-cmd",
+                    default="/opt/labtris/.venv/bin/labtris-image",
+                    help="path to labtris-image on the Labtris host")
     args = ap.parse_args()
 
     found, skipped = scan(Path(args.root))
@@ -195,13 +207,49 @@ def main() -> int:
         print(f"\n  {len(guesses)} directory name(s) matched no known EVE-NG template.")
         print("  They are still adoptable; their RAM and NIC are defaults, not facts.")
 
-    if not args.apply:
-        print("\nDry run — nothing was written. Re-run with --apply to create these.")
+    # Emit `labtris-image add` rather than talking to the API directly.
+    # That command already exists, is documented, stores the disk under its
+    # content hash and writes into the cache the service actually reads. A
+    # second path into the image store would be a second thing to keep
+    # correct, and the first one to drift.
+    cmds = []
+    for f in found:
+        s = f["spec"]
+        cmds.append(
+            f'{args.image_cmd} add {shlex.quote(f["image"])}'
+            f' --name {shlex.quote(f["name"])}'
+            f' --ram-mb {s["ram_mb"]}'
+            f' --nic-model {s["nic_model"]}'
+            f' --disk-bus {s["disk_bus"]}'
+        )
+
+    if args.print_commands or not args.apply:
+        print("\nCommands to register these (run on the Labtris host):\n")
+        for c in cmds:
+            print(f"  sudo -u labtris {c}")
+        if not args.apply:
+            print("\nDry run — nothing was written.")
+            print("Review the list above, then re-run with --apply on the Labtris host.")
         return 0
 
-    print("\n--apply is not wired to the API yet; this is the scanner half.")
-    print("Next: POST each of these to /api/v1/templates as runtime=qemu.")
-    return 0
+    # --apply only makes sense where the disks and the image store both are.
+    if not Path(args.image_cmd.split()[0]).exists():
+        die(f"{args.image_cmd.split()[0]} not found.\n"
+            "       --apply has to run ON the Labtris host, after the images\n"
+            "       have been copied there. On the EVE-NG box, use the default\n"
+            "       dry run and copy the commands over.")
+
+    ok = failed = 0
+    for f, c in zip(found, cmds):
+        print(f"\n==> {f['name']}")
+        rc = subprocess.call(c, shell=True)
+        if rc == 0:
+            ok += 1
+        else:
+            failed += 1
+            print(f"    FAILED (exit {rc}) — continuing with the rest")
+    print(f"\n{ok} registered, {failed} failed")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
