@@ -4951,6 +4951,17 @@
 
          Collapsible, with the same affordance the palette uses on the other
          side, so the canvas can still be given the whole window. -->
+    <!-- A handle where the panel was. Collapsing something on the right and
+         having to find the way back on the bottom bar is not a discoverable
+         trade: the control that reopens it has to live where it closed. -->
+    {#if !inspectorOpen}
+      <button
+        class="reopen-inspector"
+        title="show the inspector"
+        aria-label="show the inspector"
+        onclick={() => (inspectorOpen = true)}
+      >‹</button>
+    {/if}
     <aside class="inspector" hidden={!inspectorOpen}>
       <button
         class="collapse"
@@ -6889,6 +6900,16 @@
   .palette .collapse { right: 6px; }
   /* Mirror of the palette's, on the other side. */
   .inspector .collapse { left: 6px; }
+  /* Sits against the right edge of the canvas, where the panel used to be. */
+  .reopen-inspector {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    z-index: 6; width: 16px; height: 46px; padding: 0;
+    border: 1px solid var(--stroke); border-right: none;
+    border-radius: 6px 0 0 6px;
+    background: var(--panel); color: var(--muted);
+    font-size: 13px; line-height: 1; cursor: pointer;
+  }
+  .reopen-inspector:hover { color: var(--fg); background: var(--panel-2, var(--panel)); }
   .inspector {
     border-left: 1px solid var(--stroke);
     background: var(--panel);
