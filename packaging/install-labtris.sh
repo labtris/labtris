@@ -177,7 +177,7 @@ finalise() {
   if [ "$kmaj" -gt 7 ] || { [ "$kmaj" -eq 7 ] && [ "$kmin" -ge 1 ]; }; then
     rdma_note="kernel $krel — soft-RoCE supported"
   else
-    rdma_note="kernel $krel is below 7.1 — RDMA lab moves no data (others fine)"
+    rdma_note="kernel $krel is below 7.1 — run: sudo labtris-kernel --install"
   fi
   version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$PREFIX/pyproject.toml" | head -1)
   summary=/root/labtris-install-summary.txt
@@ -508,29 +508,29 @@ else
   say "  unit not in this tree — skipped"
 fi
 
-say "Upgrade command"
-if [ -x "$PREFIX/packaging/labtris-upgrade.sh" ]; then
-  ln -sf "$PREFIX/packaging/labtris-upgrade.sh" /usr/local/bin/labtris-upgrade
-  say "  labtris-upgrade -> $PREFIX/packaging/labtris-upgrade.sh"
-fi
-if [ -x "$PREFIX/packaging/labtris-health.sh" ]; then
-  ln -sf "$PREFIX/packaging/labtris-health.sh" /usr/local/bin/labtris-health
-  say "  labtris-health  -> $PREFIX/packaging/labtris-health.sh"
-elif [ -L /usr/local/bin/labtris-health ]; then
-  rm -f /usr/local/bin/labtris-health
-else
-  # Remove a stale symlink rather than leave it dangling. This happens for
-  # real: `labtris-upgrade --to v0.12.0` checks out a tag that predates the
-  # script, and the symlink would then point at a file that no longer
-  # exists — a command that reports "No such file or directory" is worse
-  # than one that is honestly absent.
-  if [ -L /usr/local/bin/labtris-upgrade ]; then
-    rm -f /usr/local/bin/labtris-upgrade
-    say "  not in this tree — removed the stale labtris-upgrade symlink"
-  else
-    say "  not in this tree — skipped"
+say "Operator commands"
+# One block per command, each independent. An earlier version nested these
+# into a single if/elif/else chain and the stale-symlink cleanup for
+# labtris-upgrade ended up in a branch that only ran when labtris-health was
+# ALSO missing — so the dangling-command bug fixed in 635e775 quietly came
+# back. Three separate tests cannot do that to each other.
+#
+# Symlinks rather than copies, so the command is always the one belonging to
+# the code now installed. Each removes its own stale link when the target is
+# not in this tree: `labtris-upgrade --to <older tag>` can check out a release
+# that predates any of these scripts, and a command answering "No such file
+# or directory" is worse than one that is honestly absent.
+for _cmd in upgrade health kernel; do
+  _src="$PREFIX/packaging/labtris-$_cmd.sh"
+  _dst="/usr/local/bin/labtris-$_cmd"
+  if [ -x "$_src" ]; then
+    ln -sf "$_src" "$_dst"
+    say "  labtris-$_cmd -> $_src"
+  elif [ -L "$_dst" ]; then
+    rm -f "$_dst"
+    say "  labtris-$_cmd not in this tree — removed the stale symlink"
   fi
-fi
+done
 
 say "Unit and proxy files"
 install -m 0644 "$PREFIX/packaging/systemd/labtris-ksm.service" /etc/systemd/system/
