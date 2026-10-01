@@ -167,6 +167,7 @@ finalise() {
     printf '  %-20s %s\n' "Service user:"    "$LABTRIS_USER"
     printf '  %-20s %s\n' "Prefix:"          "$PREFIX"
     printf '  %-20s %s\n' "Health check:"    "labtris-doctor"
+    printf '  %-20s %s\n' "Upgrade:"         "sudo labtris-upgrade"
     # Reported rather than warned about, and reported for THIS machine.
     # It is the one bundled lab with a host prerequisite, and the ISO
     # route shares this summary — which is the case where the reader had
@@ -454,6 +455,18 @@ else
     echo "  WARNING: could not build the web UI — the API will serve REST only." >&2
     echo "           Install nodejs/npm and run: cd $PREFIX/web && npm install && npm run build" >&2
   fi
+fi
+
+# A symlink rather than a copy, so `labtris-upgrade` is always the version
+# that shipped with the code now installed. A copy would leave the old
+# script in place after an upgrade, which is the one file where being a
+# version behind is actively confusing.
+say "Upgrade command"
+if [ -x "$PREFIX/packaging/labtris-upgrade.sh" ]; then
+  ln -sf "$PREFIX/packaging/labtris-upgrade.sh" /usr/local/bin/labtris-upgrade
+  say "  labtris-upgrade -> $PREFIX/packaging/labtris-upgrade.sh"
+else
+  say "  not in this tree — skipped"
 fi
 
 say "Unit and proxy files"
