@@ -40,6 +40,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+
+def _reexec_in_venv() -> None:
+    """Hand ourselves to the interpreter that actually has the dependencies.
+
+    The installer puts this on PATH as a symlink, so the shebang picks the
+    system `python3` — which has no sqlalchemy and no asyncpg, because those
+    live in /opt/labtris/.venv. Installed, the command therefore died on
+    `ModuleNotFoundError: No module named 'sqlalchemy'` the moment it touched
+    the database. That it is the documented way back into an instance you are
+    locked out of makes failing at the import the worst possible place.
+
+    A wrapper script in /usr/local/bin would fix the symlink case only; doing
+    it here also covers running the file directly, or from a copy.
+    """
+    if (ROOT / ".venv" / "bin" / "python3").exists():
+        try:
+            import sqlalchemy  # noqa: F401
+        except ModuleNotFoundError:
+            venv = str(ROOT / ".venv" / "bin" / "python3")
+            # execv, not a subprocess: the caller's exit status, stdin (which
+            # --stdin reads a password from) and tty all carry straight over.
+            os.execv(venv, [venv, str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+_reexec_in_venv()
+
 G, R, Y, D, N = "\033[0;32m", "\033[1;31m", "\033[1;33m", "\033[0;90m", "\033[0m"
 
 
