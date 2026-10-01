@@ -536,7 +536,11 @@ done
 # named for what they do rather than labtris-<cmd>.sh, and because they are
 # python rather than shell — the pattern would have to bend to include them,
 # and a bent pattern is how the stale-symlink branch got broken before.
-for _pair in "migrate-eveng:migrate-from-eveng.py" "adopt-eveng-images:adopt-eveng-images.py"; do
+# One command, not two. adopt-eveng-images.py stays in the tree for scanning
+# a directory that is already local, but it is not a second thing to learn:
+# labtris-migrate-eveng can select images without selecting any lab, which is
+# the same job with one fewer command to know about.
+for _pair in "migrate-eveng:migrate-from-eveng.py"; do
   _name=${_pair%%:*}
   _src="$PREFIX/packaging/${_pair#*:}"
   _dst="/usr/local/bin/labtris-$_name"

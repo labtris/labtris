@@ -10,8 +10,11 @@ Run it on the Labtris host. It asks for the EVE-NG address, reads what is
 there over SSH, and shows you the labs and the images with their sizes:
 
 ```
-sudo -u labtris labtris-migrate-eveng --dry-run
+sudo -u labtris labtris-migrate-eveng
 ```
+
+It asks what to bring, shows you what it found, and does nothing until you
+say yes.
 
 ```
 Labs (7)
@@ -36,7 +39,9 @@ which is why it only asks once.
 
 ## Cold and hot
 
-| | `--mode cold` (default) | `--mode hot` |
+It asks which of these you want; `--mode cold|hot` skips the question.
+
+| | cold | hot |
 |---|---|---|
 | Topology | yes | yes |
 | Base images | yes | yes |
@@ -55,15 +60,17 @@ removed from there afterwards. The plan tells you the size before anything is
 copied, and hot falls back to cold — loudly — when no lab on that box has ever
 been started, because there is no configured state to bring.
 
-## Also
+## Images without labs
 
-`labtris-adopt-eveng-images` registers an existing image library on its own,
-without the lab import, for the case where the images are what you want.
+Select no labs and pick images instead — same command. There is nothing extra
+to learn for the case where the image library is what you are after.
 
-Both are read-only until you confirm, and `--dry-run` scans and prints the
-plan without touching anything. **Try that first** — these paths have been
-tested against synthetic trees, not a real EVE-NG install, so the first run on
-real data is the one that will find the gaps.
+## Before you trust it
+
+Nothing is copied or imported until you confirm, and `--dry-run` stops after
+printing the plan. **Use it the first time.** These paths are tested against
+synthetic trees, not a real EVE-NG install, so the first run on real data is
+the one that will find the gaps.
 
 ## Everything from 0.13.x
 

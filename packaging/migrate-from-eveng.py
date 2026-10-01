@@ -297,9 +297,9 @@ def main() -> int:
                     help="where to put the copied disks on this host")
     ap.add_argument("--image-cmd", default="/opt/labtris/.venv/bin/labtris-image")
     ap.add_argument("--labtris-cmd", default="/opt/labtris/.venv/bin/labtris")
-    ap.add_argument("--mode", choices=("cold", "hot"), default="cold",
-                    help="cold: topology + pristine base images (default). "
-                         "hot: topology + each node's configured working disk.")
+    ap.add_argument("--mode", choices=("cold", "hot"), default=None,
+                    help="skip the question: cold is topology + base images, "
+                         "hot also brings each node's configured disk.")
     ap.add_argument("--dry-run", action="store_true",
                     help="scan and show the plan, copy and import nothing")
     args = ap.parse_args()
@@ -311,6 +311,20 @@ def main() -> int:
     host = args.host or input("EVE-NG address: ").strip()
     if not host:
         return die("no address given")
+
+    # Asked rather than flagged. Someone running this for the first time does
+    # not know the word "hot" means their running configuration, and a
+    # default that silently leaves it behind is the wrong one to be quiet
+    # about.
+    if args.mode is None:
+        print("\nWhat do you want to bring across?")
+        print(f"  {G}1{N}  the labs and their base images")
+        print(f"     {D}the topology, with devices at factory defaults. Small and quick.{N}")
+        print(f"  {G}2{N}  that, plus each node's configured disk")
+        print(f"     {D}what you actually built — the running configuration. Much larger,{N}")
+        print(f"     {D}and each disk is flattened on the EVE-NG box before it moves.{N}")
+        pick = input("  [1] > ").strip() or "1"
+        args.mode = "hot" if pick.startswith("2") else "cold"
 
     r = Remote(host, args.user)
     if not r.connect():
