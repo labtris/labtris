@@ -466,7 +466,17 @@ if [ -x "$PREFIX/packaging/labtris-upgrade.sh" ]; then
   ln -sf "$PREFIX/packaging/labtris-upgrade.sh" /usr/local/bin/labtris-upgrade
   say "  labtris-upgrade -> $PREFIX/packaging/labtris-upgrade.sh"
 else
-  say "  not in this tree — skipped"
+  # Remove a stale symlink rather than leave it dangling. This happens for
+  # real: `labtris-upgrade --to v0.12.0` checks out a tag that predates the
+  # script, and the symlink would then point at a file that no longer
+  # exists — a command that reports "No such file or directory" is worse
+  # than one that is honestly absent.
+  if [ -L /usr/local/bin/labtris-upgrade ]; then
+    rm -f /usr/local/bin/labtris-upgrade
+    say "  not in this tree — removed the stale labtris-upgrade symlink"
+  else
+    say "  not in this tree — skipped"
+  fi
 fi
 
 say "Unit and proxy files"
