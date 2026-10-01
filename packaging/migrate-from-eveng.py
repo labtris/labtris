@@ -117,6 +117,31 @@ class Remote:
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
+def labtris_env(confdir: str) -> dict:
+    """The environment labtris-image needs, from the config the service uses.
+
+    Without LABTRIS_DATABASE_URL the CLI falls back to the default in
+    labtris_api/config.py — postgresql+asyncpg://pnl:pnl@localhost/pnl — and
+    dies with `password authentication failed for user "pnl"` AFTER the copy
+    has finished. The disks land and nothing is registered, which is the
+    worst order for that to happen in.
+
+    LABTRIS_SKIP_PLUGINS silences ~150 lines of plugin registration per
+    invocation that otherwise bury the one line that matters.
+    """
+    env = dict(os.environ)
+    env["LABTRIS_SKIP_PLUGINS"] = "1"
+    try:
+        for line in Path(confdir, "labtris.env").read_text().splitlines():
+            line = line.strip()
+            if line.startswith("LABTRIS_") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return env
+
+
 def human(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -173,6 +198,11 @@ def scan_labs(r: Remote, root: str) -> list[dict]:
         path, size = parts
         rc2, xml = r.run(f"cat {shlex.quote(path)}", timeout=60)
         templates = sorted(set(re.findall(r'template="([^"]+)"', xml)))
+        # EVE-NG usually records the exact image directory on the node, not
+        # only the template. That is far better than a prefix match: a
+        # template like `paloalto` matches every installed version, and
+        # taking all four meant 101GB for a lab that needed one of them.
+        exact = sorted({i for i in re.findall(r'\bimage="([^"]+)"', xml) if i})
         nodes = len(re.findall(r"<node\b", xml))
         # The lab's own id is how a runtime directory is tied back to it:
         # EVE-NG names the working-state directory after this uuid.
@@ -183,6 +213,7 @@ def scan_labs(r: Remote, root: str) -> list[dict]:
             "bytes": int(size or 0),
             "nodes": nodes,
             "templates": templates,
+            "images": exact,
             "uuid": m.group(1) if m else "",
         })
     return sorted(labs, key=lambda l: l["name"])
@@ -236,31 +267,55 @@ def scan_runtime_disks(r: Remote, root: str) -> list[dict]:
     return disks
 
 
-def images_for_templates(templates: list[str], images: list[dict]) -> list[dict]:
-    """Which image directories serve these EVE-NG templates.
+def images_for_labs(labs: list[dict], images: list[dict]) -> list[dict]:
+    """Which image directories the chosen labs actually need.
 
-    EVE-NG names an image directory `<template>-<version>`, so the template
-    is a prefix — but the next character has to be a separator, not another
-    letter. A plain startswith() made a lab using `vios` also pull
-    `viosl2-adventerprisek9-m`, which is a different image and commonly
-    gigabytes, so selecting one small lab started copying things it never
-    referenced.
+    Three steps, in descending order of how much each can be trusted:
 
-    Strictness is right rather than merely safer: EVE-NG labs name
-    `vmxvcp` and `vmxvfp` directly as separate templates, so nothing depends
-    on `vmx` loosely matching them.
+      1. an exact directory name the .unl recorded on a node — unambiguous.
+      2. a template matching exactly one installed directory — unambiguous.
+      3. a template matching several — ask.
+
+    Step 3 is the one that matters. A `paloalto` template matched four
+    installed versions totalling 101GB, so "copy one lab" became a 113GB
+    transfer. Choosing for the operator would be guessing: only they know
+    which version that lab was built against.
     """
-    out = []
-    for t in templates:
-        for im in images:
-            name = im["name"]
-            if not name.startswith(t) or im in out:
-                continue
-            rest = name[len(t):]
-            if rest and rest[0] not in "-._":
-                continue
-            out.append(im)
-    return out
+    by_name = {im["name"]: im for im in images}
+    chosen: list[dict] = []
+
+    def add(im: dict) -> None:
+        if im not in chosen:
+            chosen.append(im)
+
+    for name in sorted({n for l in labs for n in l.get("images", [])}):
+        if name in by_name:
+            add(by_name[name])
+
+    named = {im["name"] for im in chosen}
+    for t in sorted({t for l in labs for t in l["templates"]}):
+        cands = [
+            im for im in images
+            if im["name"].startswith(t)
+            and (len(im["name"]) == len(t) or im["name"][len(t)] in "-._")
+        ]
+        if not cands or any(c["name"] in named for c in cands):
+            continue
+        if len(cands) == 1:
+            add(cands[0])
+            continue
+        total = human(sum(c["bytes"] for c in cands))
+        print(f"\n  {Y}'{t}' matches {len(cands)} installed versions{N} ({total} for all)")
+        labels = letter_labels(len(cands))
+        for lbl, c in zip(labels, cands):
+            print(f"    {lbl:>3}  {c['name'][:44]:<44} {human(c['bytes']):>9}")
+        pick = choose(f"Which {t} image(s) does your lab use?",
+                      [c["name"] for c in cands], labels)
+        for i in pick:
+            add(cands[i])
+        if not pick:
+            print(f"    {Y}none picked — {t} nodes import as placeholders{N}")
+    return chosen
 
 
 def letter_labels(n: int) -> list[str]:
@@ -332,6 +387,8 @@ def main() -> int:
     ap.add_argument("--dest", default="/var/lib/labtris/eveng-import",
                     help="where to put the copied disks on this host")
     ap.add_argument("--image-cmd", default="/opt/labtris/.venv/bin/labtris-image")
+    ap.add_argument("--confdir", default="/etc/labtris",
+                    help="where labtris.env lives (for the database URL)")
     ap.add_argument("--labtris-cmd", default="/opt/labtris/.venv/bin/labtris")
     ap.add_argument("--mode", choices=("cold", "hot"), default=None,
                     help="skip the question: cold is topology + base images, "
@@ -414,11 +471,10 @@ def main() -> int:
                       [str(i) for i in range(1, len(labs) + 1)]) if labs else []
     chosen_labs = [labs[i] for i in lab_pick]
 
-    needed = images_for_templates(
-        sorted({t for l in chosen_labs for t in l["templates"]}), images
-    )
+    needed = images_for_labs(chosen_labs, images) if chosen_labs else []
     if needed:
         print(f"\n{D}Those labs need:{N} " + ", ".join(i["name"] for i in needed))
+        print(f"{D}  {human(sum(i['bytes'] for i in needed))} of images{N}")
 
     hot_for_labs: list[dict] = []
     if args.mode == "hot" and chosen_labs:
@@ -466,7 +522,25 @@ def main() -> int:
 
     # ----------------------------------------------------------- copy + add
     dest_q = Path(args.dest) / "addons" / "qemu"
+    env = labtris_env(args.confdir)
     failed: list[str] = []
+
+    # Prove labtris-image works before moving a single gigabyte. It failed
+    # here on a real run with `password authentication failed for user "pnl"`
+    # — the default database URL — AFTER the first copy had completed, and it
+    # would have failed identically on all eight. Finding that out first costs
+    # a second; finding it out last costs the whole transfer.
+    if Path(args.image_cmd).exists():
+        probe = subprocess.run([args.image_cmd, "list"], env=env,
+                               capture_output=True, text=True)
+        if probe.returncode != 0:
+            tail = (probe.stderr or probe.stdout or "").strip().splitlines()
+            return die("labtris-image cannot reach the database, so nothing\n"
+                       "       would be registered after copying. Last line:\n"
+                       f"         {tail[-1] if tail else '(no output)'}\n"
+                       f"       Check LABTRIS_DATABASE_URL in {args.confdir}/labtris.env\n"
+                       "       and that this is running as the labtris user.")
+        say("labtris-image can reach the database")
     for im in needed:
         if not im["has_disk"]:
             print(f"  {Y}skip{N} {im['name']}: no disk file in the directory")
@@ -479,7 +553,7 @@ def main() -> int:
             local_disk = dest_q / im["name"] / Path(im["disk"]).name
             say(f"Registering {im['name']}")
             if subprocess.call([args.image_cmd, "add", str(local_disk),
-                                "--name", im["name"]]) != 0:
+                                "--name", im["name"]], env=env) != 0:
                 failed.append(f"register {im['name']}")
         else:
             print(f"  {Y}not registered{N}: {args.image_cmd} not found — the disk is at")
@@ -513,7 +587,8 @@ def main() -> int:
         if r.pull(flat, dest) != 0:
             failed.append(f"copy {label}")
         elif Path(args.image_cmd).exists():
-            if subprocess.call([args.image_cmd, "add", str(dest), "--name", name]) != 0:
+            if subprocess.call([args.image_cmd, "add", str(dest), "--name", name],
+                               env=env) != 0:
                 failed.append(f"register {label}")
         # Remove the flattened copy either way: it is a full-size duplicate
         # sitting in /tmp on someone else's machine.
@@ -529,7 +604,8 @@ def main() -> int:
         tmp = Path(tempfile.gettempdir()) / f"{l['name']}.unl"
         tmp.write_text(xml)
         if Path(args.labtris_cmd).exists():
-            if subprocess.call([args.labtris_cmd, "lab", "import", str(tmp)]) != 0:
+            if subprocess.call([args.labtris_cmd, "lab", "import", str(tmp)],
+                               env=env) != 0:
                 failed.append(f"import {l['name']}")
         else:
             print(f"  {Y}not imported{N}: {args.labtris_cmd} not found. The file is at {tmp}")
