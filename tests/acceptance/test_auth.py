@@ -8,6 +8,8 @@ things, not who may look.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import ulid
 from httpx import ASGITransport, AsyncClient
@@ -101,3 +103,97 @@ async def test_a_wrong_password_and_a_missing_user_look_identical(client) -> Non
 
     assert a.status_code == b.status_code == 401
     assert a.json()["error"]["message"] == b.json()["error"]["message"]
+
+
+async def _throwaway(client) -> tuple[dict[str, Any], str]:
+    """A real account to change the password of.
+
+    Reusing a standing user would mean a failed assertion leaves somebody
+    unable to sign in, which is a nasty way for a test suite to fail.
+
+    Deliberately a helper and not a fixture. As an async-generator fixture
+    this created its account in a different event loop from the test body,
+    and the connection the pool handed back was then bound to a loop that no
+    longer existed — "attached to a different loop", on a test whose subject
+    had nothing to do with either.
+    """
+    name = f"pwtest-{ulid.new().str[-6:]}"
+    r = await client.post(
+        "/api/v1/users", json={"username": name, "password": "first-password", "role": "user"}
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["user"], name
+
+
+async def test_an_admin_resets_a_password_without_knowing_the_old_one(client) -> None:
+    """The point of a reset. An admin who had to supply the current password
+    could only reset accounts whose password they already knew, which is not
+    the situation anybody needs a reset for."""
+    created, name = await _throwaway(client)
+    try:
+        r = await client.post(
+            f"/api/v1/users/{created['id']}/password", json={"new_password": "second-password"}
+        )
+        assert r.status_code == 204, r.text
+
+        good = await client.post(
+            "/api/v1/auth/login", json={"username": name, "password": "second-password"}
+        )
+        stale = await client.post(
+            "/api/v1/auth/login", json={"username": name, "password": "first-password"}
+        )
+        assert good.status_code == 200, good.text
+        assert stale.status_code == 401
+    finally:
+        await client.delete(f"/api/v1/users/{created['id']}")
+
+
+async def test_changing_your_own_password_requires_the_current_one(client) -> None:
+    """A session left open on an unlocked laptop should not be enough to lock
+    the owner out of their own account."""
+    from tests.conftest import TEST_USER
+
+    missing = await client.post(
+        f"/api/v1/users/{TEST_USER.id}/password", json={"new_password": "x" * 12}
+    )
+    wrong = await client.post(
+        f"/api/v1/users/{TEST_USER.id}/password",
+        json={"current_password": "not it", "new_password": "x" * 12},
+    )
+
+    assert missing.status_code == 403, missing.text
+    assert wrong.status_code == 403, wrong.text
+
+
+async def test_a_regular_user_cannot_change_somebody_elses_password(client) -> None:
+    """Otherwise any account on a shared instance is one request away from
+    taking over the admin's."""
+    from labtris_api.auth import User, get_current_user
+    from labtris_api.main import app
+    from tests.conftest import TEST_USER
+
+    created, _ = await _throwaway(client)
+    plain = User(id=created["id"], name="Pw Test", username=created["username"], role="user")
+    was = app.dependency_overrides[get_current_user]
+    app.dependency_overrides[get_current_user] = lambda: plain
+    try:
+        r = await client.post(
+            f"/api/v1/users/{TEST_USER.id}/password", json={"new_password": "x" * 12}
+        )
+    finally:
+        # Restored rather than popped: the autouse sign-in fixture installed
+        # this, and the cleanup below still has to be an admin.
+        app.dependency_overrides[get_current_user] = was
+        await client.delete(f"/api/v1/users/{created['id']}")
+    assert r.status_code == 403, r.text
+
+
+async def test_a_password_change_is_refused_below_eight_characters(client) -> None:
+    created, _ = await _throwaway(client)
+    try:
+        r = await client.post(
+            f"/api/v1/users/{created['id']}/password", json={"new_password": "short"}
+        )
+        assert r.status_code == 422, r.text
+    finally:
+        await client.delete(f"/api/v1/users/{created['id']}")

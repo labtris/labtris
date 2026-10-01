@@ -63,10 +63,13 @@
     ...sections,
     { id: "management-network", label: "Management network" },
     { id: "uplink-bridges", label: "Uplink bridges" },
-    //: The /users endpoint refuses non-admins anyway (require_admin gate);
-    //: hiding the nav item for non-admins keeps the UI honest — they don't
-    //: see a tab that would just say "forbidden" if they clicked it.
-    ...(currentUser?.is_admin ? [{ id: "users", label: "Users" }] : []),
+    //: This was admin-only, on the reasoning that GET /users refuses
+    //: non-admins so a tab that could only say "forbidden" was dishonest.
+    //: That was right about the list and wrong about the section: changing
+    //: your own password lives here too, and hiding the tab left a regular
+    //: user no way to do it at all. Everyone gets the tab now; only an admin
+    //: gets the roster inside it.
+    { id: "users", label: currentUser?.is_admin ? "Users" : "Your account" },
     { id: "host", label: "Host & diagnostics", badge: diagFailures },
     { id: "backup", label: "Backup & restore" },
   ]);
@@ -278,6 +281,51 @@
     }
   }
 
+  //: Changing a password had no route in the interface at all — not your
+  //: own, not anyone's. The only way was editing Postgres by hand, which is
+  //: not a thing to ask of someone who just wants to rotate a credential.
+  let pwForm = $state(null);
+  let pwDone = $state("");
+
+  function startPassword(u) {
+    pwDone = "";
+    pwForm = { id: u.id, username: u.username, current: "", next: "", again: "", error: "" };
+  }
+
+  async function savePassword() {
+    if (!pwForm) return;
+    if (pwForm.next.length < 8) {
+      pwForm.error = "at least 8 characters";
+      return;
+    }
+    if (pwForm.next !== pwForm.again) {
+      pwForm.error = "the two new passwords do not match";
+      return;
+    }
+    usersBusy = true;
+    pwForm.error = "";
+    try {
+      const body = { new_password: pwForm.next };
+      // Only sent when changing your own: the API requires it there and
+      // rejects it as unnecessary nowhere, so this keeps the two cases apart.
+      if (pwForm.id === currentUser?.id) body.current_password = pwForm.current;
+      await api.changePassword(pwForm.id, body);
+      pwDone =
+        pwForm.id === currentUser?.id
+          ? "Your password is changed. It is in effect now — other browsers stay signed in on the session they already have."
+          : `Password set for ${pwForm.username}.`;
+      pwForm = null;
+    } catch (e) {
+      try {
+        pwForm.error = JSON.parse(e.message).error?.message || e.message;
+      } catch {
+        pwForm.error = e.message;
+      }
+    } finally {
+      usersBusy = false;
+    }
+  }
+
   async function removeUser(u) {
     if (!confirm(`Remove ${u.username}? Their labs are kept (ownership goes null).`)) return;
     usersBusy = true;
@@ -297,7 +345,7 @@
   }
 
   $effect(() => {
-    if (section === "users" && users === null) {
+    if (section === "users" && users === null && currentUser?.is_admin) {
       loadUsers();
     }
   });
@@ -756,18 +804,45 @@
 
     {:else if section === "users"}
       <div class="users-hd">
-        <h4>Users</h4>
-        <button class="primary" onclick={openAddUser}>Add user</button>
+        <h4>{currentUser?.is_admin ? "Users" : "Your account"}</h4>
+        {#if currentUser?.is_admin}
+          <button class="primary" onclick={openAddUser}>Add user</button>
+        {/if}
       </div>
       <p class="hint tiny">
         Every request on this instance runs as the user who signed in.
         Admins can add, remove, and see everyone; a regular user can build
         in their own labs and cannot delete other people's.
       </p>
+
+      <!-- Your own password, above the roster and present for everyone. An
+           admin can reach it from their own row as well, but a regular user
+           has no roster to have a row in. -->
+      {#if currentUser}
+        <table class="setgrid">
+          <tbody>
+            <tr>
+              <td class="lbl">signed in as</td>
+              <td class="mono tiny">{currentUser.username}{currentUser.is_admin ? " · admin" : ""}</td>
+            </tr>
+            <tr>
+              <td class="lbl">password</td>
+              <td>
+                <button class="ghost" onclick={() => startPassword(currentUser)}>Change your password…</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      {/if}
       {#if usersErr}
         <p class="hint tiny danger-text">{usersErr}</p>
       {/if}
-      {#if users === null}
+      {#if pwDone}
+        <p class="hint tiny">{pwDone}</p>
+      {/if}
+      {#if !currentUser?.is_admin}
+        <!-- nothing: the password control above is the whole section -->
+      {:else if users === null}
         <p class="hint tiny">loading…</p>
       {:else if users.length === 0}
         <p class="hint tiny">no accounts yet — that would only happen mid-migration.</p>
@@ -785,6 +860,7 @@
                   {u.role}{u.is_admin ? " · admin" : ""}
                 </td>
                 <td class="row-actions">
+                  <button class="ghost" disabled={usersBusy} onclick={() => startPassword(u)}>Password</button>
                   {#if u.id !== currentUser?.id}
                     <button class="ghost" disabled={usersBusy} onclick={() => removeUser(u)}>Remove</button>
                   {/if}
@@ -831,6 +907,61 @@
                 onclick={submitAddUser}
               >
                 {usersBusy ? "Adding…" : "Add"}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      {#if pwForm}
+        <div class="modal-back fixed" onpointerdown={() => (usersBusy ? null : (pwForm = null))}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="modal" onpointerdown={(e) => e.stopPropagation()}>
+            <h3>
+              {pwForm.id === currentUser?.id
+                ? "Change your password"
+                : `Set password for ${pwForm.username}`}
+            </h3>
+            <!-- Only your own change asks for the current one. An admin
+                 resetting someone else's does not know it — that is the
+                 whole reason the reset exists. -->
+            {#if pwForm.id === currentUser?.id}
+              <label class="pick">
+                <span>current password</span>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  type="password"
+                  bind:value={pwForm.current}
+                  autocomplete="current-password"
+                  autofocus
+                />
+              </label>
+            {:else}
+              <p class="hint tiny">
+                {pwForm.username} is not told about this. Pass the new password on
+                yourself, and have them change it here afterwards.
+              </p>
+            {/if}
+            <label class="pick">
+              <span>new password</span>
+              <input type="password" bind:value={pwForm.next} autocomplete="new-password" />
+            </label>
+            <label class="pick">
+              <span>new password again</span>
+              <input type="password" bind:value={pwForm.again} autocomplete="new-password" />
+            </label>
+            <p class="hint tiny">At least 8 characters.</p>
+            {#if pwForm.error}
+              <p class="hint tiny danger-text">{pwForm.error}</p>
+            {/if}
+            <div class="modal-actions">
+              <button disabled={usersBusy} onclick={() => (pwForm = null)}>Cancel</button>
+              <button
+                class="primary"
+                disabled={usersBusy || !pwForm.next || !pwForm.again}
+                onclick={savePassword}
+              >
+                {usersBusy ? "Saving…" : "Change password"}
               </button>
             </div>
           </div>

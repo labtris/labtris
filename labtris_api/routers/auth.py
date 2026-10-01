@@ -21,6 +21,7 @@ from labtris_api.auth import (
     require_admin,
     unauthorized,
     users_exist,
+    hash_password,
     verify_password,
 )
 from labtris_api.db import get_session
@@ -168,6 +169,58 @@ async def add_user(
     )
     await session.commit()
     return {"user": _public(row)}
+
+
+class PasswordChange(BaseModel):
+    #: Only required when changing your own. An admin resetting somebody
+    #: else's does not have it, which is the whole point of a reset.
+    current_password: str | None = Field(default=None, max_length=512)
+    new_password: str = Field(min_length=8, max_length=512)
+
+
+@router.post("/users/{user_id}/password", status_code=204)
+async def change_password(
+    user_id: str,
+    body: PasswordChange,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Change a password: your own, or anyone's if you are an admin.
+
+    There was no way to do this at all. An instance whose admin password was
+    lost had no route back except editing Postgres by hand, and a user who
+    wanted to rotate their own simply could not — which is a poor thing to
+    discover after writing the password down somewhere.
+
+    Changing your own requires the current one. That is not ceremony: a
+    session left open on an unlocked laptop should not be enough to lock the
+    owner out of their own account. An admin resetting someone else's does
+    not need it, because a reset exists precisely for when nobody has it.
+    """
+    row = await session.get(UserRow, user_id)
+    if row is None:
+        raise not_found(f"user {user_id} not found")
+
+    # rstrip on both sides: ids are CHAR(26), so Postgres blank-pads anything
+    # shorter on the way out. Every real id is a 26-character ULID and pads to
+    # nothing, but the failure mode if one ever does not is that `own` reads
+    # false, the admin branch is taken, and changing your own password stops
+    # asking for the current one — a check that disappears rather than one
+    # that complains. Not a comparison to leave exact.
+    own = row.id.rstrip() == (user.id or "").rstrip()
+    if not own and not user.is_admin:
+        raise forbidden("only an admin can change another account's password")
+    if own:
+        if not body.current_password or not verify_password(
+            body.current_password, row.password_hash
+        ):
+            raise forbidden("that is not your current password")
+
+    row.password_hash = hash_password(body.new_password)
+    await session.commit()
+    response.status_code = 204
+    return response
 
 
 @router.delete("/users/{user_id}", status_code=204)

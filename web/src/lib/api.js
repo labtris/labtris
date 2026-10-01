@@ -152,6 +152,10 @@ export const api = {
   users: () => req("/api/v1/users"),
   addUser: (body) => req("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   deleteUser: (id) => req(`/api/v1/users/${id}`, { method: "DELETE" }),
+  //: Your own needs the current password; an admin resetting someone
+  //: else's does not, because a reset is for when nobody has it.
+  changePassword: (id, body) =>
+    req(`/api/v1/users/${id}/password`, { method: "POST", body: JSON.stringify(body) }),
   catalog: () => req("/api/v1/catalog"),
   imagePull: (image) =>
     req("/api/v1/images/pull", {
