@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import tarfile
+import pathlib
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -103,6 +104,23 @@ def iface(nid: str, i: int = 0) -> str:
     return f"{nid[:-2]}I{i}"
 
 
+def _project_version() -> str:
+    """The version in pyproject.toml, or "unknown".
+
+    Informational metadata only, so a missing or unreadable pyproject is
+    not worth raising over — a pod that builds is more useful than one that
+    fails over a string nothing gates on.
+    """
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent.parent
+    try:
+        text = (root / "pyproject.toml").read_text()
+    except OSError:
+        return "unknown"
+    m = re.search(r'^version *= *"([^"]+)"', text, re.M)
+    return m.group(1) if m else "unknown"
+
+
 def pod(name: str, description: str, nodes: list[dict], links: list[dict],
         geometry: dict[str, dict], hooks: str | None = None) -> dict:
     lab_id = _id("LAB", abs(hash(name)) % 9999)
@@ -135,10 +153,11 @@ def manifest(p: dict, mode: str = "cold") -> dict:
     nodes = p["lab"]["nodes"]
     return {
         "format": "labtris-pod-v1",
-        # Informational only — the loader does not gate on it. Kept in
-        # step with pyproject rather than pinned, so a pod built today
-        # does not claim to come from a release it predates.
-        "labtris_version": "0.12.0",
+        # Informational only — the loader does not gate on it. Read from
+        # pyproject rather than written here, which is what the comment
+        # claimed before the string was left at 0.12.0 through a version
+        # bump: a pod built today should not claim a release it predates.
+        "labtris_version": _project_version(),
         "pod_id": _id("POD", abs(hash(p["lab"]["name"])) % 9999),
         "lab_id": p["lab"]["id"],
         "lab_name": p["lab"]["name"],
