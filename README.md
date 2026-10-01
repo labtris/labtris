@@ -95,6 +95,12 @@ For bare metal, write the image to a USB stick with
 [Rufus](https://rufus.ie/) — both give you a device picker, so there is no
 chance of naming the wrong disk.
 
+Give the VM a disk with room for your images — qcow2 bases and per-node
+overlays are what fill a Labtris host. On images before 0.13.10 the root
+volume gets about half the disk, so check `df -h /` after install and see
+[If the disk looks half its size](https://docs.labtris.com/install) if it
+looks short.
+
 When the install finishes, open `https://<host>` — port 443 with a
 self-signed certificate, so the browser warns once. `http://<host>` redirects
 there, and `http://<host>:8081` is plain HTTP for use over an `ssh -L` tunnel.

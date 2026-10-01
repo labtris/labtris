@@ -152,6 +152,40 @@ browser warns once. Plain `http://<that address>` redirects there.
 one to use through an `ssh -L` tunnel where a certificate for the real address
 would not match `127.0.0.1` anyway. Both ports reach the same instance.
 
+## If the disk looks half its size
+
+Images installed before 0.13.10 used Ubuntu's default LVM sizing, which gives
+the root logical volume roughly **half** the disk and leaves the rest
+unallocated. A 60 GB disk ends up with a 29 GB filesystem, and a Labtris host
+storing qcow2 base images and per-node overlays runs out of room while `vgs`
+still reports free space — a confusing way to fail.
+
+Check with:
+
+```
+$ df -h /
+$ sudo vgs                 # VFree is what is sitting unused
+```
+
+If `VFree` is not zero, hand it to the root volume. This is safe online — ext4
+grows while mounted, and nothing has to be unmounted or rebooted:
+
+```
+$ sudo lvextend -l +100%FREE /dev/ubuntu-vg/ubuntu-lv
+$ sudo resize2fs /dev/ubuntu-vg/ubuntu-lv
+$ df -h /
+```
+
+<Note>
+Those are the names Ubuntu's installer uses. Confirm yours first with
+`sudo lvs` — the volume group is `ubuntu-vg` and the volume `ubuntu-lv` on a
+stock install, but not if you partitioned by hand. If the filesystem is XFS
+rather than ext4, the second command is `sudo xfs_growfs /`.
+</Note>
+
+New ISOs from 0.13.10 set `sizing-policy: all`, so the whole volume group goes
+to the root volume at install time and there is nothing to do.
+
 > **The machine's own login** is `labtris-admin` / `labtris`, and it forces a
 > change on first use. That is the *operating system* account, for shell access.
 > It is not the Labtris account — see [Users and access](/users).

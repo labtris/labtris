@@ -57,6 +57,14 @@ autoinstall:
   storage:
     layout:
       name: lvm
+      # Subiquity's default sizing policy is `scaled`, which gives the root
+      # LV roughly half the volume group and leaves the rest unallocated —
+      # a 60 GB disk installs with a 29 GB filesystem. That is a sensible
+      # default for a general server with snapshots in mind, and wrong for
+      # this: a Labtris host stores multi-GB qcow2 base images and per-node
+      # overlays, so it runs out of room while `vgs` still shows free space,
+      # which is a confusing way to fail.
+      sizing-policy: all
 
   # The base install stays minimal; install-labtris.sh pulls what it needs.
   # Listing packages in both places is how they drift.
