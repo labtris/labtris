@@ -121,7 +121,12 @@ Boot the machine from it. The install is unattended and takes six to ten
 minutes; most of that is the package set being unpacked from the disc.
 
 When it finishes, the console shows the address it is serving on. Open
-`http://<that address>:8081`.
+`https://<that address>` — port 443, with a self-signed certificate, so the
+browser warns once. Plain `http://<that address>` redirects there.
+
+`http://<that address>:8081` also works and is plain HTTP, which is the easier
+one to use through an `ssh -L` tunnel where a certificate for the real address
+would not match `127.0.0.1` anyway. Both ports reach the same instance.
 
 > **The machine's own login** is `labtris-admin` / `labtris`, and it forces a
 > change on first use. That is the *operating system* account, for shell access.
