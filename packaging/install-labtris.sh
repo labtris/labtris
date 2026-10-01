@@ -199,6 +199,7 @@ finalise() {
     printf '  %-20s %s\n' "Prefix:"          "$PREFIX"
     printf '  %-20s %s\n' "Health check:"    "labtris-health"
     printf '  %-20s %s\n' "Upgrade:"         "sudo labtris-upgrade"
+    printf '  %-20s %s\n' "Accounts:"        "sudo -u labtris labtris-user list"
     # Reported rather than warned about, and reported for THIS machine.
     # It is the one bundled lab with a host prerequisite, and the ISO
     # route shares this summary — which is the case where the reader had
@@ -540,7 +541,7 @@ done
 # a directory that is already local, but it is not a second thing to learn:
 # labtris-migrate-eveng can select images without selecting any lab, which is
 # the same job with one fewer command to know about.
-for _pair in "migrate-eveng:migrate-from-eveng.py"; do
+for _pair in "migrate-eveng:migrate-from-eveng.py" "user:labtris-user.py"; do
   _name=${_pair%%:*}
   _src="$PREFIX/packaging/${_pair#*:}"
   _dst="/usr/local/bin/labtris-$_name"
