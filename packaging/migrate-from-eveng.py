@@ -146,6 +146,31 @@ def labtris_env(confdir: str) -> dict:
     return env
 
 
+def register(image_cmd: str, disk: Path, name: str, env: dict) -> bool:
+    """labtris-image add, treating an existing template as success.
+
+    Re-running a migration is normal — a transfer gets interrupted, or you
+    come back for more labs — and rsync already skips what it has. But
+    `labtris-image add` exits non-zero on "template name already exists", so
+    the second run reported three failures for three images that were
+    present and correct. An idempotent step has to say so.
+    """
+    p = subprocess.run([image_cmd, "add", str(disk), "--name", name],
+                       env=env, capture_output=True, text=True)
+    out = (p.stdout or "") + (p.stderr or "")
+    if p.returncode == 0:
+        for line in out.splitlines():
+            if line.startswith("added "):
+                print(f"  {line}")
+        return True
+    if "already exists" in out:
+        print(f"  {D}already registered — left as it is{N}")
+        return True
+    for line in out.strip().splitlines()[-3:]:
+        print(f"  {line}")
+    return False
+
+
 def human(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -559,8 +584,7 @@ def main() -> int:
         if shutil.which(args.image_cmd) or Path(args.image_cmd).exists():
             local_disk = dest_q / im["name"] / Path(im["disk"]).name
             say(f"Registering {im['name']}")
-            if subprocess.call([args.image_cmd, "add", str(local_disk),
-                                "--name", im["name"]], env=env) != 0:
+            if not register(args.image_cmd, local_disk, im["name"], env):
                 failed.append(f"register {im['name']}")
         else:
             print(f"  {Y}not registered{N}: {args.image_cmd} not found — the disk is at")
@@ -594,8 +618,7 @@ def main() -> int:
         if r.pull(flat, dest) != 0:
             failed.append(f"copy {label}")
         elif Path(args.image_cmd).exists():
-            if subprocess.call([args.image_cmd, "add", str(dest), "--name", name],
-                               env=env) != 0:
+            if not register(args.image_cmd, dest, name, env):
                 failed.append(f"register {label}")
         # Remove the flattened copy either way: it is a full-size duplicate
         # sitting in /tmp on someone else's machine.
