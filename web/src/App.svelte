@@ -3860,6 +3860,12 @@
 
   function editSize() {
     if (!selectedNode) return;
+    // Open the pane the form lives in. Every sibling in that context menu
+    // sets `dock` — openConfig sets "config", openLogs sets "logs" — and this
+    // one did not, so "RAM / vCPU…" set sizeForm and rendered nothing
+    // whenever the dock was closed or showing any other tab. The menu item
+    // appeared to do nothing at all, which is exactly what it did.
+    dock = "inspector";
     sizeForm = {
       ram_mb: selectedNode.ram_mb ?? "",
       cpu_limit: selectedNode.cpu_limit ?? "",
