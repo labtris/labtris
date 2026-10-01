@@ -504,6 +504,32 @@ class TaskOut(ORMModel):
 class TaskIn(BaseModel):
     kind: Literal["pull_images", "start_all", "stop_all"]
 
+    #: start_all/stop_all. How many nodes to bring up at once, and how long
+    #: to wait between waves — the stagger.
+    #:
+    #: start_all used to be strictly sequential, one node at a time, which on
+    #: a 3267-node fabric is hours and leaves 23 of 24 cores idle. Going flat
+    #: out is the other wrong answer: every start is a container create, a
+    #: netns, veth pairs and a routing daemon coming up, and firing thousands
+    #: at once buries the runtime and the netlink socket, so nodes begin
+    #: failing for reasons that have nothing to do with the node.
+    #:
+    #: A wave of 8 with a short pause is the shape that works: the pause is
+    #: what lets each wave's container init and daemon startup finish before
+    #: the next lands. Both are settable because the right numbers depend on
+    #: the host, and neither default is a limit on the lab's size.
+    batch: int = Field(8, ge=1, le=256)
+    stagger_ms: int = Field(250, ge=0, le=60_000)
+
+    #: Stop starting when the host has less than this much memory left.
+    #:
+    #: Without it a fabric larger than the host simply runs until the OOM
+    #: killer picks something, which may be Postgres or the API rather than a
+    #: node, and the result is an instance that has to be rebooted to find out
+    #: what happened. Stopping early leaves a lab that is partly up, says so,
+    #: and is still usable. 0 disables the check.
+    min_free_mb: int = Field(2048, ge=0)
+
 
 class LabImportIn(BaseModel):
     format: str = "labtris-lab-v1"

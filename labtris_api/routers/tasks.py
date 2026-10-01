@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import get_current_user
 from labtris_api.db import SessionLocal, get_session
 from labtris_api.errors import not_found
 from labtris_api.lifecycle import get_lab, new_id, start_node, stop_node
-from labtris_api.models import Node, Task
+from labtris_api.models import Interface, Node, Task
 from labtris_api.runtime.base import StopMode
 from labtris_api.runtime.docker import _docker as _new_docker_client
 from labtris_api.runtime.docker import docker_runtime
@@ -74,7 +75,7 @@ async def _report_image_progress(task_id: str, image: str, done: int, total: int
         await asyncio.sleep(2)
 
 
-async def _run_task(task_id: str, lab_id: str, kind: str) -> None:
+async def _run_task(task_id: str, lab_id: str, kind: str, opts: TaskIn) -> None:
     async with SessionLocal() as session:
         task = await session.get(Task, task_id)
         if task is None:
@@ -106,19 +107,116 @@ async def _run_task(task_id: str, lab_id: str, kind: str) -> None:
                 done += 1
                 await _set_progress(task_id, done, total, f"pulled {image}")
         elif kind in ("start_all", "stop_all"):
-            for i, node in enumerate(nodes):
-                async with SessionLocal() as session:
-                    n = await session.get(Node, node.id)
-                    if n is None:
-                        continue
-                    if kind == "start_all":
-                        await start_node(session, n)
-                    else:
-                        await stop_node(session, n, StopMode.FORCE)
-                await _set_progress(task_id, i + 1, total, f"{kind} {node.name}")
+            done, failed = await _run_in_waves(task_id, kind, nodes, total, opts)
+            if failed and not done:
+                await _finish(task_id, "failed", f"nothing {kind.split('_')[0]}ed; {failed} failed")
+                return
+            note = f"{done} of {total}"
+            if failed:
+                note += f", {failed} failed (each node's last_error says why)"
+            if done < total - failed:
+                note += f", {total - done - failed} not attempted — host was low on memory"
+            await _finish(task_id, "done", note)
+            return
         await _finish(task_id, "done", "complete")
     except Exception as exc:
         await _finish(task_id, "failed", str(exc))
+
+
+def _mem_available_mb() -> int | None:
+    """MemAvailable, which is the only figure worth gating on.
+
+    MemFree excludes reclaimable page cache and so reads catastrophically low
+    on a host that is merely warm; gating on it would refuse to start a lab
+    that fits perfectly well.
+    """
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+async def _ordered_for_start(nodes: list[Node]) -> list[Node]:
+    """Most-connected first, so a node's upstream is up before it is.
+
+    A host whose edge switch is not running yet comes up, finds no peer, and
+    backs off — so the fabric converges on BGP's retry timer rather than on
+    how fast the nodes started. Ordering by interface count is the
+    topology-agnostic way to get that right: in a fat tree it yields
+    core, then aggregation, then edge, then hosts, without the task runner
+    needing to know what a fat tree is. A spine-leaf gets spines first for
+    the same reason, and a topology where it means nothing loses nothing.
+    """
+    ids = [n.id for n in nodes]
+    degree: dict[str, int] = {}
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Interface.node_id, func.count(Interface.id))
+                .where(Interface.node_id.in_(ids))
+                .group_by(Interface.node_id)
+            )
+        ).all()
+        degree = {r[0]: r[1] for r in rows}
+    return sorted(nodes, key=lambda n: (-degree.get(n.id, 0), n.name))
+
+
+async def _run_in_waves(
+    task_id: str, kind: str, nodes: list[Node], total: int, opts: TaskIn
+) -> tuple[int, int]:
+    """Start or stop in waves of `batch`, pausing `stagger_ms` between them."""
+    starting = kind == "start_all"
+    ordered = await _ordered_for_start(nodes) if starting else list(nodes)
+    done = 0
+    failed = 0
+
+    async def one(node_id: str) -> bool:
+        async with SessionLocal() as session:
+            n = await session.get(Node, node_id)
+            if n is None:
+                return False
+            try:
+                if starting:
+                    await start_node(session, n)
+                else:
+                    await stop_node(session, n, StopMode.FORCE)
+                return True
+            except Exception:
+                # One node that will not start is not a reason to abandon the
+                # other three thousand. start_node has already recorded the
+                # reason on the node itself, which is where someone looking at
+                # a half-up lab will go.
+                return False
+
+    for i in range(0, len(ordered), opts.batch):
+        if starting and opts.min_free_mb:
+            free = _mem_available_mb()
+            if free is not None and free < opts.min_free_mb:
+                await _set_progress(
+                    task_id, done, total,
+                    f"stopped at {done}: {free} MB free, under the {opts.min_free_mb} MB floor",
+                )
+                break
+        wave = ordered[i : i + opts.batch]
+        results = await asyncio.gather(
+            *(one(n.id) for n in wave), return_exceptions=True
+        )
+        for r in results:
+            if r is True:
+                done += 1
+            else:
+                failed += 1
+        await _set_progress(
+            task_id, done + failed, total,
+            f"{kind} {done + failed}/{total}" + (f", {failed} failed" if failed else ""),
+        )
+        if opts.stagger_ms and i + opts.batch < len(ordered):
+            await asyncio.sleep(opts.stagger_ms / 1000)
+
+    return done, failed
 
 
 @router.post("/labs/{lab_id}/tasks", response_model=TaskOut, status_code=201)
@@ -134,7 +232,7 @@ async def create_task(
     session.add(task)
     await session.commit()
     await session.refresh(task)
-    asyncio.create_task(_run_task(task.id, lab_id, body.kind))
+    asyncio.create_task(_run_task(task.id, lab_id, body.kind, body))
     return task
 
 
