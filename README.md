@@ -60,26 +60,91 @@ curl -fsSL https://labtris.com/install | sudo bash
 ```
 
 Runs about five minutes and finishes with the URL to open, where the
-config lives, and where the generated database password sits. The script
-is idempotent — re-run it to upgrade. See [Install](https://docs.labtris.com/install)
-for the details.
+config lives, and where the generated database password sits. See
+[Install](https://docs.labtris.com/install) for the details.
 
 ### From the ISO — for bare metal or an air-gapped machine
 
 Every Debian package, every Python wheel and the built interface are on
 the ISO, so it needs no network at all.
 
+Download every `labtris-*-amd64.iso.part-*` from the
+[latest release](https://github.com/labtris/labtris/releases/latest), join
+them and check the result — GitHub refuses release assets of 2 GiB or more,
+so the image ships in two pieces:
+
 ```bash
-sudo dd if=labtris-0.4.0-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+cat labtris-*-amd64.iso.part-* > labtris-amd64.iso
+sha256sum -c labtris-*-amd64.sha256     # macOS: shasum -a 256 -c
+sudo dd if=labtris-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
-Boot it, and when it finishes open `http://<host>:8081`. First login is
-`labtris-admin` / `labtris`, and it will make you change it.
+The checksum covers the finished image, so it verifies the join as well as
+the download. Boot it, and when it finishes open `https://<host>` — port 443
+with a self-signed certificate, so the browser warns once. `http://<host>`
+redirects there, and `http://<host>:8081` is plain HTTP for use over an
+`ssh -L` tunnel. First login is `labtris-admin` / `labtris`, and it will make
+you change it.
+
+## Upgrade
+
+```bash
+curl -fsSL https://labtris.com/upgrade | sudo bash
+```
+
+Goes to the latest release — not `main` — dumps the database before it
+migrates anything, and tells you whether the result is actually serving. Your
+labs, pods, images and database are carried across.
+
+```bash
+curl -fsSL https://labtris.com/upgrade | sudo bash -s -- --check      # say what it would do
+curl -fsSL https://labtris.com/upgrade | sudo bash -s -- --to v0.13.9 # a specific release
+```
+
+The `-s --` matters: without it bash takes the flags for itself. From v0.13.3
+the script is installed, so `sudo labtris-upgrade` works too, alongside
+`labtris-health` (services, listeners, certificate, schema revision) and
+`labtris-kernel` (a mainline kernel new enough for soft-RoCE).
+
+Container installs upgrade with `docker compose pull && docker compose up -d`
+from the directory holding your compose file.
+
+## Coming from EVE-NG
+
+```bash
+sudo -u labtris labtris-migrate-eveng
+```
+
+Run it on the Labtris host. It asks for the EVE-NG address, reads the labs and
+the image library over SSH, and shows you both — labs numbered, images
+lettered:
+
+```
+Labs (7)
+    #  name                             nodes  templates
+    1  ccie-rs-lab1                        14  vios, viosl2, veos
+
+Images (12, 86.4GB total)
+   id  directory                              size
+    a  vios-adventerprisek9-m-15.6.2T        1.2GB
+```
+
+Pick by number, range (`2-4`), name (`ccie`) or `all`. Choosing a lab works
+out which images its templates need and copies **only those**, so trying one
+lab moves a few GB rather than the whole library. The topology is imported and
+the nodes point at the images that just arrived.
+
+It asks whether you want the base images or each node's configured working
+disk as well, and it never handles your SSH password — ssh does its own
+authentication over a single connection.
+
+Add `--dry-run` for the first run: it scans, prints the plan, and copies
+nothing. See [Migrating from EVE-NG](https://docs.labtris.com/migrate-from-eveng).
 
 To try the installer without touching a disk:
 
 ```bash
-./packaging/iso/test-boot.sh dist/labtris-0.4.0-amd64.iso
+./packaging/iso/test-boot.sh dist/labtris-*-amd64.iso
 ```
 
 ### From source — for development

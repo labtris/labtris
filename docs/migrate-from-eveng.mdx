@@ -1,0 +1,121 @@
+---
+title: "Migrating from EVE-NG"
+description: "One command on the Labtris host brings your EVE-NG labs and image library across, copying only the disks the labs you pick actually need."
+---
+
+EVE-NG Community Edition is end of life — EVE-NG's own download page marks it
+End of Support and End of Life as of June 2026, and the last CE build shipped
+in July 2024. If that is what you are running, this page is the way out.
+
+```bash
+sudo -u labtris labtris-migrate-eveng
+```
+
+Run it **on the Labtris host**, not on EVE-NG. It reaches the EVE-NG box over
+SSH, reads what is there, and shows you both lists before touching anything.
+
+<Note>
+Use `--dry-run` the first time. It connects, scans, prints the plan and copies
+nothing. These paths are young; the first run against a real image library is
+the one that finds the gaps.
+</Note>
+
+## What it asks
+
+**The address, then what you want.** Labs plus their pristine base images is
+the default. The other option also brings each node's *working* disk — the one
+with the configuration actually applied. Forty hours into a certification lab,
+the topology is not what you want back.
+
+**Then what to bring.** Labs are numbered and images are lettered, so a
+selection can only mean one list:
+
+```
+Labs (7)
+    #  name                             nodes  templates
+    1  ccie-rs-lab1                        14  vios, viosl2, veos
+    2  junos-basics                         6  vmxvcp, vmxvfp
+
+Images (12, 86.4GB total)
+   id  directory                              size
+    a  vios-adventerprisek9-m-15.6.2T        1.2GB
+    b  viosl2-adventerprisek9-m-15.2         1.1GB
+```
+
+`1 2` is labs, `a c` is images. Ranges work for both — `2-4`, `a-d`, and
+`y-ab` across the letter rollover. A word that is not a label is a name
+search, so `ccie` picks every lab containing it.
+
+## It copies only what your labs need
+
+Choosing a lab works out which image directories its templates reference. Where
+a template matches several installed versions it asks, because only you know
+which one a lab was built against:
+
+```
+  'paloalto' matches 4 installed versions (94.0GB for all)
+      a  paloalto-12.1.2-rel                              5.1GB
+      c  paloalto-13.0-main                              43.0GB
+```
+
+On one real library that turned a 113GB transfer into 48GB. Where the `.unl`
+records the exact image directory on a node — EVE-NG usually does — no
+question is asked at all.
+
+## Your password is never handled
+
+One SSH connection is opened up front and `ssh` does its own authentication,
+so a password goes from your terminal to ssh and nowhere near the script.
+Every later scan and copy reuses that connection, which is also why you are
+only asked once.
+
+## Naming labs as they arrive
+
+EVE-NG names carry whatever they carried — spaces, a stray timestamp,
+somebody's first name:
+
+```
+  name for this lab [shreyas_1746382452984]:
+```
+
+Enter keeps it. That is the only moment you are looking at the list and know
+which lab is which. `--keep-names` skips the prompt.
+
+## Hot copies of a running lab
+
+A working disk belongs to a lab that may be started on the EVE-NG box, and
+`qemu-img` cannot read a disk a running VM holds:
+
+```
+qemu-img: Failed to get shared "write" lock
+Is another process using the image?
+```
+
+It retries read-only, which produces a **crash-consistent** copy — the guest's
+filesystem as it would be after losing power. A journalled filesystem replays
+on boot; anything unflushed is gone. A device whose configuration was saved
+survives that; one with unsaved changes in memory does not. **Stop the lab in
+EVE-NG and re-run for a clean copy.**
+
+Working disks are flattened before they move, because an EVE-NG runtime disk is
+a qcow2 delta whose backing file is an `/opt/unetlab` path that does not exist
+on your Labtris host. A flattened disk is as large as the base it came from,
+not as large as the delta.
+
+## What arrives, and what does not
+
+Vendor nodes whose image came across point at it. Nodes whose image did not
+arrive import as labelled placeholders with a note saying so — re-run and pick
+those images to replace them.
+
+Re-running is normal and safe: rsync skips what it already has and an
+already-registered image counts as done.
+
+## Known rough edges
+
+* The `.unl` parser maps a fixed set of EVE-NG templates. Anything outside it
+  relies on the image library having been adopted first.
+* EVE-NG's exported startup-configs inside a `.unl` are not imported yet. For
+  devices that boot from config rather than disk state, bring the working disk.
+* This tooling is days old. If something fails, the output now carries the
+  underlying error — please open an issue with it.

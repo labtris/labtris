@@ -45,6 +45,20 @@ that today, use 24.04 or the container install, which pulls
 The unit suite runs identically on both: 332 passed, 1 skipped, and the same
 10 pre-existing environment-dependent failures on 3.12 and 3.14 alike.
 
+## Already running Labtris?
+
+```
+curl -fsSL https://labtris.com/upgrade | sudo bash
+```
+
+Goes to the latest release rather than tracking `main`, dumps the database
+before it migrates anything, and reports whether the result is serving. Labs,
+pods, images and the database carry across. `--check` says what it would do
+and changes nothing; see [Upgrading](/install/guide#upgrade) for the order of
+operations and the rollback it prints on failure.
+
+Coming from EVE-NG instead? [Migrating from EVE-NG](/migrate-from-eveng).
+
 ## One line, on a fresh Ubuntu 24.04 or 26.04 machine
 
 ```

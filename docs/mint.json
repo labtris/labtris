@@ -51,6 +51,7 @@
       "pages": [
         "introduction",
         "install",
+        "migrate-from-eveng",
         "first-lab"
       ]
     },
