@@ -373,6 +373,31 @@
   );
   const stoppedCount = $derived((lab?.nodes ?? []).length - runningCount);
 
+  //: Interface id -> {node, iface, idx}, and node id -> index.
+  //:
+  //: The canvas used to resolve each link's two ends with
+  //: `lab.nodes.find((n) => n.interfaces.some((i) => i.id === ...))`, inside
+  //: the render loop, twice per link — a scan of every node and every one of
+  //: its interfaces. On a 1352-node spine-leaf with 1792 links and ~28
+  //: interfaces per leaf that is on the order of a hundred million
+  //: comparisons for one frame, which is why the canvas crawled at that size
+  //: while a 20-node lab felt instant: the cost is quadratic in the topology,
+  //: so it is invisible until it is awful.
+  //:
+  //: Built once per lab change and read O(1) per link. `indexOf` had the same
+  //: shape and is covered by nodeIndex.
+  const ifaceIndex = $derived.by(() => {
+    const m = new Map();
+    for (const n of lab?.nodes ?? [])
+      for (const i of n.interfaces ?? []) m.set(i.id, { node: n, iface: i });
+    return m;
+  });
+  const nodeIndex = $derived.by(() => {
+    const m = new Map();
+    (lab?.nodes ?? []).forEach((n, i) => m.set(n.id, i));
+    return m;
+  });
+
   //: Inspector tab used to inline the whole context — "Node: pan-ha-a" or
   //: "Lab (4 nodes)" — which stretched the tab wider than every sibling
   //: and pushed the row around. The pane's own header already carries the
@@ -1996,12 +2021,14 @@
   //: The first address of whichever port faces the other end of this link —
   //: what you would actually ping to test it.
   function linkEnds(link) {
-    const nodes = lab?.nodes ?? [];
+    // Same index the canvas uses. This one is called per link from the
+    // addressing view rather than per frame, so it was less visible — but
+    // with 1792 links it was still two full node scans each, which is the
+    // whole topology walked 3584 times to label one view.
     const side = (ifaceId) => {
-      const node = nodes.find((n) => n.interfaces?.some((i) => i.id === ifaceId));
-      if (!node) return null;
-      const iface = node.interfaces.find((i) => i.id === ifaceId);
-      return { node, iface, addr: addrOf(node, iface) };
+      const end = ifaceIndex.get(ifaceId);
+      if (!end) return null;
+      return { node: end.node, iface: end.iface, addr: addrOf(end.node, end.iface) };
     };
     return { a: side(link.a_iface_id), b: side(link.b_iface_id) };
   }
@@ -2650,7 +2677,7 @@
   }
 
   function jumpToNode(node) {
-    const p = pos(node.id, lab.nodes.indexOf(node));
+    const p = pos(node.id, nodeIndex.get(node.id));
     pan = { ...pan, x: 200 - p.x * pan.k, y: 160 - p.y * pan.k };
     selected = node.id;
     selectedLink = null;
@@ -4095,6 +4122,26 @@
         {#if runningCount}<span class="chip ok"><i class="cdot"></i>{runningCount} running</span>{/if}
         {#if stoppedCount}<span class="chip"><i class="cdot"></i>{stoppedCount} stopped</span>{/if}
       </span>
+      <!-- Start/stop everything, next to the counts they change. These were
+           only reachable by right-clicking the canvas, which is not
+           discoverable: the first thing anyone wants to do with a lab they
+           just opened is run it. Two buttons, not sixteen — they sit beside
+           the state rather than reopening the control panel this header was
+           deliberately trimmed out of. -->
+      <span class="runctl">
+        <button
+          class="ghost runbtn"
+          disabled={!stoppedCount || busy}
+          title={stoppedCount ? `start ${stoppedCount} stopped node${stoppedCount > 1 ? "s" : ""}` : "everything is running"}
+          onclick={() => (queuedBulk ? runBulkTask("start_all") : startAll())}
+        >▶ Start all</button>
+        <button
+          class="ghost runbtn"
+          disabled={!runningCount || busy}
+          title={runningCount ? `stop ${runningCount} running node${runningCount > 1 ? "s" : ""}` : "nothing is running"}
+          onclick={() => (queuedBulk ? runBulkTask("stop_all") : stopAll())}
+        >■ Stop all</button>
+      </span>
     {/if}
     <!-- Health is only worth space when something is wrong; a green dot that is
          always green teaches you to stop looking at it. -->
@@ -4534,8 +4581,9 @@
           {#if lab}
             {#each segmentWires as w (w.key)}
               {@const np = netPos(w.net.id, w.ni)}
-              {@const a = portPos(w.node, w.iface, w.iface.idx, lab.nodes.indexOf(w.node), np.x)}
-              {@const b = netAnchor(w.net, w.ni, pos(w.node.id, lab.nodes.indexOf(w.node)).x)}
+              {@const wi = nodeIndex.get(w.node.id)}
+              {@const a = portPos(w.node, w.iface, w.iface.idx, wi, np.x)}
+              {@const b = netAnchor(w.net, w.ni, pos(w.node.id, wi).x)}
               <path d={wirePath(a, b)} class="link seg" />
               {#if pan.k >= 0.7}
                 {@const la = labelAt(a)}
@@ -4543,13 +4591,15 @@
               {/if}
             {/each}
             {#each lab.links as link}
-              {@const aNode = lab.nodes.find((n) => n.interfaces.some((i) => i.id === link.a_iface_id))}
-              {@const bNode = lab.nodes.find((n) => n.interfaces.some((i) => i.id === link.b_iface_id))}
-              {@const aIf = aNode?.interfaces.find((i) => i.id === link.a_iface_id)}
-              {@const bIf = bNode?.interfaces.find((i) => i.id === link.b_iface_id)}
+              {@const aEnd = ifaceIndex.get(link.a_iface_id)}
+              {@const bEnd = ifaceIndex.get(link.b_iface_id)}
+              {@const aNode = aEnd?.node}
+              {@const bNode = bEnd?.node}
+              {@const aIf = aEnd?.iface}
+              {@const bIf = bEnd?.iface}
               {#if aNode && bNode && aIf && bIf}
-                {@const ai = lab.nodes.indexOf(aNode)}
-                {@const bi = lab.nodes.indexOf(bNode)}
+                {@const ai = nodeIndex.get(aNode.id)}
+                {@const bi = nodeIndex.get(bNode.id)}
                 {@const a = portPos(aNode, aIf, aIf.idx, ai, pos(bNode.id, bi).x)}
                 {@const b = portPos(bNode, bIf, bIf.idx, bi, pos(aNode.id, ai).x)}
                 {@const d = wirePath(a, b)}

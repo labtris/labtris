@@ -84,8 +84,24 @@ class GenerateIn(BaseModel):
     rails: int = Field(4, ge=1, le=32)
     hosts_per_rail: int = Field(2, ge=0, le=32)
     #: fat-tree only. k must be even; the standard formula is k^3/4
-    #: hosts, 5k^2/4 switches. Kept modest for a browser-usable lab.
-    k: int = Field(4, ge=2, le=8)
+    #: hosts, 5k^2/4 switches — so k grows the node count cubically:
+    #:
+    #:   k=8    128 hosts +  80 switches =   208 nodes
+    #:   k=12   432 hosts + 180 switches =   612 nodes
+    #:   k=16  1024 hosts + 320 switches =  1344 nodes
+    #:
+    #: The old ceiling was 8, "kept modest for a browser-usable lab", which
+    #: made the largest fat-tree 208 nodes and sent anyone wanting a big
+    #: fabric to spine-leaf instead — where the limits already allow
+    #: 32 x 64 x 64 = 4192. 16 matches that intent and reaches the ~1300-node
+    #: shape people compare against.
+    #:
+    #: Creating one is cheap: a 1352-node spine-leaf generated in 48s,
+    #: database rows and all. STARTING one is not — measured at ~5.3s per
+    #: node, dominated by per-node netlink work, so a k=16 fat-tree is an
+    #: hour of starting. The cap is not what makes that slow, and raising it
+    #: does not pretend otherwise.
+    k: int = Field(4, ge=2, le=16)
     #: What to run each role as. Free choice — a spine can be a bmv2
     #: switch (programmable data plane) or a plain FRR router.
     spine_kind: str = "bmv2"
@@ -661,8 +677,11 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
     """k-ary fat tree: (k/2)^2 core, k*k/2 aggregation, k*k/2 edge,
     k^3/4 hosts. Textbook (Al-Fares 2008).
 
-    k must be even. Kept to k in {2,4,6,8} in this generator so the
-    result fits on a laptop screen — k=8 already produces 80 nodes.
+    k must be even, and the node count grows with k^3 — k=8 is 208 nodes,
+    k=16 is 1344. The schema caps it at 16; the docstring used to say
+    {2,4,6,8} "so the result fits on a laptop screen", which confused a
+    rendering preference with a capability and left the largest fat-tree at
+    208 nodes while spine-leaf already allowed 4192.
     """
     if body.k % 2:
         raise bad_request("fat-tree requires k to be even")
