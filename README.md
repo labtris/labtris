@@ -79,16 +79,31 @@ so the image ships in two pieces:
 # not there.
 cat labtris-0.13.9-amd64.iso.part-* > labtris-0.13.9-amd64.iso
 sha256sum -c labtris-0.13.9-amd64.sha256      # macOS: shasum -a 256 -c
-sudo dd if=labtris-0.13.9-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 The checksum covers the finished image, so it verifies the join as well as
 the download — a truncated part boots and then fails partway through the
-install, which is a far worse way to find out. Boot it, and when it finishes open `https://<host>` — port 443
-with a self-signed certificate, so the browser warns once. `http://<host>`
-redirects there, and `http://<host>:8081` is plain HTTP for use over an
-`ssh -L` tunnel. First login is `labtris-admin` / `labtris`, and it will make
-you change it.
+install, which is a far worse way to find out.
+
+Then boot a machine from it. **On a hypervisor there is nothing else to do:**
+attach the `.iso` as virtual media in Proxmox, ESXi, VMware, Hyper-V,
+VirtualBox or QEMU and boot. That is how most people install this, and no
+`dd` is involved.
+
+For **bare metal**, write it to a USB stick. [Etcher](https://etcher.balena.io/)
+on any OS and [Rufus](https://rufus.ie/) on Windows do this with a device
+picker, which is the safer route. If you prefer the command line:
+
+```bash
+# ⚠ `of=` is the DEVICE, not a partition, and dd will not ask twice.
+#   Check it with `lsblk` first — the wrong letter overwrites that disk.
+sudo dd if=labtris-0.13.9-amd64.iso of=/dev/sdX bs=4M status=progress oflag=sync
+```
+
+When the install finishes, open `https://<host>` — port 443 with a
+self-signed certificate, so the browser warns once. `http://<host>` redirects
+there, and `http://<host>:8081` is plain HTTP for use over an `ssh -L` tunnel.
+First login is `labtris-admin` / `labtris`, and it will make you change it.
 
 ## Upgrade
 
