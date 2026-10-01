@@ -601,13 +601,34 @@ def main() -> int:
         label = f"{d['lab_uuid'][:8]}/{d['node']}"
         say(f"Flattening working disk {label}")
         flat = f"/tmp/labtris-hot-{d['lab_uuid'][:8]}-{d['node']}.qcow2"
-        rc, _ = r.run(
-            f"qemu-img convert -O qcow2 {shlex.quote(d['path'])} {shlex.quote(flat)}",
-            timeout=3600,
-        )
+        conv = (f"qemu-img convert -O qcow2 {shlex.quote(d['path'])} "
+                f"{shlex.quote(flat)} 2>&1")
+        rc, out = r.run(conv, timeout=3600)
+
+        # The first version printed "out of space on the EVE-NG box, or
+        # qemu-img missing" — a guess, and the wrong one. It also threw away
+        # qemu-img's own message by capturing stdout only. The real cause on
+        # a box with plenty of space is a lock: qemu holds the disk of any
+        # node whose lab is started, and qemu-img refuses to read it.
+        if rc != 0 and "lock" in out.lower():
+            print(f"  {Y}that node's lab is running on the EVE-NG box{N}, so its "
+                  f"disk is locked.")
+            print(f"  Retrying read-only, which gives a crash-consistent copy —")
+            print(f"  as if the machine lost power. Stop the lab there and re-run")
+            print(f"  for a clean one.")
+            rc, out = r.run(
+                f"qemu-img convert -U -O qcow2 {shlex.quote(d['path'])} "
+                f"{shlex.quote(flat)} 2>&1",
+                timeout=3600,
+            )
+            if rc == 0:
+                print(f"  {Y}copied while running — treat the result as crash-consistent{N}")
+
         if rc != 0:
             failed.append(f"flatten {label}")
-            print(f"  {R}failed{N} — out of space on the EVE-NG box, or qemu-img missing")
+            print(f"  {R}qemu-img failed:{N}")
+            for line in (out or "(no output)").strip().splitlines()[-4:]:
+                print(f"    {line}")
             continue
 
         lab_name = next((l["name"] for l in chosen_labs
