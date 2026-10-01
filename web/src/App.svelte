@@ -524,6 +524,11 @@
   const LOGO_MARK = `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Labtris"> <!-- The small variant, for the header chip and the favicon. The full mark has eight nodes and nine edges, which at 20px is a grey smudge; this keeps three blocks and three nodes, at weights that survive being drawn 16 pixels wide. It sits on its own dark tile rather than on the page. That is not decoration: the graph is white because the blocks are saturated, and on the twenty light themes a white node over a pale background is invisible. The tile is the logo's own darkest blue, so the mark carries its contrast with it onto any of the thirty. --> <rect width="64" height="64" rx="15" fill="#0b2f57"/> <g> <path d="M9 14 h12 v20 h11 v9 H9 Z" fill="#0a5ca8"/> <path d="M27 11 h28 v12 H45 v10 H34 V23 h-7 Z" fill="#fd820b"/> <path d="M23 39 h15 v-7 h13 v14 H36 v7 H23 Z" fill="#00b4b9" opacity="0.9"/> </g> <g fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" opacity="0.96"> <path d="M17 21 L30 32 M30 32 L47 19 M30 32 L33 46"/> </g> <g fill="#fff"> <circle cx="17" cy="21" r="5"/> <circle cx="47" cy="19" r="5"/> <circle cx="33" cy="46" r="5"/> <circle cx="30" cy="32" r="5.6"/> </g></svg>`;
   let netForm = $state(null);
   let tcEdit = $state(null);
+  //: The inspector is its own right-hand panel now, so it needs its own
+  //: open/closed state rather than borrowing the dock's single `dock` value.
+  //: Open by default: selecting a node and seeing nothing happen is worse
+  //: than a panel someone closes once.
+  let inspectorOpen = $state(true);
   let sizeForm = $state(null);
 
   //: Read the card width from the --node-w token rather than restating it,
@@ -3865,7 +3870,7 @@
     // one did not, so "RAM / vCPU…" set sizeForm and rendered nothing
     // whenever the dock was closed or showing any other tab. The menu item
     // appeared to do nothing at all, which is exactly what it did.
-    dock = "inspector";
+    inspectorOpen = true;
     sizeForm = {
       ram_mb: selectedNode.ram_mb ?? "",
       cpu_limit: selectedNode.cpu_limit ?? "",
@@ -4937,6 +4942,424 @@
       {#if busy}<div class="busy">working…</div>{/if}
     </main>
 
+    <!-- The inspector is a right-hand panel, not a bottom dock tab.
+         It holds a column of short label/value pairs, and a canvas is wide
+         rather than tall — as a bottom dock it took nearly half the vertical
+         space to show a form that was mostly empty horizontally, squeezing
+         the topology it describes. The CSS already had
+         `.body > .inspector { flex: 0 0 300px }` waiting for this.
+
+         Collapsible, with the same affordance the palette uses on the other
+         side, so the canvas can still be given the whole window. -->
+    <aside class="inspector" hidden={!inspectorOpen}>
+      <button
+        class="collapse"
+        title="hide the inspector"
+        aria-label="hide the inspector"
+        onclick={() => (inspectorOpen = false)}
+      >›</button>
+        <div class="inspector inspector-in-dock">
+          {#if selectedNode}
+            <div class="insp-head">
+              <h3 class="insp-name">{selectedNode.name}</h3>
+              <span
+                class="state-chip"
+                class:on={selectedNode.state === "running" && !selectedNode.paused}
+                class:bad={selectedNode.state === "failed"}
+              >
+                {selectedNode.paused
+                  ? "Paused"
+                  : selectedNode.state === "running"
+                    ? "Running"
+                    : selectedNode.state === "failed"
+                      ? "Failed"
+                      : "Stopped"}
+              </span>
+            </div>
+            <p class="mono tiny dim">{selectedNode.id}</p>
+            {#if selectedNode.last_error}
+              <p class="err tiny">{selectedNode.last_error}</p>
+            {/if}
+
+            <!-- The primary action is whatever this node's state makes it. A stopped node
+                 is not offered Stop or Suspend even dimmed: those are not blocked actions
+                 with a reason, they are meaningless on a node that is not running. -->
+            <div class="acts">
+              {#if selectedNode.state === "running"}
+                <button class="primary" onclick={stopSelected}>Stop</button>
+                <button onclick={restartSelected}>Restart</button>
+                {#if selectedNode.paused}
+                  <button onclick={doResume}>Resume</button>
+                {:else}
+                  <button onclick={doSuspend}>Suspend</button>
+                {/if}
+              {:else}
+                <button class="primary" onclick={startSelected}>Start</button>
+              {/if}
+            </div>
+
+            <h3>Open</h3>
+            <div class="acts">
+              {#each openActs as a}
+                <button onclick={a.run} disabled={!!a.why} title={a.why}>{a.label}</button>
+              {/each}
+            </div>
+            {#if openBlocked}
+              <p class="why">{openBlocked} — these need a running guest to talk to.</p>
+            {/if}
+
+            <h3>Details</h3>
+            <dl>
+              <dt>image</dt>
+              <dd>
+                {imageLabel(selectedNode.image)}
+                {#if imageLabel(selectedNode.image) !== selectedNode.image}
+                  <span class="tiny dim mono"> · {selectedNode.image}</span>
+                {/if}
+              </dd>
+              <dt>type</dt>
+              <dd>
+                {selectedNode.runtime === "qemu"
+                  ? `QEMU · ${selectedImage?.graphical ? "VNC" : "serial"}`
+                  : "Docker"}
+              </dd>
+              <dt>memory</dt>
+              <dd>
+                {selectedNode.ram_mb ?? selectedImage?.ram_mb ?? "default"} MB ·
+                {selectedNode.cpu_limit ?? selectedImage?.cpus ?? "default"} vCPU
+              </dd>
+              {#if selectedNode.runtime !== "qemu" && selectedNode.runtime_ref}
+                <dt>container</dt><dd class="mono tiny">{selectedNode.runtime_ref.slice(0, 12)}</dd>
+              {/if}
+              {#if selectedImage?.credentials}
+                <dt>login</dt><dd class="mono">{selectedImage.credentials}</dd>
+              {/if}
+            </dl>
+
+            <h3>
+              Interfaces
+              <button class="tiny" onclick={addPort}>+ Add</button>
+            </h3>
+            {#if ifaceSchemeLabel}
+              <p class="hint tiny">{ifaceSchemeLabel}</p>
+            {/if}
+            <ul class="ifaces">
+              {#each selectedNode.interfaces as i}
+                {@const peer = peerOf(i)}
+                {@const seg = (lab?.networks ?? []).find((n) => n.id === i.network_id)}
+                <li>
+                  <span class="mono">{i.name}</span>
+                  {#if peer}
+                    <span class="dim">→</span>
+                    <span class="peer">{peer.name}</span>
+                    {#if peer.port}<span class="mono dim">{peer.port}</span>{/if}
+                  {:else}
+                    <span class="dim">not connected</span>
+                  {/if}
+                  {#if showAddressing}
+                    {@const addr = addrOf(selectedNode, i)}
+                    {#if addr}<span class="mono dim">{addr}</span>{/if}
+                  {/if}
+                  {#if seg?.vlan_aware}
+                    <button
+                      class="vlan-tag"
+                      title="set this port's VLAN"
+                      onclick={() =>
+                        (vlanForm = {
+                          iface: i,
+                          mode: i.vlan_mode ?? "access",
+                          vid: i.vlan_id ?? 1,
+                          trunk: i.trunk_vids ?? "",
+                        })}
+                    >
+                      {i.vlan_mode === "trunk"
+                        ? `trunk ${i.trunk_vids}`
+                        : i.vlan_mode === "access"
+                          ? `vlan ${i.vlan_id}`
+                          : "set vlan"}
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+
+            <div class="acts">
+              <button onclick={doExportTemplate}>Export as template</button>
+              <button class="danger" onclick={removeSelected}>Delete node</button>
+            </div>
+
+            <h3>Style</h3>
+            <div class="style-row">
+              <input
+                class="mono"
+                placeholder="icon glyph"
+                value={selectedNode.style?.icon || ""}
+                onchange={(e) => setStyle(e.currentTarget.value, selectedNode.style?.color || null)}
+              />
+              <input
+                type="color"
+                value={selectedNode.style?.color || "#3ee0c5"}
+                onchange={(e) => setStyle(selectedNode.style?.icon || null, e.currentTarget.value)}
+              />
+            </div>
+            <h3>Resources</h3>
+            {#if sizeForm}
+              <p class="hint tiny">
+                Neither can change on a live guest — this is what the node boots with next
+                time it starts.
+              </p>
+              <div class="style-row">
+                <input class="mono" type="number" min="16" step="128" placeholder="RAM MB" bind:value={sizeForm.ram_mb} />
+                <input class="mono" type="number" min="1" max="8" step="1" placeholder="vCPU" bind:value={sizeForm.cpu_limit} />
+              </div>
+              {#if selectedNode.runtime === "qemu" && nicModels.length}
+                <p class="hint tiny">
+                  virtio is fastest but invisible to a guest without virtio drivers — that
+                  boots with no network and nothing to explain why. e1000 is the safe answer.
+                </p>
+                <label class="pick">
+                  <span>NIC</span>
+                  <select bind:value={sizeForm.nic_model}>
+                    <option value="">image default</option>
+                    {#each nicModels as m}
+                      <option value={m.id}>{m.label}</option>
+                    {/each}
+                  </select>
+                </label>
+              {/if}
+              <div class="style-row">
+                <button class="primary" onclick={saveSize}>Save</button>
+                <button onclick={() => (sizeForm = null)}>Cancel</button>
+              </div>
+            {:else}
+              <div class="style-row">
+                <span class="mono tiny">
+                  {selectedNode.ram_mb ?? "default"} MB · {selectedNode.cpu_limit ?? "default"} vCPU{selectedNode.runtime === "qemu"
+                    ? ` · ${selectedNode.nic_model ?? "virtio"}`
+                    : ""}
+                </span>
+                <button onclick={editSize}>Change…</button>
+              </div>
+            {/if}
+            <h3>Remote console target</h3>
+            <p class="hint tiny">
+              Where the RDP tunnel dials — the guest's own address on a lab network, or a
+              hostfwd on this host. A QEMU node already has a VNC display without this.
+              {#if selectedNode.console?.rdp?.hostname}
+                Currently
+                <code>{selectedNode.console.rdp.hostname}:{selectedNode.console.rdp.port || 3389}</code>.
+              {/if}
+            </p>
+            <div class="style-row">
+              <input class="mono" placeholder="hostname" bind:value={consoleForm.hostname} />
+              <input class="mono" style="width:70px" placeholder="port" bind:value={consoleForm.port} />
+            </div>
+            <div class="style-row">
+              <input class="mono" placeholder="username" bind:value={consoleForm.username} />
+              <input class="mono" type="password" placeholder="password" bind:value={consoleForm.password} />
+              <button onclick={saveConsoleTarget}>Save</button>
+            </div>
+            {#if selectedNode.runtime === "qemu"}
+              <h3>Snapshots</h3>
+              <p class="hint tiny">Real QEMU `savevm`/`loadvm` — point-in-time VM state, not a Docker approximation.</p>
+              <div class="style-row">
+                <input bind:value={snapshotName} placeholder="snapshot name" />
+                <button onclick={doSaveSnapshot} disabled={selectedNode.state !== "running"}>Save</button>
+              </div>
+              {#each snapshots as name}
+                <div class="kind" style="--c:#fb923c">
+                  <span class="glyph">📷</span>
+                  <div style="flex:1"><strong>{name}</strong></div>
+                  <button onclick={() => doRestoreSnapshot(name)}>Restore</button>
+                </div>
+              {/each}
+            {/if}
+            {#if isBmv2Node}
+              <h3>P4 program</h3>
+              <p class="hint tiny">
+                The .p4 mounted at <code>/p4/prog.p4</code>. Picking a built-in copies it in;
+                uploading a custom file replaces it. Restart the node for the change to take effect.
+              </p>
+              <div class="style-row">
+                <select bind:value={p4Choice} onchange={applyP4Builtin} disabled={p4Busy}>
+                  <option value="">(pick a built-in)</option>
+                  {#each p4Builtins as b}
+                    <option value={b.name}>{b.name} — {b.description || "P4 program"}</option>
+                  {/each}
+                </select>
+                <label class="ghost topbar-btn" style="cursor:pointer">
+                  Upload .p4
+                  <input type="file" accept=".p4" onchange={uploadP4Custom}
+                         style="display:none" />
+                </label>
+              </div>
+              {#if p4State}
+                <p class="hint tiny mono">
+                  source: {p4State.source}
+                  {#if p4State.program} · program: <strong>{p4State.program}</strong>{/if}
+                  {#if p4State.exists}· {p4State.contents ? `${p4State.contents.length} chars` : "on disk"}{/if}
+                </p>
+              {/if}
+              {#if p4Err}<p class="hint tiny" style="color:var(--danger)">{p4Err}</p>{/if}
+            {/if}
+          {:else if linkObj}
+            <h3>Link</h3>
+            <p class="mono tiny">{linkObj.id}</p>
+            <dl>
+              <dt>admin</dt><dd>{linkObj.admin_up === false ? "DOWN" : "UP"}</dd>
+              <dt>A→B</dt><dd class="mono tiny">{tcSummary(linkObj.impair_ab)}</dd>
+              <dt>B→A</dt><dd class="mono tiny">{tcSummary(linkObj.impair_ba)}</dd>
+            </dl>
+            <h3>Impairment</h3>
+            {#if tcEdit}
+              <p class="hint tiny">
+                netem on each direction's own tap. Blank or zero leaves that knob unset;
+                clearing every field removes the qdisc.
+              </p>
+              <label class="pick">
+                <span>same both ways</span>
+                <input type="checkbox" bind:checked={tcEdit.mirror} />
+              </label>
+              <table class="tc">
+                <thead>
+                  <tr><th></th><th>A→B</th><th class:dim={tcEdit.mirror}>B→A</th></tr>
+                </thead>
+                <tbody>
+                  {#each TC_FIELDS as f}
+                    <tr>
+                      <td class="tc-lbl">{f.label}<span class="tiny"> {f.unit}</span></td>
+                      <td>
+                        <input class="mono" type="number" min="0" step={f.step} placeholder="—" bind:value={tcEdit.ab[f.key]} />
+                      </td>
+                      <td>
+                        <input class="mono" type="number" min="0" step={f.step} placeholder={tcEdit.mirror ? "=" : "—"} disabled={tcEdit.mirror} bind:value={tcEdit.ba[f.key]} />
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              <div class="acts">
+                <button class="primary" onclick={applyTc}>Apply</button>
+                <button onclick={() => (tcEdit = null)}>Cancel</button>
+              </div>
+            {:else}
+              <div class="seg" role="radiogroup" aria-label="link profile">
+                <button role="radio" aria-checked={activePreset === ""} class:on={activePreset === ""} onclick={() => applyPreset(null)}>none</button>
+                {#each realPresets as name}
+                  <button role="radio" aria-checked={activePreset === name} class:on={activePreset === name} onclick={() => applyPreset(name)}>{name}</button>
+                {/each}
+              </div>
+              {#if activePreset === null}
+                <p class="hint tiny">Custom parameters — no profile matches.</p>
+              {/if}
+              <div class="acts">
+                <button onclick={editTc}>Edit parameters…</button>
+              </div>
+            {/if}
+            <h3>Link</h3>
+            <div class="acts">
+              <button onclick={() => setAdmin(false)}>Admin down</button>
+              <button onclick={() => setAdmin(true)}>Admin up</button>
+              <button onclick={openCapture}>Capture</button>
+              <button class="danger" onclick={deleteSelectedLink}>Delete link</button>
+            </div>
+          {:else}
+            <div class="insp-head">
+              <h3 class="insp-name">{lab ? lab.name : "No lab open"}</h3>
+              <Hint text="Drag a node's link handle onto another node or a segment to wire it. Click a link to apply tc, or right-click one for capture and shaping." />
+            </div>
+            {#if lab}
+              <p class="tiny dim">
+                {lab.nodes.length} node{lab.nodes.length === 1 ? "" : "s"} · {runningCount} running{lab.folder ? ` · ${lab.folder}` : ""}
+              </p>
+            {:else}
+              <p class="hint tiny">Open a lab from the switcher, or make one with New.</p>
+            {/if}
+            {#if selectedIds.length > 1}
+              <h3>{selectedIds.length} nodes selected</h3>
+              <p class="hint tiny">
+                Drag any one of them to move the group; right-click for actions on all of them.
+              </p>
+              <div class="acts">
+                <button class="primary" onclick={() => startSelection(true)}>Start them</button>
+                <button onclick={() => startSelection(false)}>Stop them</button>
+                <button onclick={() => (selectedIds = [])}>Select none</button>
+                <button class="danger" onclick={() => wipeNodes(selectedIds)}>Wipe disks</button>
+                <button class="danger" onclick={deleteSelection}>Delete them</button>
+              </div>
+            {/if}
+
+            {#if lab}
+              <div class="acts">
+                <button
+                  class="primary"
+                  onclick={() => (queuedBulk ? runBulkTask("start_all") : startAll())}
+                  disabled={labIsEmpty || !stoppedCount}
+                >
+                  {stoppedCount ? `Start ${stoppedCount} stopped` : "Everything is running"}
+                </button>
+                <button
+                  onclick={() => (queuedBulk ? runBulkTask("stop_all") : stopAll())}
+                  disabled={!runningCount}
+                >
+                  Stop all
+                </button>
+              </div>
+              {#if labIsEmpty}
+                <p class="why">Add a node to enable the lab controls.</p>
+              {/if}
+              <label class="opt">
+                <input type="checkbox" bind:checked={queuedBulk} />
+                <span>Start one at a time (queued)</span>
+              </label>
+              <p class="hint tiny">
+                Queued runs in the background with a progress bar, which is what you want
+                once a lab is large enough that starting it takes a while.
+              </p>
+
+              <h3>
+                Images
+                <Hint text="Fetches what this lab needs now, so the first start is not also a download. Only the QEMU catalog knows what is already on disk; whether a Docker tag is present is the engine's business." />
+              </h3>
+              {#if labImages.length}
+                <ul class="imglist">
+                  {#each labImages as im}
+                    <li>
+                      <span class="mono tiny">{imageLabel(im.image)}</span>
+                      {#if im.status}
+                        <span class="tiny" class:dim={!im.missing} class:cold={im.missing}>{im.status}</span>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="hint tiny">No images yet — this lab has no nodes.</p>
+              {/if}
+              <div class="acts">
+                <button onclick={() => runBulkTask("pull_images")} disabled={labIsEmpty}>
+                  Pre-pull images
+                </button>
+              </div>
+
+              {#if lab.nodes.length}
+                <h3>Nodes</h3>
+                <ul class="nodelist">
+                  {#each lab.nodes as n}
+                    <li>
+                      <button class="node-row" onclick={() => (selected = n.id)}>
+                        <i class="dot" class:on={n.state === "running"} class:fail={n.state === "failed"}></i>
+                        <span class="grow">{n.name}</span>
+                        <span class="tiny dim">{n.runtime}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            {/if}
+          {/if}
+        </div>
+    </aside>
+
   </div>
 
   {#if annotating}
@@ -5692,8 +6115,8 @@
       : "needs a second node in the lab"}
   >⊞ Split</button>
       <button
-        class:on={dock === "inspector"}
-        onclick={() => switchDockAndExpand("inspector")}
+        class:on={inspectorOpen}
+        onclick={() => (inspectorOpen = !inspectorOpen)}
         title={selectedNode
           ? `Inspector — node ${selectedNode.name}`
           : linkObj
@@ -5722,408 +6145,7 @@
         onclick={toggleDockMin}
       >{dockMin ? "▴" : "▾"}</button>
     </div>
-    {#if dock === "inspector"}
-      <div class="inspector inspector-in-dock">
-        {#if selectedNode}
-          <div class="insp-head">
-            <h3 class="insp-name">{selectedNode.name}</h3>
-            <span
-              class="state-chip"
-              class:on={selectedNode.state === "running" && !selectedNode.paused}
-              class:bad={selectedNode.state === "failed"}
-            >
-              {selectedNode.paused
-                ? "Paused"
-                : selectedNode.state === "running"
-                  ? "Running"
-                  : selectedNode.state === "failed"
-                    ? "Failed"
-                    : "Stopped"}
-            </span>
-          </div>
-          <p class="mono tiny dim">{selectedNode.id}</p>
-          {#if selectedNode.last_error}
-            <p class="err tiny">{selectedNode.last_error}</p>
-          {/if}
-
-          <!-- The primary action is whatever this node's state makes it. A stopped node
-               is not offered Stop or Suspend even dimmed: those are not blocked actions
-               with a reason, they are meaningless on a node that is not running. -->
-          <div class="acts">
-            {#if selectedNode.state === "running"}
-              <button class="primary" onclick={stopSelected}>Stop</button>
-              <button onclick={restartSelected}>Restart</button>
-              {#if selectedNode.paused}
-                <button onclick={doResume}>Resume</button>
-              {:else}
-                <button onclick={doSuspend}>Suspend</button>
-              {/if}
-            {:else}
-              <button class="primary" onclick={startSelected}>Start</button>
-            {/if}
-          </div>
-
-          <h3>Open</h3>
-          <div class="acts">
-            {#each openActs as a}
-              <button onclick={a.run} disabled={!!a.why} title={a.why}>{a.label}</button>
-            {/each}
-          </div>
-          {#if openBlocked}
-            <p class="why">{openBlocked} — these need a running guest to talk to.</p>
-          {/if}
-
-          <h3>Details</h3>
-          <dl>
-            <dt>image</dt>
-            <dd>
-              {imageLabel(selectedNode.image)}
-              {#if imageLabel(selectedNode.image) !== selectedNode.image}
-                <span class="tiny dim mono"> · {selectedNode.image}</span>
-              {/if}
-            </dd>
-            <dt>type</dt>
-            <dd>
-              {selectedNode.runtime === "qemu"
-                ? `QEMU · ${selectedImage?.graphical ? "VNC" : "serial"}`
-                : "Docker"}
-            </dd>
-            <dt>memory</dt>
-            <dd>
-              {selectedNode.ram_mb ?? selectedImage?.ram_mb ?? "default"} MB ·
-              {selectedNode.cpu_limit ?? selectedImage?.cpus ?? "default"} vCPU
-            </dd>
-            {#if selectedNode.runtime !== "qemu" && selectedNode.runtime_ref}
-              <dt>container</dt><dd class="mono tiny">{selectedNode.runtime_ref.slice(0, 12)}</dd>
-            {/if}
-            {#if selectedImage?.credentials}
-              <dt>login</dt><dd class="mono">{selectedImage.credentials}</dd>
-            {/if}
-          </dl>
-
-          <h3>
-            Interfaces
-            <button class="tiny" onclick={addPort}>+ Add</button>
-          </h3>
-          {#if ifaceSchemeLabel}
-            <p class="hint tiny">{ifaceSchemeLabel}</p>
-          {/if}
-          <ul class="ifaces">
-            {#each selectedNode.interfaces as i}
-              {@const peer = peerOf(i)}
-              {@const seg = (lab?.networks ?? []).find((n) => n.id === i.network_id)}
-              <li>
-                <span class="mono">{i.name}</span>
-                {#if peer}
-                  <span class="dim">→</span>
-                  <span class="peer">{peer.name}</span>
-                  {#if peer.port}<span class="mono dim">{peer.port}</span>{/if}
-                {:else}
-                  <span class="dim">not connected</span>
-                {/if}
-                {#if showAddressing}
-                  {@const addr = addrOf(selectedNode, i)}
-                  {#if addr}<span class="mono dim">{addr}</span>{/if}
-                {/if}
-                {#if seg?.vlan_aware}
-                  <button
-                    class="vlan-tag"
-                    title="set this port's VLAN"
-                    onclick={() =>
-                      (vlanForm = {
-                        iface: i,
-                        mode: i.vlan_mode ?? "access",
-                        vid: i.vlan_id ?? 1,
-                        trunk: i.trunk_vids ?? "",
-                      })}
-                  >
-                    {i.vlan_mode === "trunk"
-                      ? `trunk ${i.trunk_vids}`
-                      : i.vlan_mode === "access"
-                        ? `vlan ${i.vlan_id}`
-                        : "set vlan"}
-                  </button>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-
-          <div class="acts">
-            <button onclick={doExportTemplate}>Export as template</button>
-            <button class="danger" onclick={removeSelected}>Delete node</button>
-          </div>
-
-          <h3>Style</h3>
-          <div class="style-row">
-            <input
-              class="mono"
-              placeholder="icon glyph"
-              value={selectedNode.style?.icon || ""}
-              onchange={(e) => setStyle(e.currentTarget.value, selectedNode.style?.color || null)}
-            />
-            <input
-              type="color"
-              value={selectedNode.style?.color || "#3ee0c5"}
-              onchange={(e) => setStyle(selectedNode.style?.icon || null, e.currentTarget.value)}
-            />
-          </div>
-          <h3>Resources</h3>
-          {#if sizeForm}
-            <p class="hint tiny">
-              Neither can change on a live guest — this is what the node boots with next
-              time it starts.
-            </p>
-            <div class="style-row">
-              <input class="mono" type="number" min="16" step="128" placeholder="RAM MB" bind:value={sizeForm.ram_mb} />
-              <input class="mono" type="number" min="1" max="8" step="1" placeholder="vCPU" bind:value={sizeForm.cpu_limit} />
-            </div>
-            {#if selectedNode.runtime === "qemu" && nicModels.length}
-              <p class="hint tiny">
-                virtio is fastest but invisible to a guest without virtio drivers — that
-                boots with no network and nothing to explain why. e1000 is the safe answer.
-              </p>
-              <label class="pick">
-                <span>NIC</span>
-                <select bind:value={sizeForm.nic_model}>
-                  <option value="">image default</option>
-                  {#each nicModels as m}
-                    <option value={m.id}>{m.label}</option>
-                  {/each}
-                </select>
-              </label>
-            {/if}
-            <div class="style-row">
-              <button class="primary" onclick={saveSize}>Save</button>
-              <button onclick={() => (sizeForm = null)}>Cancel</button>
-            </div>
-          {:else}
-            <div class="style-row">
-              <span class="mono tiny">
-                {selectedNode.ram_mb ?? "default"} MB · {selectedNode.cpu_limit ?? "default"} vCPU{selectedNode.runtime === "qemu"
-                  ? ` · ${selectedNode.nic_model ?? "virtio"}`
-                  : ""}
-              </span>
-              <button onclick={editSize}>Change…</button>
-            </div>
-          {/if}
-          <h3>Remote console target</h3>
-          <p class="hint tiny">
-            Where the RDP tunnel dials — the guest's own address on a lab network, or a
-            hostfwd on this host. A QEMU node already has a VNC display without this.
-            {#if selectedNode.console?.rdp?.hostname}
-              Currently
-              <code>{selectedNode.console.rdp.hostname}:{selectedNode.console.rdp.port || 3389}</code>.
-            {/if}
-          </p>
-          <div class="style-row">
-            <input class="mono" placeholder="hostname" bind:value={consoleForm.hostname} />
-            <input class="mono" style="width:70px" placeholder="port" bind:value={consoleForm.port} />
-          </div>
-          <div class="style-row">
-            <input class="mono" placeholder="username" bind:value={consoleForm.username} />
-            <input class="mono" type="password" placeholder="password" bind:value={consoleForm.password} />
-            <button onclick={saveConsoleTarget}>Save</button>
-          </div>
-          {#if selectedNode.runtime === "qemu"}
-            <h3>Snapshots</h3>
-            <p class="hint tiny">Real QEMU `savevm`/`loadvm` — point-in-time VM state, not a Docker approximation.</p>
-            <div class="style-row">
-              <input bind:value={snapshotName} placeholder="snapshot name" />
-              <button onclick={doSaveSnapshot} disabled={selectedNode.state !== "running"}>Save</button>
-            </div>
-            {#each snapshots as name}
-              <div class="kind" style="--c:#fb923c">
-                <span class="glyph">📷</span>
-                <div style="flex:1"><strong>{name}</strong></div>
-                <button onclick={() => doRestoreSnapshot(name)}>Restore</button>
-              </div>
-            {/each}
-          {/if}
-          {#if isBmv2Node}
-            <h3>P4 program</h3>
-            <p class="hint tiny">
-              The .p4 mounted at <code>/p4/prog.p4</code>. Picking a built-in copies it in;
-              uploading a custom file replaces it. Restart the node for the change to take effect.
-            </p>
-            <div class="style-row">
-              <select bind:value={p4Choice} onchange={applyP4Builtin} disabled={p4Busy}>
-                <option value="">(pick a built-in)</option>
-                {#each p4Builtins as b}
-                  <option value={b.name}>{b.name} — {b.description || "P4 program"}</option>
-                {/each}
-              </select>
-              <label class="ghost topbar-btn" style="cursor:pointer">
-                Upload .p4
-                <input type="file" accept=".p4" onchange={uploadP4Custom}
-                       style="display:none" />
-              </label>
-            </div>
-            {#if p4State}
-              <p class="hint tiny mono">
-                source: {p4State.source}
-                {#if p4State.program} · program: <strong>{p4State.program}</strong>{/if}
-                {#if p4State.exists}· {p4State.contents ? `${p4State.contents.length} chars` : "on disk"}{/if}
-              </p>
-            {/if}
-            {#if p4Err}<p class="hint tiny" style="color:var(--danger)">{p4Err}</p>{/if}
-          {/if}
-        {:else if linkObj}
-          <h3>Link</h3>
-          <p class="mono tiny">{linkObj.id}</p>
-          <dl>
-            <dt>admin</dt><dd>{linkObj.admin_up === false ? "DOWN" : "UP"}</dd>
-            <dt>A→B</dt><dd class="mono tiny">{tcSummary(linkObj.impair_ab)}</dd>
-            <dt>B→A</dt><dd class="mono tiny">{tcSummary(linkObj.impair_ba)}</dd>
-          </dl>
-          <h3>Impairment</h3>
-          {#if tcEdit}
-            <p class="hint tiny">
-              netem on each direction's own tap. Blank or zero leaves that knob unset;
-              clearing every field removes the qdisc.
-            </p>
-            <label class="pick">
-              <span>same both ways</span>
-              <input type="checkbox" bind:checked={tcEdit.mirror} />
-            </label>
-            <table class="tc">
-              <thead>
-                <tr><th></th><th>A→B</th><th class:dim={tcEdit.mirror}>B→A</th></tr>
-              </thead>
-              <tbody>
-                {#each TC_FIELDS as f}
-                  <tr>
-                    <td class="tc-lbl">{f.label}<span class="tiny"> {f.unit}</span></td>
-                    <td>
-                      <input class="mono" type="number" min="0" step={f.step} placeholder="—" bind:value={tcEdit.ab[f.key]} />
-                    </td>
-                    <td>
-                      <input class="mono" type="number" min="0" step={f.step} placeholder={tcEdit.mirror ? "=" : "—"} disabled={tcEdit.mirror} bind:value={tcEdit.ba[f.key]} />
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-            <div class="acts">
-              <button class="primary" onclick={applyTc}>Apply</button>
-              <button onclick={() => (tcEdit = null)}>Cancel</button>
-            </div>
-          {:else}
-            <div class="seg" role="radiogroup" aria-label="link profile">
-              <button role="radio" aria-checked={activePreset === ""} class:on={activePreset === ""} onclick={() => applyPreset(null)}>none</button>
-              {#each realPresets as name}
-                <button role="radio" aria-checked={activePreset === name} class:on={activePreset === name} onclick={() => applyPreset(name)}>{name}</button>
-              {/each}
-            </div>
-            {#if activePreset === null}
-              <p class="hint tiny">Custom parameters — no profile matches.</p>
-            {/if}
-            <div class="acts">
-              <button onclick={editTc}>Edit parameters…</button>
-            </div>
-          {/if}
-          <h3>Link</h3>
-          <div class="acts">
-            <button onclick={() => setAdmin(false)}>Admin down</button>
-            <button onclick={() => setAdmin(true)}>Admin up</button>
-            <button onclick={openCapture}>Capture</button>
-            <button class="danger" onclick={deleteSelectedLink}>Delete link</button>
-          </div>
-        {:else}
-          <div class="insp-head">
-            <h3 class="insp-name">{lab ? lab.name : "No lab open"}</h3>
-            <Hint text="Drag a node's link handle onto another node or a segment to wire it. Click a link to apply tc, or right-click one for capture and shaping." />
-          </div>
-          {#if lab}
-            <p class="tiny dim">
-              {lab.nodes.length} node{lab.nodes.length === 1 ? "" : "s"} · {runningCount} running{lab.folder ? ` · ${lab.folder}` : ""}
-            </p>
-          {:else}
-            <p class="hint tiny">Open a lab from the switcher, or make one with New.</p>
-          {/if}
-          {#if selectedIds.length > 1}
-            <h3>{selectedIds.length} nodes selected</h3>
-            <p class="hint tiny">
-              Drag any one of them to move the group; right-click for actions on all of them.
-            </p>
-            <div class="acts">
-              <button class="primary" onclick={() => startSelection(true)}>Start them</button>
-              <button onclick={() => startSelection(false)}>Stop them</button>
-              <button onclick={() => (selectedIds = [])}>Select none</button>
-              <button class="danger" onclick={() => wipeNodes(selectedIds)}>Wipe disks</button>
-              <button class="danger" onclick={deleteSelection}>Delete them</button>
-            </div>
-          {/if}
-
-          {#if lab}
-            <div class="acts">
-              <button
-                class="primary"
-                onclick={() => (queuedBulk ? runBulkTask("start_all") : startAll())}
-                disabled={labIsEmpty || !stoppedCount}
-              >
-                {stoppedCount ? `Start ${stoppedCount} stopped` : "Everything is running"}
-              </button>
-              <button
-                onclick={() => (queuedBulk ? runBulkTask("stop_all") : stopAll())}
-                disabled={!runningCount}
-              >
-                Stop all
-              </button>
-            </div>
-            {#if labIsEmpty}
-              <p class="why">Add a node to enable the lab controls.</p>
-            {/if}
-            <label class="opt">
-              <input type="checkbox" bind:checked={queuedBulk} />
-              <span>Start one at a time (queued)</span>
-            </label>
-            <p class="hint tiny">
-              Queued runs in the background with a progress bar, which is what you want
-              once a lab is large enough that starting it takes a while.
-            </p>
-
-            <h3>
-              Images
-              <Hint text="Fetches what this lab needs now, so the first start is not also a download. Only the QEMU catalog knows what is already on disk; whether a Docker tag is present is the engine's business." />
-            </h3>
-            {#if labImages.length}
-              <ul class="imglist">
-                {#each labImages as im}
-                  <li>
-                    <span class="mono tiny">{imageLabel(im.image)}</span>
-                    {#if im.status}
-                      <span class="tiny" class:dim={!im.missing} class:cold={im.missing}>{im.status}</span>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {:else}
-              <p class="hint tiny">No images yet — this lab has no nodes.</p>
-            {/if}
-            <div class="acts">
-              <button onclick={() => runBulkTask("pull_images")} disabled={labIsEmpty}>
-                Pre-pull images
-              </button>
-            </div>
-
-            {#if lab.nodes.length}
-              <h3>Nodes</h3>
-              <ul class="nodelist">
-                {#each lab.nodes as n}
-                  <li>
-                    <button class="node-row" onclick={() => (selected = n.id)}>
-                      <i class="dot" class:on={n.state === "running"} class:fail={n.state === "failed"}></i>
-                      <span class="grow">{n.name}</span>
-                      <span class="tiny dim">{n.runtime}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          {/if}
-        {/if}
-      </div>
-    {:else if dock === "packets"}
+    {#if dock === "packets"}
       <div class="packets">
         <div class="pkt-bar">
           <input class="mono" bind:value={bpf} placeholder="optional BPF, e.g. icmp" />
@@ -6865,6 +6887,23 @@
     color: var(--muted); font-size: 11px; line-height: 1; cursor: pointer;
   }
   .palette .collapse { right: 6px; }
+  /* Mirror of the palette's, on the other side. */
+  .inspector .collapse { left: 6px; }
+  .inspector {
+    border-left: 1px solid var(--stroke);
+    background: var(--panel);
+    overflow-y: auto;
+    position: relative;
+    padding: 10px 12px 24px;
+  }
+  /* Below a laptop width 300px of panel is most of the screen, so it floats
+     over the canvas instead of squeezing it to nothing. */
+  @media (max-width: 900px) {
+    .body > .inspector {
+      position: absolute; right: 0; top: 0; bottom: 0; z-index: 6;
+      flex: none; width: min(300px, 86vw); box-shadow: -8px 0 24px rgba(0,0,0,.18);
+    }
+  }
   .collapse.right { left: 6px; right: auto; }
   .collapse:hover { color: var(--accent); border-color: var(--accent); }
   .rail {
