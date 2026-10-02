@@ -1275,6 +1275,17 @@
   async function endWire(e, iface) {
     e.stopPropagation();
     if (!wiring || !lab) return;
+    // Started from a node handle (startNodeWire sets wiring.fromNode and
+    // wiring.from = {x, y}, no id). Route through the picker on the pill's
+    // owning node so the user picks the a-side — posting with
+    // a_iface_id: undefined was silently stripped by JSON.stringify and
+    // the server replied 422 "field required".
+    if (wiring.fromNode) {
+      const bNode = lab.nodes?.find((n) => n.interfaces?.some((i) => i.id === iface.id));
+      if (bNode) endNodeWire(e, bNode);
+      else wiring = null;
+      return;
+    }
     if (wiring.from.id === iface.id) {
       wiring = null;
       return;
