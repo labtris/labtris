@@ -554,6 +554,38 @@ for _pair in "migrate-eveng:migrate-from-eveng.py" "user:labtris-user.py"; do
   fi
 done
 
+# Memory dedup for container nodes. KSM merges only memory a process marked
+# MADV_MERGEABLE; QEMU marks guest RAM, nothing marks a container's, so
+# labtris-ksm.sh turned KSM on and it merged literally zero pages on a
+# container host. Measured on a 3267-node FRR fabric: flat zero before this,
+# 1.7 GiB at 27:1 after. PR_SET_MEMORY_MERGE is process-wide and inherited,
+# so containerd covers every shim and every process inside every node.
+#
+# Guarded on versions because MemoryKSM= is systemd 254+ against Linux 6.4+,
+# and an unknown directive makes the unit fail to start — which would take
+# out the container runtime to chase a memory optimisation.
+_ksm_drop_in() {
+  _unit=$1
+  systemctl list-unit-files "$_unit.service" >/dev/null 2>&1 || return 0
+  mkdir -p "/etc/systemd/system/$_unit.service.d"
+  printf '[Service]\nMemoryKSM=yes\n' > "/etc/systemd/system/$_unit.service.d/labtris-ksm.conf"
+  if systemd-analyze verify "$_unit.service" 2>&1 | grep -q "MemoryKSM"; then
+    rm -f "/etc/systemd/system/$_unit.service.d/labtris-ksm.conf"
+    say "  $_unit: MemoryKSM not supported here — container nodes will not dedup"
+    return 0
+  fi
+  say "  $_unit: MemoryKSM=yes"
+}
+_sdver=$(systemctl --version 2>/dev/null | awk 'NR==1{print $2}')
+_kver=$(uname -r | awk -F. '{printf "%d%03d", $1, $2}')
+if [ "${_sdver:-0}" -ge 254 ] 2>/dev/null && [ "${_kver:-0}" -ge 6004 ] 2>/dev/null; then
+  say "Memory dedup for container nodes"
+  _ksm_drop_in containerd
+  _ksm_drop_in docker
+else
+  say "Memory dedup: qemu nodes only (needs systemd 254+ and Linux 6.4+ for containers)"
+fi
+
 say "Unit and proxy files"
 install -m 0644 "$PREFIX/packaging/systemd/labtris-ksm.service" /etc/systemd/system/
 install -m 0644 "$PREFIX/packaging/systemd/labtris-netd.service" /etc/systemd/system/

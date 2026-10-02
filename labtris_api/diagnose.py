@@ -143,11 +143,29 @@ def _ksm() -> dict[str, Any]:
     }
     if sharing and shared:
         facts["ratio"] = round(sharing / shared, 1)
+
+    # Whether CONTAINER nodes are included, which "enabled" does not tell you.
+    # KSM merges only memory a process marked MADV_MERGEABLE. QEMU marks guest
+    # RAM; nothing marks a container's. So a container host could report
+    # "enabled, scan 1250/10ms" and be merging zero pages, which is exactly
+    # how this went unnoticed — the knobs all looked right.
+    facts["containers_included"] = any(
+        Path(f"/etc/systemd/system/{unit}.service.d/labtris-ksm.conf").is_file()
+        for unit in ("containerd", "docker")
+    )
     if run != 1:
         facts["note"] = (
             "KSM is OFF — a lab host wastes most of its memory this way. "
             "systemctl start labtris-ksm"
         )
+    elif not facts["containers_included"]:
+        facts["note"] = (
+            "on, but qemu nodes only — container memory is never offered to "
+            "KSM unless containerd opts in (MemoryKSM=yes, needs systemd 254+ "
+            "and Linux 6.4+). Re-run install-labtris.sh to add it."
+        )
+    elif sharing == 0:
+        facts["note"] = "on and opted in, but nothing merged yet — give the scanner a minute"
     return facts
 
 
@@ -305,7 +323,8 @@ def render(facts: dict[str, Any]) -> str:
         kv("ksm", ksm.get("note", "unavailable"))
     elif ksm.get("enabled"):
         ratio = f"{ksm['ratio']}:1 dedup, {ksm['saved_gb']} GB saved" if ksm.get("ratio") else "on"
-        kv("ksm", f"{ratio} (scan {ksm.get('pages_to_scan')}/{ksm.get('sleep_millisecs')}ms)")
+        scope = "qemu + containers" if ksm.get("containers_included") else "qemu only"
+        kv("ksm", f"{ratio} ({scope}, scan {ksm.get('pages_to_scan')}/{ksm.get('sleep_millisecs')}ms)")
     else:
         kv("ksm", ksm.get("note", "off"))
     kv("wireshark", "yes" if facts.get("wireshark") else "no")
