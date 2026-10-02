@@ -1032,7 +1032,12 @@ async def _qmp_open(vm_dir: Path) -> tuple[asyncio.StreamReader, asyncio.StreamW
     return entry
 
 
-async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = None) -> Any:
+async def _qmp(
+    vm_dir: Path,
+    command: str,
+    arguments: dict[str, Any] | None = None,
+    timeout: float = 3.0,
+) -> Any:
     """Send one QMP command and return the `return` payload (or raise on error).
 
     Uses a per-VM persistent connection cached in `_qmp_conns` — the
@@ -1050,7 +1055,7 @@ async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = No
             writer.write((json.dumps(payload) + "\n").encode())
             await writer.drain()
             while True:
-                raw = await asyncio.wait_for(reader.readline(), timeout=3.0)
+                raw = await asyncio.wait_for(reader.readline(), timeout=timeout)
                 if not raw:
                     raise runtime_error("QMP closed the connection before replying")
                 msg = json.loads(raw)
@@ -1065,6 +1070,46 @@ async def _qmp(vm_dir: Path, command: str, arguments: dict[str, Any] | None = No
             with contextlib.suppress(Exception):
                 writer.close()
             raise
+
+
+#: Snapshotting a VM with real memory in it is not a sub-second operation,
+#: and the only honest timeout is one longer than any lab node should take.
+_SNAPSHOT_TIMEOUT = 900.0
+
+
+async def _hmp_qmp(vm_dir: Path, command: str, timeout: float = 10.0) -> str:
+    """Run one HMP command through QMP and return just its output.
+
+    The raw monitor socket echoes back what you "type", character by
+    character, with cursor-movement escapes between them. A reply read from
+    it therefore contains the command as well as the answer — which is how
+    `savevm before-error-repro` came to be reported as a failure while
+    succeeding: the check looked for "error" and found it in the echo of the
+    name. `human-monitor-command` returns the command's own output and
+    nothing else.
+
+    It also returns only once the command has finished, which is the other
+    half of the problem: the old path slept a fixed interval and then read
+    whatever had arrived, so a long savevm reported success while QEMU was
+    still writing.
+    """
+    out = await _qmp(vm_dir, "human-monitor-command", {"command-line": command},
+                     timeout=timeout)
+    return out if isinstance(out, str) else ""
+
+
+def _hmp_error(out: str) -> str | None:
+    """The error line from an HMP reply, or None if it succeeded.
+
+    QEMU prefixes monitor failures with "Error"; a successful savevm says
+    nothing at all. Matched per line and at the start, so a snapshot whose
+    *name* contains the word is not mistaken for a failure.
+    """
+    for raw in out.splitlines():
+        line = raw.strip()
+        if line.lower().startswith("error"):
+            return line
+    return None
 
 
 # QMP's tablet axis range is fixed at 0..32767 regardless of framebuffer
@@ -2214,23 +2259,30 @@ class QemuRuntime:
         raise unprocessable("qemu backend has no in-guest file write — use the serial console")
 
     async def save_snapshot(self, h: RuntimeHandle, name: str) -> None:
-        out = await _hmp(Path(h.ref), f"savevm {name}", wait=1.0)
-        if "error" in out.lower():
-            raise runtime_error(f"savevm failed: {out.strip()}")
+        """Capture RAM and device state into the node's qcow2.
+
+        Returns only once QEMU has finished writing. Callers rely on that:
+        pods.py flattens the same disk immediately afterwards, and reading a
+        qcow2 mid-savevm produces an archive whose snapshot is partial or
+        absent — which surfaces much later as "snapshot does not exist" on
+        the restore, a long way from the cause.
+        """
+        out = await _hmp_qmp(Path(h.ref), f"savevm {name}", timeout=_SNAPSHOT_TIMEOUT)
+        if (err := _hmp_error(out)) is not None:
+            raise runtime_error(f"savevm failed: {err}")
 
     async def load_snapshot(self, h: RuntimeHandle, name: str) -> None:
-        out = await _hmp(Path(h.ref), f"loadvm {name}", wait=1.0)
-        if "error" in out.lower():
-            raise runtime_error(f"loadvm failed: {out.strip()}")
+        out = await _hmp_qmp(Path(h.ref), f"loadvm {name}", timeout=_SNAPSHOT_TIMEOUT)
+        if (err := _hmp_error(out)) is not None:
+            raise runtime_error(f"loadvm failed: {err}")
 
     async def list_snapshots(self, h: RuntimeHandle) -> list[str]:
-        out = await _hmp(Path(h.ref), "info snapshots", wait=0.5)
+        out = await _hmp_qmp(Path(h.ref), "info snapshots")
         names = []
         for raw in out.splitlines():
             line = raw.strip()
-            # HMP echoes the typed command with readline cursor-movement escapes
-            # before the reply; skip that plus the header/blank lines and keep
-            # only "<ID|-->  <TAG>  ..." data rows.
+            # No echo to skip any more, but the header lines are still there,
+            # and "(qemu)" costs nothing to keep ignoring.
             if not line or line.startswith(("List of snapshots", "ID", "(qemu)")):
                 continue
             parts = line.split()

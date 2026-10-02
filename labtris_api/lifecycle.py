@@ -5,6 +5,7 @@ import os
 import secrets
 from typing import Any, Literal
 
+import structlog
 import ulid
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import select
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from labtris_api.errors import conflict, runtime_error, unprocessable
+
+logger = structlog.get_logger(__name__)
 from labtris_api.models import (
     Geometry,
     Host,
@@ -707,8 +710,19 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
                     RuntimeHandle(node_id=node.id, ref=node.runtime_ref, pid=None),
                     tag,
                 )
-            except Exception:  # noqa: BLE001 — best-effort; state stays "running"
-                pass
+            except Exception as exc:  # noqa: BLE001 — the node is up either way
+                # Logged rather than swallowed. A failed loadvm means the
+                # guest cold-booted instead of resuming, and silence made
+                # that indistinguishable from a successful hot restore —
+                # you got a fresh boot and nothing said so.
+                logger.warning(
+                    "qemu.loadvm.failed", node=node.id, name=node.name,
+                    tag=tag, error=str(exc),
+                )
+                await announce(
+                    node, "running",
+                    error=f"resumed cold — loadvm {tag!r} failed: {exc}",
+                )
             opts = dict(node.qemu_opts or {})
             opts.pop("load_snapshot_on_boot", None)
             node.qemu_opts = opts
