@@ -10,6 +10,20 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LABTRIS_", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://pnl:pnl@localhost/pnl"
+    #: Connection pool. These were SQLAlchemy's defaults (5 + 10) on the
+    #: reasoning that needing more than 15 concurrent sessions meant a leak
+    #: rather than a pool worth growing. Starting a 3267-node fabric proved
+    #: that wrong: a wave of nodes starting concurrently holds a session each
+    #: for as long as a container create takes, and with the interface
+    #: polling diagnostics at the same time the pool ran dry — every request
+    #: then waited the full 30s pool_timeout and returned 500, and nginx
+    #: turned the backlog into 502s. Neither was a leak.
+    #:
+    #: 20 + 30 is 50 at full stretch, against Postgres's default
+    #: max_connections of 100, which leaves room for psql, labtris-user and a
+    #: second process on the same database.
+    db_pool_size: int = 20
+    db_max_overflow: int = 30
     netd_socket: str = "/run/labtris/netd.sock"
     docker_host: str = "unix:///var/run/docker.sock"
     log_level: str = "info"

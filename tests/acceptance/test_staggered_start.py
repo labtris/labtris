@@ -238,3 +238,45 @@ def test_the_defaults_are_a_wave_and_a_pause() -> None:
     d = TaskIn(kind="start_all")
     assert d.batch > 1, "sequential was the bug"
     assert d.stagger_ms > 0, "flat out buries the container runtime"
+
+
+async def test_a_huge_batch_cannot_drain_the_connection_pool(monkeypatch) -> None:
+    """Each node in flight holds a session for as long as its start takes, so
+    an unbounded wave starves the HTTP handlers. That is how this first
+    showed up — not as a slow start, but as the interface getting
+
+        TimeoutError: QueuePool limit of size 5 overflow 10 reached
+
+    from /system/diagnostics, and nginx turning the backlog into 502s.
+    """
+    from labtris_api.config import settings
+
+    concurrent = 0
+    high_water = 0
+
+    async def fake_start(session, node):  # noqa: ANN001
+        nonlocal concurrent, high_water
+        concurrent += 1
+        high_water = max(high_water, concurrent)
+        await asyncio.sleep(0.005)
+        concurrent -= 1
+
+    async def fake_progress(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        return None
+
+    nodes = [_FakeNode(f"n{i}") for i in range(256)]
+    monkeypatch.setattr(tasks_mod, "_set_progress", fake_progress)
+    monkeypatch.setattr(tasks_mod, "start_node", fake_start)
+    monkeypatch.setattr(tasks_mod, "_ordered_for_start", _identity)
+    monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
+    monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
+
+    done, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
+        "t", "start_all", nodes, len(nodes),
+        TaskIn(kind="start_all", min_free_mb=0, batch=256, stagger_ms=0),
+    )
+
+    budget = (settings.db_pool_size + settings.db_max_overflow) // 2
+    assert done == 256, "every node still starts; only the width is capped"
+    assert high_water <= budget, f"{high_water} in flight against a budget of {budget}"
+    assert high_water < 256, "a batch of 256 must not put 256 sessions in flight"

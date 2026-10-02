@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import get_current_user
+from labtris_api.config import settings
 from labtris_api.db import SessionLocal, get_session
 from labtris_api.errors import not_found
 from labtris_api.lifecycle import get_lab, new_id, start_node, stop_node
@@ -169,6 +170,15 @@ async def _run_in_waves(
 ) -> tuple[int, int]:
     """Start or stop in waves of `batch`, pausing `stagger_ms` between them."""
     starting = kind == "start_all"
+    # Each node in flight holds a database session for as long as its start
+    # takes, so an unbounded wave can drain the pool and starve the HTTP
+    # handlers — which is how a large batch first showed up: not as a slow
+    # start, but as the interface getting 500s from /system/diagnostics with
+    # "QueuePool limit of size 5 overflow 10 reached", and nginx turning the
+    # backlog into 502s. The pool is bigger now; this keeps a wave from
+    # taking all of it however large a batch someone asks for.
+    budget = max(1, (settings.db_pool_size + settings.db_max_overflow) // 2)
+    width = min(opts.batch, budget)
     ordered = await _ordered_for_start(nodes) if starting else list(nodes)
     done = 0
     failed = 0
@@ -201,9 +211,13 @@ async def _run_in_waves(
                 )
                 break
         wave = ordered[i : i + opts.batch]
-        results = await asyncio.gather(
-            *(one(n.id) for n in wave), return_exceptions=True
-        )
+        results: list[object] = []
+        for j in range(0, len(wave), width):
+            results.extend(
+                await asyncio.gather(
+                    *(one(n.id) for n in wave[j : j + width]), return_exceptions=True
+                )
+            )
         for r in results:
             if r is True:
                 done += 1
