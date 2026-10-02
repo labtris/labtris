@@ -586,6 +586,30 @@ else
   say "Memory dedup: qemu nodes only (needs systemd 254+ and Linux 6.4+ for containers)"
 fi
 
+# Kernel limits for a host running thousands of container nodes. The stock
+# values are fine for a laptop and wrong here, and each fails in a way that
+# does not name itself — inotify exhaustion reads as "failed to create shim
+# task", and a full neighbour table reads as a routing bug. See the file.
+say "Kernel limits for scale"
+install -d -m 0755 /etc/sysctl.d
+install -m 0644 "$PREFIX/packaging/sysctl/99-labtris-scale.conf" \
+  /etc/sysctl.d/99-labtris-scale.conf
+if sysctl -q --system >/dev/null 2>&1; then
+  say "  applied ($(sysctl -n fs.inotify.max_user_instances) inotify instances, \
+$(sysctl -n net.ipv4.neigh.default.gc_thresh3) neighbour entries)"
+else
+  say "  written to /etc/sysctl.d — applied on next boot"
+fi
+
+# The hostname has to resolve, or every sudo pays a DNS timeout. Stock Ubuntu
+# images usually have this; images built from a cloud-init seed often do not,
+# and the symptom is a box that feels broken under load for no visible reason:
+#   sudo: unable to resolve host labtris-011: Temporary failure in name resolution
+if ! getent hosts "$(hostname)" >/dev/null 2>&1; then
+  printf '127.0.1.1 %s\n' "$(hostname)" >> /etc/hosts
+  say "  added $(hostname) to /etc/hosts so sudo does not wait on DNS"
+fi
+
 say "Unit and proxy files"
 install -m 0644 "$PREFIX/packaging/systemd/labtris-ksm.service" /etc/systemd/system/
 install -m 0644 "$PREFIX/packaging/systemd/labtris-netd.service" /etc/systemd/system/
