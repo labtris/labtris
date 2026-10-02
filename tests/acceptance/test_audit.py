@@ -141,3 +141,42 @@ def test_an_old_token_without_the_claim_reads_as_human() -> None:
 
     assert User(id="x", name="X", username="x", role="user").via == "human"
     assert not User(id="x", name="X", username="x", role="user").is_assistant
+
+
+async def test_the_app_actually_starts() -> None:
+    """Run the lifespan.
+
+    The audit prune task was added with a reference to `asyncio` above a
+    function-local `import asyncio` further down the same function — which
+    makes the name local for the whole function, so the reference became an
+    UnboundLocalError and the app refused to start:
+
+        UnboundLocalError: cannot access local variable 'asyncio'
+        ERROR:    Application startup failed. Exiting.
+
+    Every test passed. Nothing in the suite ran the lifespan, so a crash on
+    startup was invisible until a real host restarted into a 502 loop.
+    """
+    from labtris_api.main import create_app, lifespan
+
+    app = create_app()
+    async with lifespan(app):
+        pass
+
+
+async def test_the_prune_task_is_started_and_stopped() -> None:
+    """A background task nothing cancels keeps uvicorn's shutdown hanging
+    until systemd SIGKILLs it, and nginx answers 502 throughout."""
+    import asyncio
+
+    from labtris_api.main import create_app, lifespan
+
+    app = create_app()
+    async with lifespan(app):
+        names = {t.get_name() for t in asyncio.all_tasks()}
+        assert "audit-prune" in names, names
+    await asyncio.sleep(0)
+    assert not [
+        t for t in asyncio.all_tasks()
+        if t.get_name() == "audit-prune" and not t.done() and not t.cancelled()
+    ]

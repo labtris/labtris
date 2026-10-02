@@ -127,7 +127,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # fires and SIGKILLs the process — during which nginx returns 502 to
     # every new request because uvicorn stopped accept()ing. Naming the
     # tasks explicitly here keeps shutdown in seconds, not minutes.
-    import asyncio
+    #
+    # asyncio is NOT re-imported here. A function-local import makes the name
+    # local for the WHOLE function, so the create_task above — which runs
+    # before this line — became an UnboundLocalError and the app refused to
+    # start. It is imported at module scope.
     import contextlib
 
     from labtris_api.routers.images import _pulls
