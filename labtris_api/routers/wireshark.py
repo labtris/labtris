@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api import wireshark
@@ -68,6 +69,41 @@ async def stop_wireshark(
 @router.get("/wireshark")
 async def list_wireshark(_user: object = Depends(get_current_user)) -> dict[str, Any]:
     return {"sessions": wireshark.listing()}
+
+
+@router.get("/wireshark/{session_id}/files")
+async def list_saved_captures(
+    session_id: str, _user: object = Depends(get_current_user)
+) -> dict[str, Any]:
+    """Captures saved inside this session that are ready to download.
+
+    Wireshark runs on the server, so File → Save As writes to the server.
+    The browser polls this while the window is open and fetches anything it
+    has not seen, which is what makes a save arrive in the user's Downloads
+    without them doing anything about it.
+
+    Files still being written are withheld — a pcap handed over mid-save
+    downloads truncated and reads as a corrupt capture.
+    """
+    if wireshark.get(session_id) is None:
+        raise not_found(f"no Wireshark session {session_id!r}")
+    return {"files": wireshark.saved_files(session_id)}
+
+
+@router.get("/wireshark/{session_id}/files/{name}")
+async def download_saved_capture(
+    session_id: str, name: str, _user: object = Depends(get_current_user)
+) -> FileResponse:
+    if wireshark.get(session_id) is None:
+        raise not_found(f"no Wireshark session {session_id!r}")
+    path = wireshark.saved_file(session_id, name)
+    return FileResponse(
+        path,
+        media_type="application/vnd.tcpdump.pcap",
+        # Content-Disposition is what turns this into a download rather than
+        # something the browser tries to render.
+        filename=path.name,
+    )
 
 
 @router.websocket("/wireshark/{session_id}/ws")

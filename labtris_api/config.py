@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     #: apt upgrade or a systemd restart never trims it, and a full-disk
     #: cleanup is one directory to eyeball.
     pod_dir: str = "~/.local/share/labtris/pods"
+    #: Where a Wireshark session's saved captures land. Each session gets a
+    #: directory of its own, which is also the HOME the Wireshark process
+    #: runs with, so its Save dialog opens there without the user choosing.
+    wireshark_save_dir: str = "~/.local/share/labtris/wireshark"
 
     # The assistant talks to an OpenAI-compatible endpoint — LiteLLM by
     # default, so whichever provider you route there is your business and no

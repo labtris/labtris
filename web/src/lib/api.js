@@ -305,6 +305,13 @@ export const api = {
   wiresharkStart: (body) =>
     req("/api/v1/wireshark/start", { method: "POST", body: JSON.stringify(body) }),
   wiresharkStop: (id) => req(`/api/v1/wireshark/${id}/stop`, { method: "POST" }),
+  //: Captures saved inside a Wireshark session. The binary runs on the lab
+  //: host, so File → Save As writes there; the pane polls this and pulls
+  //: anything new down, which is how a save reaches the user's Downloads
+  //: without them copying anything.
+  wiresharkFiles: (id) => req(`/api/v1/wireshark/${id}/files`),
+  wiresharkFileUrl: (id, name) =>
+    `/api/v1/wireshark/${id}/files/${encodeURIComponent(name)}`,
   hostInterfaces: () => req("/api/v1/system/host-interfaces"),
   setIfaceNetwork: (ifaceId, networkId) =>
     req(`/api/v1/interfaces/${ifaceId}`, {

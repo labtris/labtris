@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import shlex
 import socket
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from labtris_api.config import packaging_dir
-from labtris_api.errors import runtime_error, unprocessable
+from labtris_api.config import packaging_dir, settings
+from labtris_api.errors import not_found, runtime_error, unprocessable
 
 #: Each session is a whole X server plus a Wireshark process — on the order of
 #: 200-300 MB. This is a lab tool, not a tenant service; the cap exists so a
@@ -47,6 +49,64 @@ def _lua_args() -> str:
 #: displays QEMU hands out (which start at :1 and are counted from 5900).
 DISPLAY_BASE = 60
 GEOMETRY = "1440x900x24"
+
+
+#: A saved capture is offered for download only once it has stopped changing.
+#: Wireshark writes the file as it saves, and handing the browser a pcap
+#: mid-write produces a truncated download that looks like a corrupt capture.
+_SETTLE_SECONDS = 1.5
+
+#: Session ids are built by routers/wireshark.py from a prefix and a ULID
+#: ("link-01J..."), so this is belt and braces — but the value reaches the
+#: filesystem as a directory name, and one that could contain a slash or a
+#: ".." would reach somewhere else entirely.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def save_dir(session_id: str) -> Path:
+    """Where this session's saved captures land.
+
+    One directory per session, and it is also the HOME the Wireshark process
+    runs with: a fresh HOME has no recent-files list, so GTK's save dialog
+    opens here rather than wherever the service happens to be running from.
+    """
+    if not _SAFE_ID.match(session_id):
+        raise unprocessable(f"bad session id {session_id!r}")
+    p = Path(settings.wireshark_save_dir).expanduser() / session_id
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def saved_files(session_id: str) -> list[dict[str, object]]:
+    """Captures saved in this session that are finished being written.
+
+    Sorted oldest first so a caller downloading everything it has not seen
+    yet gets them in the order they were made.
+    """
+    base = save_dir(session_id)
+    now = time.time()
+    out: list[dict[str, object]] = []
+    for f in sorted(base.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0):
+        if not f.is_file() or f.name.startswith("."):
+            continue
+        st = f.stat()
+        if now - st.st_mtime < _SETTLE_SECONDS or st.st_size == 0:
+            continue
+        out.append({"name": f.name, "bytes": st.st_size, "saved_at": st.st_mtime})
+    return out
+
+
+def saved_file(session_id: str, name: str) -> Path:
+    """One saved capture, by name.
+
+    The name comes from the client, so it is resolved and checked to be
+    inside the session's own directory rather than trusted.
+    """
+    base = save_dir(session_id).resolve()
+    target = (base / name).resolve()
+    if target.parent != base or not target.is_file():
+        raise not_found(f"no saved capture {name!r} in this session")
+    return target
 
 
 @dataclass
@@ -95,13 +155,18 @@ def _require_tools() -> None:
         )
 
 
-async def _spawn(*args: str, env: dict[str, str] | None = None) -> asyncio.subprocess.Process:
+async def _spawn(
+    *args: str,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> asyncio.subprocess.Process:
     return await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         stdin=asyncio.subprocess.DEVNULL,
         env={**os.environ, **(env or {})},
+        cwd=cwd,
         start_new_session=True,
     )
 
@@ -146,8 +211,17 @@ async def start(session_id: str, ifname: str) -> Session:
             "-o capture.no_interface_load:TRUE"
             f"{_lua_args()}"
         )
+        # HOME and cwd both point at the session's save directory, so File →
+        # Save As opens there and the file lands somewhere the API can serve.
+        # Left alone, a save goes to the service's working directory and sits
+        # on the server with nothing to reach it and nothing to clean it up.
+        saves = save_dir(session_id)
         session.procs.append(
-            await _spawn("sg", "wireshark", "-c", cmd, env={"DISPLAY": f":{display}"})
+            await _spawn(
+                "sg", "wireshark", "-c", cmd,
+                env={"DISPLAY": f":{display}", "HOME": str(saves)},
+                cwd=str(saves),
+            )
         )
         session.procs.append(
             await _spawn(
@@ -190,10 +264,19 @@ async def _kill(session: Session) -> None:
 
 
 async def stop(session_id: str) -> bool:
+    """Stop the session and remove its save directory.
+
+    The directory goes because the browser has already been handed anything
+    that settled — leaving it would accumulate pcaps on the host that nobody
+    is coming back for. Callers that may have unfetched saves should list
+    them one last time before stopping.
+    """
     session = _sessions.pop(session_id, None)
     if session is None:
         return False
     await _kill(session)
+    with contextlib.suppress(OSError):
+        shutil.rmtree(Path(settings.wireshark_save_dir).expanduser() / session_id)
     return True
 
 
