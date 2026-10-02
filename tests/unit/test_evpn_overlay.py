@@ -50,13 +50,20 @@ def test_only_host_facing_ports_join_the_bridge() -> None:
         assert f"ip link set eth{up} master" not in out
 
 
-def test_the_uplinks_get_headroom_for_encapsulation() -> None:
-    """A 1500-byte tenant frame is 1550 once encapsulated. On a veth still at
-    1500 it is silently dropped: ping succeeds, a large transfer does not."""
+def test_the_uplinks_are_left_alone_and_the_budget_still_works() -> None:
+    """An earlier version raised the uplinks to 1600 and was wrong twice:
+    unnecessary, because 1450 + VXLAN's 50 is exactly 1500 and the default
+    already carries that; and applied to the edge's end only, leaving every
+    agg-edge link with 1600 one side and 1500 the other.
+    """
     out = tg._fattree_edge_overlay(1, 1, 22)
 
-    assert "mtu 1600" in out
-    assert "seq 0 10" in out, "only the uplinks need the headroom"
+    assert "mtu 1600" not in out, "one-sided MTU change is back"
+    assert "mtu" not in out.replace("# ", ""), "the overlay should set no MTU at all"
+
+    host = tg._fattree_host_setup(1, 1, 1, 22)
+    tenant = int(re.search(r"mtu (\d+)", host).group(1))
+    assert tenant + 50 <= 1500, f"{tenant} + 50 exceeds the fabric MTU"
 
 
 def test_the_host_gets_an_address_and_a_reduced_mtu() -> None:
