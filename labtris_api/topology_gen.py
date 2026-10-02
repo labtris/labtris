@@ -324,8 +324,21 @@ bfdd=no
 fabricd=no
 vrrpd=no
 pathd=no
-zebra_options=  "  -A 127.0.0.1 -s 90000000"
-bgpd_options=   "  -A 127.0.0.1"
+# No space after `=`. This file is sourced by frrinit.sh, and `VAR=  "x"` in
+# shell assigns VAR empty and then runs `  "x"` as a command — which is
+# exactly what happened:
+#
+#   /etc/frr/daemons: line 18:   -A 127.0.0.1 -s 90000000: command not found
+#   /etc/frr/daemons: line 19:   -A 127.0.0.1: command not found
+#
+# FRR started anyway, so this looked harmless, and both daemons silently ran
+# with no options at all. Losing `-A 127.0.0.1` means the VTY is not bound to
+# loopback; losing `-s 90000000` leaves zebra on the default netlink receive
+# buffer, which is the one thing a fabric with tens of thousands of
+# interfaces cannot afford — route sync starts failing under exactly the load
+# this config exists to carry.
+zebra_options="-A 127.0.0.1 -s 90000000"
+bgpd_options="-A 127.0.0.1"
 """
 
 
