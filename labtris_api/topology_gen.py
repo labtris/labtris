@@ -26,6 +26,8 @@ indistinguishable from a manually-built one after commit. No hidden
 
 from __future__ import annotations
 
+import math
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -180,7 +182,12 @@ class _Builder:
         row_wide: int,
         opts: dict[str, Any] | None = None,
         startup_config: str | None = None,
+        at: tuple[int, int] | None = None,
     ) -> Node:
+        """`at` is an explicit (col, row) in grid cells, for a layout that a
+        single centred row cannot express — see the fat tree, which places
+        each pod as a block rather than stretching one row of hosts across
+        half a million pixels."""
         runtime, image = _resolve_kind(kind)
         node = Node(
             id=new_id(),
@@ -196,7 +203,11 @@ class _Builder:
         )
         self.session.add(node)
         self.nodes_created.append(node)
-        self.geometry_nodes[node.id] = _grid_pos(row, col, row_wide)
+        self.geometry_nodes[node.id] = (
+            {"x": at[0] * _GRID, "y": at[1] * _GRID}
+            if at is not None
+            else _grid_pos(row, col, row_wide)
+        )
         return node
 
     async def add_interface(self, node: Node) -> Interface:
@@ -717,11 +728,42 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
             return _frr_installer(_FRR_DAEMONS_EVPN, _fattree_edge_frr_conf(pod + 1, i + 1, k))
         return None
 
+    # ---- layout ------------------------------------------------------
+    #
+    # A fat tree used to be laid out as four centred rows, which at k=22
+    # means 2662 hosts across one row: 532,400 px wide against 800 px tall,
+    # a 665:1 aspect ratio. Fit that on a screen and every node is smaller
+    # than a pixel, nothing can be clicked, and 7986 links cross everything.
+    #
+    # A fat tree is not four rows, it is k pods. So each pod is a block:
+    # its k/2 aggregation switches on one line, its k/2 edge switches on the
+    # next, and each edge's k/2 hosts stacked in the column directly beneath
+    # it. Pods are tiled in a grid, with the cores wrapped into a band above
+    # rather than stretched across the whole width.
+    #
+    # k=22 goes from 532,400 x 800 to roughly 12,000 x 14,800 — 44x narrower
+    # and actually navigable. It also makes the 2662 edge-to-host links,
+    # a third of every link in the lab, short vertical segments that cross
+    # nothing, because a host sits under its own switch. The core-to-
+    # aggregation crossings remain, because in a fat tree every aggregation
+    # switch really does reach half the cores; that is the topology, not the
+    # drawing.
+    pod_cols = half                      # a pod is k/2 columns wide
+    pod_rows = 2 + half                  # agg, edge, then k/2 host rows
+    pods_across = max(1, math.ceil(math.sqrt(k)))
+    span = pods_across * (pod_cols + 1)  # +1 column of air between pods
+    core_rows = max(1, math.ceil((half * half) / span))
+
+    def _pod_origin(pod: int) -> tuple[int, int]:
+        pr, pc = divmod(pod, pods_across)
+        return pc * (pod_cols + 1), core_rows + 1 + pr * (pod_rows + 1)
+
     cores = [
         await b.add_node(
             f"core-{i+1}", body.spine_kind, row=0, col=i, row_wide=half * half,
             opts={"p4_program": body.p4_program} if body.spine_kind == "bmv2" else None,
             startup_config=_core_cfg(i),
+            at=(i % span, i // span),
         )
         for i in range(half * half)
     ]
@@ -730,11 +772,13 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
     aggs: list[list[Node]] = []
     edges: list[list[Node]] = []
     for pod in range(k):
+        ox, oy = _pod_origin(pod)
         pod_aggs = [
             await b.add_node(
                 f"agg-{pod+1}-{a+1}", body.leaf_kind, row=1,
                 col=pod * aggs_per_pod + a, row_wide=k * aggs_per_pod,
                 startup_config=_agg_cfg(pod, a),
+                at=(ox + a, oy),
             )
             for a in range(aggs_per_pod)
         ]
@@ -743,6 +787,7 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
                 f"edge-{pod+1}-{e+1}", body.leaf_kind, row=2,
                 col=pod * edges_per_pod + e, row_wide=k * edges_per_pod,
                 startup_config=_edge_cfg(pod, e),
+                at=(ox + e, oy + 1),
             )
             for e in range(edges_per_pod)
         ]
@@ -769,6 +814,7 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
 
     # Hosts under each edge: k/2 per edge.
     for pod in range(k):
+        ox, oy = _pod_origin(pod)
         for e_i, e_node in enumerate(edges[pod]):
             for h in range(half):
                 host = await b.add_node(
@@ -777,6 +823,10 @@ async def _fat_tree(b: _Builder, body: GenerateIn) -> None:
                     row=3,
                     col=(pod * edges_per_pod + e_i) * half + h,
                     row_wide=k * edges_per_pod * half,
+                    # Stacked straight down from its own edge switch, so this
+                    # link is a short vertical line rather than a wire across
+                    # the whole lab.
+                    at=(ox + e_i, oy + 2 + h),
                 )
                 a = await b.add_interface(e_node)
                 c = await b.add_interface(host)
