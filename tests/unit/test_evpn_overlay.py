@@ -111,3 +111,28 @@ def test_the_installer_without_a_pre_section_is_unchanged() -> None:
     assert "vxlan" not in script
     r = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_vtysh_conf_is_written_so_every_command_is_not_prefixed_by_a_warning() -> None:
+    """Without it, vtysh emits
+
+        % Can't open configuration file /etc/frr/vtysh.conf due to 'No such
+        file or directory'.
+
+    on stderr for every command — noise on every `show` an operator runs, and
+    something every caller that parses vtysh output has to filter out.
+    """
+    script = tg._frr_installer(tg._FRR_DAEMONS_EVPN, "hostname x")
+
+    assert "/etc/frr/vtysh.conf" in script
+    assert "service integrated-vtysh-config" in script
+
+
+def test_vtysh_conf_declares_the_mode_the_config_actually_uses() -> None:
+    """integrated-vtysh-config means one frr.conf rather than per-daemon
+    files, which is what the generator writes. Declaring the other mode would
+    make `write memory` scatter config into zebra.conf and bgpd.conf."""
+    script = tg._frr_installer(tg._FRR_DAEMONS_EVPN, "hostname x")
+
+    assert "no service integrated-vtysh-config" not in script
+    assert script.index("frr.conf") < script.index("vtysh.conf")

@@ -295,6 +295,19 @@ EOF_DAEMONS
 cat > /etc/frr/frr.conf <<'EOF_FRR'
 {frr_conf}
 EOF_FRR
+# vtysh looks for this and complains on stderr for every single command when
+# it is absent:
+#
+#   % Can't open configuration file /etc/frr/vtysh.conf due to 'No such file
+#   or directory'.
+#
+# Harmless, and noise on every `show` an operator runs — it also has to be
+# filtered out of anything that parses vtysh output, which is a silly thing to
+# make a caller do. integrated-vtysh-config is the mode this config already
+# assumes: one frr.conf rather than per-daemon files.
+cat > /etc/frr/vtysh.conf <<'EOF_VTYSH'
+service integrated-vtysh-config
+EOF_VTYSH
 chown -R frr:frr /etc/frr 2>/dev/null || true
 
 # Restart only when a restart is actually required; otherwise reload.
