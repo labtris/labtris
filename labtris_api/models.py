@@ -367,6 +367,44 @@ class User(Base):
     )
 
 
+class AuditEntry(Base):
+    """One mutating operation, and who or what made it.
+
+    Reads are not recorded: listing labs is not interesting, there are orders
+    of magnitude more of them, and a log nobody can scan is a log nobody
+    reads.
+
+    The actor is denormalised rather than a foreign key. Deleting a user must
+    not erase what that user did, and ON DELETE SET NULL would leave rows that
+    cannot say whose they were.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    actor_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    actor_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: "human" or "assistant", from the signed token. The column this table
+    #: exists for.
+    via: Mapped[str] = mapped_column(Text, nullable=False, default="human")
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The route template, so a thousand distinct paths group into one answer.
+    route: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[int] = mapped_column(Integer, nullable=False)
+    lab_id: Mapped[str | None] = mapped_column(CHAR(26), nullable=True)
+    target_kind: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    detail: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class SshKey(Base):
     """OpenSSH-format authorized pubkey for one Labtris user (Phase K1b).
 

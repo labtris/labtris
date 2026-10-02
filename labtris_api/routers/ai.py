@@ -334,7 +334,11 @@ def _agent_token(user: User) -> str | None:
     if user.id in ("setup", "dev"):
         return None
     return issue_token(
-        UserRow(id=user.id, username=user.username, role=user.role, display_name=user.name)
+        UserRow(id=user.id, username=user.username, role=user.role, display_name=user.name),
+        #: Everything the assistant does carries this, so the audit log can
+        #: separate "the AI changed this" from "I changed this" — which is the
+        #: question people actually ask once a model can touch the lab.
+        via="assistant",
     )
 
 

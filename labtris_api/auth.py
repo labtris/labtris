@@ -24,7 +24,7 @@ from typing import Any
 import jwt
 import structlog
 import ulid
-from fastapi import Cookie, Depends, Header
+from fastapi import Cookie, Depends, Header, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,10 +56,28 @@ class User:
     name: str
     username: str
     role: str
+    #: How this request reached us. "human" is someone driving the interface
+    #: or calling the API themselves; "assistant" is the AI acting in their
+    #: name through POST /agent/tool.
+    #:
+    #: It lives in the signed token rather than a header, because a header is
+    #: something a caller can set and an audit log that can be told what to
+    #: say is not an audit log. The assistant mints its token with act
+    #: "assistant"; nothing else can produce one, because nothing else holds
+    #: the signing secret.
+    #:
+    #: Defaulted so every existing construction of User — tests, the setup
+    #: pseudo-user, the dev override — keeps working and reads as human,
+    #: which is what they are.
+    via: str = "human"
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    @property
+    def is_assistant(self) -> bool:
+        return self.via == "assistant"
 
 
 def hash_password(password: str) -> str:
@@ -113,13 +131,20 @@ def _secret() -> str:
     return value
 
 
-def issue_token(user: UserRow) -> str:
+def issue_token(user: UserRow, via: str = "human") -> str:
+    """`via` is carried as the `act` claim so the audit log can tell an
+    action the assistant took from one a person took.
+
+    Signed rather than asserted: the claim is inside the JWT, so a client
+    cannot relabel its own writes as human.
+    """
     now = datetime.now(UTC)
     return jwt.encode(
         {
             "sub": user.id,
             "username": user.username,
             "role": user.role,
+            "act": via,
             "iat": int(now.timestamp()),
             "exp": int((now + TOKEN_TTL).timestamp()),
         },
@@ -175,6 +200,7 @@ async def create_user(
 
 
 async def get_current_user(
+    request: Request,
     session: AsyncSession = Depends(get_session),
     labtris_session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
     authorization: str | None = Header(default=None),
@@ -212,8 +238,11 @@ async def get_current_user(
     row = await session.get(UserRow, claims.get("sub"))
     if row is None or row.disabled:
         raise unauthorized("this account is no longer active")
-    return User(id=row.id, name=row.display_name or row.username,
-                username=row.username, role=row.role)
+    user = User(id=row.id, name=row.display_name or row.username,
+                username=row.username, role=row.role,
+                via="assistant" if claims.get("act") == "assistant" else "human")
+    request.state.user = user
+    return user
 
 
 async def resolve_ws_user(websocket, session: AsyncSession) -> User | None:
@@ -242,7 +271,8 @@ async def resolve_ws_user(websocket, session: AsyncSession) -> User | None:
     if row is None or row.disabled:
         return None
     return User(id=row.id, name=row.display_name or row.username,
-                username=row.username, role=row.role)
+                username=row.username, role=row.role,
+                via="assistant" if claims.get("act") == "assistant" else "human")
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:

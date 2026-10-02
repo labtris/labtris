@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +16,7 @@ from labtris_api.version import __version__
 from labtris_api.errors import ApiError, api_error_handler, unhandled_error_handler
 from labtris_api.routers import (
     ai,
+    audit,
     auth,
     backup,
     capture,
@@ -92,7 +96,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await clab_watch.start()
     except Exception:  # noqa: BLE001 — observing clab is a convenience
         pass
+
+    # Prune the audit log on a timer. It records every mutation, and on a host
+    # running thousands of nodes that grows fast — a 931-node start is 931
+    # entries on its own. Pruning on write would put a DELETE in the path of
+    # every operation; once an hour costs nothing and keeps the window honest.
+    _pruner = asyncio.create_task(_prune_audit_forever(), name="audit-prune")
+
     yield
+    _pruner.cancel()
     # Wireshark sessions are deliberately started in their own process session
     # so they survive a reload — which is exactly what makes them leak if
     # nothing reaps them on the way out.
@@ -200,6 +212,7 @@ def create_app() -> FastAPI:
     app.include_router(wireshark.router, prefix=prefix)
     app.include_router(settings_router.router, prefix=prefix)
     app.include_router(backup.router, prefix=prefix)
+    app.include_router(audit.router, prefix=prefix)
     app.include_router(feedback.router, prefix=prefix)
     app.include_router(hooks.router, prefix=prefix)
     app.include_router(pods.router, prefix=prefix)
@@ -247,6 +260,147 @@ def create_app() -> FastAPI:
 _MUTATING = {"POST", "PATCH", "PUT", "DELETE"}
 
 
+async def _audit(request, response, lab_id, duration_ms) -> None:
+    """Record one mutation.
+
+    Wrapped so it can never fail the request it is describing: the operation
+    has already happened by the time we get here, and raising now would report
+    a success as an error.
+    """
+    from labtris_api import audit as audit_mod
+    from labtris_api.db import SessionLocal
+    from labtris_api.lifecycle import new_id
+
+    try:
+        if audit_mod._SKIP.match(request.url.path):  # noqa: SLF001
+            return
+
+        # The actor is read from the token here rather than taken from
+        # request.state alone.
+        #
+        # request.state is set by get_current_user, which means the audit
+        # would silently lose the actor on any path that authenticates
+        # differently — a websocket, a route using another dependency, or a
+        # test that overrides it. An audit log whose "who" column depends on
+        # which dependency happened to run is not one to rely on.
+        #
+        # The claims carry the username and the act, so this costs no query.
+        # An unauthenticated mutation (there should be none) records as nobody
+        # rather than being dropped, because a write with no actor is exactly
+        # the thing someone would want to find.
+        user = getattr(request.state, "user", None)
+        if user is None or not getattr(user, "username", ""):
+            user = _actor_from_token(request) or user
+        route = request.scope.get("route")
+        template = getattr(route, "path", "") or ""
+
+        # The announce resolves lab_id for DELETE *before* calling the
+        # handler, which is before the router has matched and therefore before
+        # path_params exist — so it arrives here as None on exactly the
+        # requests where the id is sitting in the path. Resolve it again now
+        # that the route has matched.
+        if lab_id is None:
+            params = request.scope.get("path_params") or {}
+            lab_id = params.get("lab_id")
+
+        # lab_id is null on a create. The row did not exist when the request
+        # arrived, so there is no path param to read, and its id is only in the
+        # response body — which would mean buffering every response to catch a
+        # handful of creates. Route, actor and time still answer "who made a
+        # lab, and when"; which one is then one query away.
+        body = getattr(request.state, "audit_body", None)
+
+        async with SessionLocal() as session:
+            await audit_mod.record(
+                session,
+                id=new_id(),
+                actor_id=getattr(user, "id", None),
+                actor_name=getattr(user, "username", "") or "",
+                via=getattr(user, "via", "human"),
+                method=request.method,
+                path=request.url.path,
+                route=template,
+                status=response.status_code,
+                lab_id=lab_id,
+                target_kind=_target_kind(template),
+                target_id=_target_id(request),
+                summary=audit_mod.summarise(request.method, template, response.status_code),
+                detail=audit_mod.redact(body) if body else {},
+                duration_ms=duration_ms,
+            )
+    except Exception:  # noqa: BLE001 - see docstring
+        return
+
+
+async def _prune_audit_forever() -> None:
+    """Drop audit entries past the retention window, hourly.
+
+    Runs once at startup as well, so a host that was down over the weekend
+    does not keep a fortnight of entries until the first hour elapses.
+    """
+    from labtris_api import audit
+    from labtris_api.db import SessionLocal
+
+    while True:
+        try:
+            async with SessionLocal() as session:
+                await audit.prune(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a failed prune must not end the loop
+            pass
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+
+
+def _actor_from_token(request):
+    """Actor straight from the signed token, with no database round-trip.
+
+    Returns something shaped like a User — id, username, via — or None when
+    there is no readable token.
+    """
+    from types import SimpleNamespace
+
+    from labtris_api.auth import SESSION_COOKIE, read_token
+
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        header = request.headers.get("authorization", "")
+        if header.lower().startswith("bearer "):
+            token = header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    claims = read_token(token)
+    if not claims:
+        return None
+    return SimpleNamespace(
+        id=claims.get("sub"),
+        username=claims.get("username") or "",
+        via="assistant" if claims.get("act") == "assistant" else "human",
+    )
+
+
+def _target_kind(template: str) -> str | None:
+    """Which kind of thing was acted on, from the route template."""
+    for kind in ("nodes", "links", "networks", "interfaces", "labs", "users",
+                 "templates", "images", "hosts", "tasks", "pods"):
+        if f"/{kind}" in template:
+            return kind.rstrip("s")
+    return None
+
+
+def _target_id(request) -> str | None:
+    """The most specific id in the path — the node rather than its lab."""
+    params = request.scope.get("path_params") or {}
+    for key in ("node_id", "link_id", "network_id", "iface_id", "user_id",
+                "task_id", "template_id", "host_id", "lab_id"):
+        if params.get(key):
+            return str(params[key])
+    return None
+
+
 async def _announce_topology_on_mutation(request, call_next):
     """Publish a "topology" event on every successful mutation so the
     browser's lab WebSocket picks up shape changes made by the AI, the
@@ -276,10 +430,17 @@ async def _announce_topology_on_mutation(request, call_next):
     if is_mutation and request.method == "DELETE":
         lab_id = await _resolve_lab_id(request)
 
+    started = time.monotonic()
     response = await call_next(request)
 
     if not is_mutation:
         return response
+
+    # Audited before the success check, deliberately: a refused operation is
+    # often the one worth looking at, and a log that only records what worked
+    # cannot answer "why did nothing happen when I clicked that".
+    await _audit(request, response, lab_id, int((time.monotonic() - started) * 1000))
+
     if not (200 <= response.status_code < 300):
         return response
     if lab_id is None:

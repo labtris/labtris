@@ -97,6 +97,29 @@ def _signed_in(request, monkeypatch):
         main.app.dependency_overrides.pop(dep, None)
 
 
+@pytest.fixture(autouse=True)
+async def _dispose_app_engine():
+    """Return the app's own pooled connections between tests.
+
+    Most suites override get_session with an engine they create inside their
+    own loop, but anything running outside the dependency graph — the audit
+    middleware, background tasks — uses labtris_api.db.engine directly. Its
+    pool then hands a connection created in one test's event loop to the next
+    test running in another, and asyncpg fails with "got Future attached to a
+    different loop" on whichever test happens to be second.
+
+    Disposing after each test costs a reconnect and removes a class of
+    failure that looks like a bug in whatever test drew the short straw.
+    """
+    yield
+    try:
+        from labtris_api.db import engine
+
+        await engine.dispose()
+    except Exception:  # noqa: BLE001 - teardown must not fail a passing test
+        pass
+
+
 @pytest.fixture
 def app():
     return create_app()

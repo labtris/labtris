@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     #: 20 + 30 is 50 at full stretch, against Postgres's default
     #: max_connections of 100, which leaves room for psql, labtris-user and a
     #: second process on the same database.
+    #: How many days of audit log to keep. The table records every mutation,
+    #: and on a host running thousands of nodes that grows fast — a 931-node
+    #: start is 931 entries on its own. A week is long enough to answer "what
+    #: changed since it last worked" and short enough to stay queryable.
+    #: 0 disables pruning, for anyone who would rather keep everything and
+    #: manage it themselves.
+    audit_retention_days: int = 7
     db_pool_size: int = 20
     db_max_overflow: int = 30
     netd_socket: str = "/run/labtris/netd.sock"
