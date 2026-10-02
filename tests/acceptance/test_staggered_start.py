@@ -123,7 +123,7 @@ async def test_a_low_memory_host_stops_starting_instead_of_being_oom_killed(
 
     nodes = [_FakeNode(f"n{i}") for i in range(10)]
     monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
-    done, failed = await tasks_mod._run_in_waves(  # noqa: SLF001
+    done, failed, reasons = await tasks_mod._run_in_waves(  # noqa: SLF001
         "t", "start_all", nodes, len(nodes),
         TaskIn(kind="start_all", min_free_mb=2048, batch=2, stagger_ms=0),
     )
@@ -155,7 +155,7 @@ async def test_a_node_that_will_not_start_does_not_abort_the_other_three_thousan
 
     nodes = [_FakeNode(f"n{i}") for i in range(6)]
     monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
-    done, failed = await tasks_mod._run_in_waves(  # noqa: SLF001
+    done, failed, reasons = await tasks_mod._run_in_waves(  # noqa: SLF001
         "t", "start_all", nodes, len(nodes),
         TaskIn(kind="start_all", min_free_mb=0, batch=2, stagger_ms=0),
     )
@@ -186,7 +186,7 @@ async def test_nodes_go_up_in_waves_not_one_at_a_time(monkeypatch) -> None:
 
     nodes = [_FakeNode(f"n{i}") for i in range(16)]
     monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
-    done, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
+    done, _, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
         "t", "start_all", nodes, len(nodes),
         TaskIn(kind="start_all", min_free_mb=0, batch=8, stagger_ms=0),
     )
@@ -215,7 +215,7 @@ async def test_the_floor_can_be_switched_off(monkeypatch) -> None:
     # Would stop everything if the floor were consulted at all.
     monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 1)
 
-    done, failed = await tasks_mod._run_in_waves(  # noqa: SLF001
+    done, failed, reasons = await tasks_mod._run_in_waves(  # noqa: SLF001
         "t", "start_all", nodes, len(nodes),
         TaskIn(kind="start_all", min_free_mb=0, batch=2, stagger_ms=0),
     )
@@ -271,7 +271,7 @@ async def test_a_huge_batch_cannot_drain_the_connection_pool(monkeypatch) -> Non
     monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
     monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
 
-    done, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
+    done, _, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
         "t", "start_all", nodes, len(nodes),
         TaskIn(kind="start_all", min_free_mb=0, batch=256, stagger_ms=0),
     )
@@ -280,3 +280,39 @@ async def test_a_huge_batch_cannot_drain_the_connection_pool(monkeypatch) -> Non
     assert done == 256, "every node still starts; only the width is capped"
     assert high_water <= budget, f"{high_water} in flight against a budget of {budget}"
     assert high_water < 256, "a batch of 256 must not put 256 sessions in flight"
+
+
+async def test_a_failure_reports_why_not_a_pointer_to_an_empty_field(monkeypatch) -> None:
+    """The first version counted failures and said "N failed (each node's
+    last_error says why)". start_node records last_error for a failure during
+    a start, but refuses outright for a node already in `starting` — before
+    there is anything to record. So a real run reported 6 failures while no
+    node carried an error, and the message sent you somewhere empty.
+    """
+    async def fake_start(session, node):  # noqa: ANN001
+        if node.id in ("n1", "n2"):
+            raise RuntimeError("node 'n1' is already starting")
+        raise RuntimeError("no such image: frr:bogus")
+
+    async def fake_progress(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        return None
+
+    nodes = [_FakeNode(f"n{i}") for i in range(5)]
+    monkeypatch.setattr(tasks_mod, "_set_progress", fake_progress)
+    monkeypatch.setattr(tasks_mod, "start_node", fake_start)
+    monkeypatch.setattr(tasks_mod, "_ordered_for_start", _identity)
+    monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
+    monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
+
+    done, failed, reasons = await tasks_mod._run_in_waves(  # noqa: SLF001
+        "t", "start_all", nodes, len(nodes),
+        TaskIn(kind="start_all", min_free_mb=0, batch=2, stagger_ms=0),
+    )
+
+    assert (done, failed) == (0, 5)
+    assert sum(reasons.values()) == 5
+    assert any("no such image" in why for why in reasons), reasons
+    # The node's own name is substituted out, so two nodes failing the same
+    # way count as one reason rather than two near-identical strings.
+    assert any("already starting" in why and "n1" not in why for why in reasons), reasons
+    assert len(reasons) == 2, reasons

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Response
@@ -108,13 +109,16 @@ async def _run_task(task_id: str, lab_id: str, kind: str, opts: TaskIn) -> None:
                 done += 1
                 await _set_progress(task_id, done, total, f"pulled {image}")
         elif kind in ("start_all", "stop_all"):
-            done, failed = await _run_in_waves(task_id, kind, nodes, total, opts)
+            done, failed, reasons = await _run_in_waves(task_id, kind, nodes, total, opts)
             if failed and not done:
                 await _finish(task_id, "failed", f"nothing {kind.split('_')[0]}ed; {failed} failed")
                 return
             note = f"{done} of {total}"
             if failed:
-                note += f", {failed} failed (each node's last_error says why)"
+                # The reasons themselves, commonest first — not a pointer to a
+                # field that may well be empty.
+                top = sorted(reasons.items(), key=lambda kv: -kv[1])[:3]
+                note += f", {failed} failed: " + "; ".join(f"{n}x {why}" for why, n in top)
             if done < total - failed:
                 note += f", {total - done - failed} not attempted — host was low on memory"
             await _finish(task_id, "done", note)
@@ -122,6 +126,10 @@ async def _run_task(task_id: str, lab_id: str, kind: str, opts: TaskIn) -> None:
         await _finish(task_id, "done", "complete")
     except Exception as exc:
         await _finish(task_id, "failed", str(exc))
+
+
+#: Grouping key for failure reasons — see _run_in_waves.
+_QUOTED = re.compile(r"'[^']*'")
 
 
 def _mem_available_mb() -> int | None:
@@ -167,7 +175,7 @@ async def _ordered_for_start(nodes: list[Node]) -> list[Node]:
 
 async def _run_in_waves(
     task_id: str, kind: str, nodes: list[Node], total: int, opts: TaskIn
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, int]]:
     """Start or stop in waves of `batch`, pausing `stagger_ms` between them."""
     starting = kind == "start_all"
     # Each node in flight holds a database session for as long as its start
@@ -182,11 +190,19 @@ async def _run_in_waves(
     ordered = await _ordered_for_start(nodes) if starting else list(nodes)
     done = 0
     failed = 0
+    #: Why nodes failed, counted by reason. The first version of this threw
+    #: the exception away and the task said "N failed (each node's last_error
+    #: says why)" — which was wrong: start_node records last_error for a
+    #: failure *during* a start, but refuses outright for a node already in
+    #: `starting`, before there is anything to record. So 6 nodes failed, no
+    #: node carried an error, and the message sent you somewhere empty.
+    reasons: dict[str, int] = {}
 
     async def one(node_id: str) -> bool:
         async with SessionLocal() as session:
             n = await session.get(Node, node_id)
             if n is None:
+                reasons["node deleted mid-run"] = reasons.get("node deleted mid-run", 0) + 1
                 return False
             try:
                 if starting:
@@ -194,11 +210,16 @@ async def _run_in_waves(
                 else:
                     await stop_node(session, n, StopMode.FORCE)
                 return True
-            except Exception:
+            except Exception as exc:
                 # One node that will not start is not a reason to abandon the
-                # other three thousand. start_node has already recorded the
-                # reason on the node itself, which is where someone looking at
-                # a half-up lab will go.
+                # other three thousand.
+                why = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+                # Any quoted identifier, not just this node's own name: the
+                # message may name a different node (a conflict names the one
+                # already starting), and substituting only n.name left two
+                # near-identical strings counted as two distinct reasons.
+                why = _QUOTED.sub("<node>", why)[:120]
+                reasons[why] = reasons.get(why, 0) + 1
                 return False
 
     for i in range(0, len(ordered), opts.batch):
@@ -230,7 +251,7 @@ async def _run_in_waves(
         if opts.stagger_ms and i + opts.batch < len(ordered):
             await asyncio.sleep(opts.stagger_ms / 1000)
 
-    return done, failed
+    return done, failed, reasons
 
 
 @router.post("/labs/{lab_id}/tasks", response_model=TaskOut, status_code=201)
