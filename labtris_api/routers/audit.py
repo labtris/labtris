@@ -109,6 +109,20 @@ async def audit_summary(
     ).scalar() or 0
     failed = (await session.execute(base.where(AuditEntry.status >= 400))).scalar() or 0
 
+    # Counted rather than inferred as total - by_assistant. A request that
+    # never authenticated is recorded with no actor at all, and folding those
+    # into "by people" tells the reader a person did something nobody did —
+    # on the one page whose whole job is saying who did what. They are
+    # usually refused sign-in attempts, which is worth seeing on its own.
+    anonymous = (
+        await session.execute(base.where(AuditEntry.actor_name == ""))
+    ).scalar() or 0
+    by_human = (
+        await session.execute(
+            base.where(AuditEntry.via == "human").where(AuditEntry.actor_name != "")
+        )
+    ).scalar() or 0
+
     top = (
         await session.execute(
             select(AuditEntry.route, func.count().label("n"))
@@ -123,7 +137,8 @@ async def audit_summary(
         "since_hours": since_hours,
         "total": total,
         "by_assistant": by_assistant,
-        "by_human": total - by_assistant,
+        "by_human": by_human,
+        "anonymous": anonymous,
         "failed": failed,
         "busiest": [{"route": r, "count": n} for r, n in top],
         "retention_days": settings.audit_retention_days,

@@ -71,6 +71,11 @@
     //: way to change their own password. Everyone gets it; what differs is
     //: which buttons are on it.
     { id: "users", label: "Users" },
+    //: Admin-only — unlike Users just above. The labs themselves are
+    //: deliberately visible to everyone, a shared workshop, but "what did
+    //: Alice do on Tuesday" is a different question. The server enforces it;
+    //: this only keeps a tab that could only say "forbidden" off the nav.
+    ...(currentUser?.is_admin ? [{ id: "audit", label: "Audit log" }] : []),
     { id: "host", label: "Host & diagnostics", badge: diagFailures },
     { id: "backup", label: "Backup & restore" },
   ]);
@@ -345,9 +350,54 @@
     }
   }
 
+//: Audit log.
+  let auditRows = $state(null);
+  let auditMeta = $state(null);
+  let auditSummary = $state(null);
+  let auditBusy = $state(false);
+  let auditErr = $state("");
+  let auditVia = $state("");
+  let auditFailures = $state(false);
+  let auditHours = $state(168);
+
+  async function loadAudit(more = false) {
+    auditBusy = true;
+    auditErr = "";
+    try {
+      const params = {
+        limit: 100,
+        via: auditVia || null,
+        since_hours: auditHours || null,
+        failures_only: auditFailures ? "true" : null,
+        before: more ? auditMeta?.next_before : null,
+      };
+      const r = await api.audit(params);
+      auditRows = more ? [...(auditRows ?? []), ...r.entries] : r.entries;
+      auditMeta = r;
+      if (!more) auditSummary = await api.auditSummary(auditHours);
+    } catch (e) {
+      auditErr = e.message;
+    } finally {
+      auditBusy = false;
+    }
+  }
+
+  //: Times are shown relative, because the question is almost always "how
+  //: long ago", and an ISO timestamp makes you do the subtraction yourself.
+  function ago(iso) {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return `${Math.floor(s)}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  }
+
   $effect(() => {
     if (section === "users" && users === null) {
       loadUsers();
+    }
+    if (section === "audit" && auditRows === null) {
+      loadAudit();
     }
   });
 
@@ -1019,6 +1069,107 @@
         </table>
       {/if}
 
+    {:else if section === "audit"}
+      <h4>Audit log</h4>
+      <p class="hint tiny">
+        Every operation that changed something, and who or what made it.
+        Reads are not recorded — there are orders of magnitude more of them,
+        and a log nobody can scan is a log nobody reads.
+      </p>
+
+      {#if auditSummary}
+        <div class="auditstats">
+          <div><strong>{auditSummary.total}</strong><span>changes</span></div>
+          <div><strong>{auditSummary.by_assistant}</strong><span>by the assistant</span></div>
+          <div><strong>{auditSummary.by_human}</strong><span>by people</span></div>
+          <div><strong>{auditSummary.failed}</strong><span>refused</span></div>
+          <!-- Only when there are any. A permanent "0 unattributed" invites
+               the reader to wonder what it would mean; a tile that appears
+               when it is not zero is the thing worth looking at. -->
+          {#if auditSummary.anonymous}
+            <div title="Requests that never signed in — usually refused sign-ins.">
+              <strong>{auditSummary.anonymous}</strong><span>unattributed</span>
+            </div>
+          {/if}
+        </div>
+        <p class="hint tiny">
+          Kept for {auditSummary.retention_days} day{auditSummary.retention_days === 1 ? "" : "s"}.
+          {#if auditSummary.oldest}
+            Oldest entry held is {ago(auditSummary.oldest)} —
+            {#if auditSummary.retention_days}
+              which is what the log can actually answer, whatever the window says.
+            {/if}
+          {:else}
+            Nothing recorded yet.
+          {/if}
+        </p>
+      {/if}
+
+      <div class="auditbar">
+        <label class="pick inline">
+          <span>show</span>
+          <select bind:value={auditVia} onchange={() => loadAudit()}>
+            <option value="">everything</option>
+            <option value="assistant">the assistant only</option>
+            <option value="human">people only</option>
+          </select>
+        </label>
+        <label class="pick inline">
+          <span>last</span>
+          <select bind:value={auditHours} onchange={() => loadAudit()}>
+            <option value={1}>hour</option>
+            <option value={24}>day</option>
+            <option value={168}>week</option>
+          </select>
+        </label>
+        <label class="opt">
+          <input type="checkbox" bind:checked={auditFailures} onchange={() => loadAudit()} />
+          <span>refused only</span>
+        </label>
+        <button class="ghost" disabled={auditBusy} onclick={() => loadAudit()}>Refresh</button>
+      </div>
+
+      {#if auditErr}
+        <p class="hint tiny danger-text">{auditErr}</p>
+      {/if}
+
+      {#if auditRows === null}
+        <p class="hint tiny">loading…</p>
+      {:else if auditRows.length === 0}
+        <p class="hint tiny">
+          Nothing in this window. Change something and it will appear here.
+        </p>
+      {:else}
+        <table class="users audit">
+          <thead>
+            <tr><th>when</th><th>who</th><th>what</th><th></th></tr>
+          </thead>
+          <tbody>
+            {#each auditRows as e (e.id)}
+              <tr class:failed={e.status >= 400}>
+                <td class="mono tiny" title={e.at}>{ago(e.at)}</td>
+                <td>
+                  {e.actor ?? "—"}
+                  {#if e.via === "assistant"}
+                    <!-- The badge only appears for the assistant. Marking
+                         every human row would be noise: the interesting
+                         rows are the ones a person did not do. -->
+                    <span class="viabadge">AI</span>
+                  {/if}
+                </td>
+                <td class="mono tiny">{e.summary}</td>
+                <td class="mono tiny">{e.duration_ms != null ? `${e.duration_ms}ms` : ""}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if auditMeta?.next_before}
+          <button class="ghost" disabled={auditBusy} onclick={() => loadAudit(true)}>
+            {auditBusy ? "Loading…" : "Load older"}
+          </button>
+        {/if}
+      {/if}
+
     {:else if section === "backup"}
     <h4>Backup</h4>
     <p class="tiny hintline">
@@ -1181,6 +1332,22 @@
   }
   .themebtn:hover { color: var(--text); background: var(--raise); }
   .themebtn.on { color: var(--accent); background: var(--raise); }
+  /* Audit */
+  .auditstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 6px; }
+  .auditstats div { border: 1px solid var(--stroke); border-radius: 6px; padding: 7px 9px; }
+  .auditstats strong { display: block; font-size: 17px; }
+  .auditstats span { font-size: 10px; color: var(--muted); }
+  .auditbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+  .pick.inline { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 12px; }
+  .pick.inline select { font-size: 12px; }
+  /* A refused row is the one worth finding, so it is tinted rather than left
+     to be spotted by reading every status column. */
+  .audit tr.failed td { background: color-mix(in srgb, var(--danger, #e5484d) 7%, transparent); }
+  .viabadge {
+    margin-left: 5px; padding: 0 5px; border-radius: 7px;
+    background: var(--accent, #35cdff); color: #04121a;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
+  }
   .opt { display: flex; align-items: center; gap: 9px; margin: 7px 0; font-size: 12.5px; }
   .opt input[type="checkbox"] { min-height: 0; }
   .problems { margin: 4px 0 12px; padding-left: 18px; font-size: 12.5px; color: var(--warn); }

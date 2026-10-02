@@ -150,6 +150,17 @@ export const api = {
     }),
   logout: () => req("/api/v1/auth/logout", { method: "POST", body: "{}" }),
   users: () => req("/api/v1/users"),
+  //: The audit log. Paged by the id of the oldest row you hold rather than an
+  //: offset: entries arrive while you are reading, and an offset page would
+  //: skip or repeat rows as the table grows underneath it.
+  audit: (params = {}) => {
+    const q = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== ""),
+    );
+    return req(`/api/v1/audit?${q}`);
+  },
+  auditSummary: (sinceHours = 24) =>
+    req(`/api/v1/audit/summary?since_hours=${sinceHours}`),
   addUser: (body) => req("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   deleteUser: (id) => req(`/api/v1/users/${id}`, { method: "DELETE" }),
   //: Your own needs the current password; an admin resetting someone

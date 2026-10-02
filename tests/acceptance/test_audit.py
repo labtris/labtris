@@ -180,3 +180,25 @@ async def test_the_prune_task_is_started_and_stopped() -> None:
         t for t in asyncio.all_tasks()
         if t.get_name() == "audit-prune" and not t.done() and not t.cancelled()
     ]
+
+
+async def test_the_summary_counts_actors_rather_than_inferring_them(client: AsyncClient) -> None:
+    """by_human was total - by_assistant, which quietly credited people with
+    work nobody did: a request that never authenticated is recorded with no
+    actor at all, and those landed in the "by people" tile. On the one page
+    whose job is saying who did what, an inferred number that can be wrong is
+    worse than a missing one."""
+    await client.post("/api/v1/labs", json={"name": f"sum-{ulid.new().str[-8:].lower()}"})
+
+    s = (await client.get("/api/v1/audit/summary", params={"since_hours": 24})).json()
+    assert s["by_human"] + s["by_assistant"] + s["anonymous"] == s["total"], (
+        "the three tiles must partition the total, or the page adds up to "
+        "something other than what it says happened"
+    )
+
+    #: And the lab just created is attributed to somebody, so by_human is
+    #: counting real rows rather than being zero for the wrong reason.
+    entries = (await client.get("/api/v1/audit", params={"limit": 50})).json()["entries"]
+    mine = next(e for e in entries if e["route"] == "/api/v1/labs" and e["method"] == "POST")
+    assert mine["actor"], "a mutation by a signed-in user recorded no actor"
+    assert s["by_human"] >= 1

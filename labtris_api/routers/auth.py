@@ -47,6 +47,12 @@ def _public(row: UserRow) -> dict[str, Any]:
         "username": row.username,
         "display_name": row.display_name or row.username,
         "role": row.role,
+        #: Derived rather than left to the caller. /auth/me sends it and the
+        #: UI gates on it, so a shape without it meant the Audit log tab was
+        #: missing for an admin who had just signed in — and present after a
+        #: reload, which is the kind of bug nobody reports because it looks
+        #: like they imagined it.
+        "is_admin": row.role == "admin",
         "disabled": row.disabled,
     }
 

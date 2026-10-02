@@ -197,3 +197,42 @@ async def test_a_password_change_is_refused_below_eight_characters(client) -> No
         assert r.status_code == 422, r.text
     finally:
         await client.delete(f"/api/v1/users/{created['id']}")
+
+
+async def test_every_user_shape_says_whether_they_are_an_admin(client) -> None:
+    """The sign-in response, the user list and /auth/me must agree.
+
+    They did not: /auth/me carried is_admin but the login response and the
+    user list did not, because both are built by one _public() helper that
+    sent `role` and nothing else. The UI gates the Audit log tab on is_admin,
+    so an admin who had just signed in did not get the tab — and did get it
+    after a reload, when /auth/me answered instead. A bug that fixes itself
+    on refresh is one nobody can report.
+    """
+    name = f"adm-{ulid.new().str[-6:]}"
+    created = (
+        await client.post(
+            "/api/v1/users",
+            json={"username": name, "password": "a-password", "role": "admin"},
+        )
+    ).json()["user"]
+    assert created["is_admin"] is True, "the create response hid it"
+
+    signed_in = await client.post(
+        "/api/v1/auth/login", json={"username": name, "password": "a-password"}
+    )
+    assert signed_in.json()["user"]["is_admin"] is True, "the login response hid it"
+
+    listed = (await client.get("/api/v1/users")).json()["users"]
+    mine = next(u for u in listed if u["id"] == created["id"])
+    assert mine["is_admin"] is True, "the user list hid it"
+
+    #: And a plain user is not quietly promoted by the same field.
+    other = f"usr-{ulid.new().str[-6:]}"
+    plain = (
+        await client.post(
+            "/api/v1/users",
+            json={"username": other, "password": "a-password", "role": "user"},
+        )
+    ).json()["user"]
+    assert plain["is_admin"] is False
