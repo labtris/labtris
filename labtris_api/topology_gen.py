@@ -289,21 +289,51 @@ def _frr_installer(daemons: str, frr_conf: str, pre: str = '') -> str:
 set -e
 {pre}
 mkdir -p /etc/frr
-cat > /etc/frr/daemons <<'EOF_DAEMONS'
+cat > /etc/frr/daemons.new <<'EOF_DAEMONS'
 {daemons}
 EOF_DAEMONS
 cat > /etc/frr/frr.conf <<'EOF_FRR'
 {frr_conf}
 EOF_FRR
 chown -R frr:frr /etc/frr 2>/dev/null || true
-# Restart rather than reload, and unconditionally. The frrouting/frr image
-# runs `frrinit.sh start` as its entrypoint, so by the time this script
-# lands zebra is already up — started from a daemons file that still said
-# bgpd=no. Against that half-running FRR `start` is a no-op and bgpd never
-# launches, which looks like a fabric that generates correct config and
-# then never converges. There is no watchfrr in this image to HUP either.
-# Only restart re-reads the daemons file.
-/usr/lib/frr/frrinit.sh restart
+
+# Restart only when a restart is actually required; otherwise reload.
+#
+# This was an unconditional `frrinit.sh restart`, for a good reason: the image
+# entrypoint runs `frrinit.sh start` against a daemons file that still says
+# bgpd=no, so `start` is a no-op, bgpd never launches, and the fabric
+# generates correct config and never converges. Only a restart re-reads the
+# daemons file.
+#
+# But restarting is catastrophic on a fabric that has already converged. It
+# drops every session on the node, and each drop is seen by all its peers,
+# which re-advertise to theirs. On a k=22 fat tree one edge restart touches
+# roughly 253 adjacencies, so applying config to 242 edges sixteen at a time
+# put about 4000 adjacency events in flight and pinned all 24 cores for long
+# enough to starve sshd off the box.
+#
+# A restart is only needed when the daemons file itself changed — which is
+# true on the first apply and false on every one after it. So compare, and
+# reload when the daemon set is unchanged. `reload` runs frr-reload.py, which
+# diffs the running config against the new one and applies only the
+# difference: no session teardown, no reconvergence.
+NEED_RESTART=no
+if ! /usr/lib/frr/frrinit.sh status >/dev/null 2>&1; then
+  # Nothing running to reload into.
+  NEED_RESTART=yes
+elif ! cmp -s /etc/frr/daemons.new /etc/frr/daemons 2>/dev/null; then
+  NEED_RESTART=yes
+fi
+mv -f /etc/frr/daemons.new /etc/frr/daemons
+chown frr:frr /etc/frr/daemons 2>/dev/null || true
+if [ "$NEED_RESTART" = yes ]; then
+  /usr/lib/frr/frrinit.sh restart
+elif ! /usr/lib/frr/frrinit.sh reload; then
+  # frr-reload.py refuses changes it cannot express incrementally. Falling
+  # back is correct but expensive, so it says so rather than doing it quietly.
+  echo "reload declined the diff; restarting instead" >&2
+  /usr/lib/frr/frrinit.sh restart
+fi
 """
 
 
