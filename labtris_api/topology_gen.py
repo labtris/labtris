@@ -371,6 +371,8 @@ router bgp 65000
  bgp bestpath as-path multipath-relax
 {ifaces}
  !
+{_IPV4_UNDERLAY}
+ !
  address-family l2vpn evpn
 {ifaces_evpn}
   advertise-all-vni
@@ -413,6 +415,8 @@ router bgp {asn}
  bgp router-id {router_id}
 {ifaces}
  !
+{_IPV4_UNDERLAY}
+ !
  address-family l2vpn evpn
 {ifaces_evpn}
   advertise-all-vni
@@ -443,6 +447,8 @@ router bgp {asn}
  bgp router-id {router_id}
  neighbor eth0 interface remote-as {asn}
  !
+{_IPV4_UNDERLAY}
+ !
  address-family l2vpn evpn
   neighbor eth0 activate
  exit-address-family
@@ -450,6 +456,30 @@ router bgp {asn}
 line vty
 !
 """
+
+
+#: Advertise the loopback into the underlay.
+#:
+#: Every tier had `interface lo` with a /32, BGP neighbours and an l2vpn evpn
+#: block — and no `address-family ipv4 unicast` at all. Sessions still came up,
+#: because `frr defaults datacenter` activates peers for ipv4 unicast, so a
+#: 3267-node fabric reported 22 established peers per switch and looked
+#: healthy while every one of them said:
+#:
+#:   BGP table version 0
+#:   RIB entries 0, using 0 bytes of memory
+#:   ... State/PfxRcd 0   PfxSnt 0
+#:
+#: Nothing was ever originated, so the underlay carried no routes at all and
+#: `show ip route summary` was one connected route and nothing else.
+#:
+#: redistribute connected rather than a `network` statement: the loopback
+#: address differs per node and is already in the config above, so there is no
+#: second place to keep in step.
+_IPV4_UNDERLAY = """\
+ address-family ipv4 unicast
+  redistribute connected
+ exit-address-family"""
 
 
 def _fattree_core_frr_conf(idx: int, k: int) -> str:
@@ -478,6 +508,8 @@ router bgp 65000
  bgp router-id {router_id}
  bgp bestpath as-path multipath-relax
 {ifaces}
+ !
+{_IPV4_UNDERLAY}
  !
  address-family l2vpn evpn
 {ifaces_evpn}
@@ -524,6 +556,8 @@ router bgp {asn}
 {up}
 {down}
  !
+{_IPV4_UNDERLAY}
+ !
  address-family l2vpn evpn
 {ifaces_evpn}
   advertise-all-vni
@@ -560,6 +594,8 @@ interface lo
 router bgp {asn}
  bgp router-id {router_id}
 {up}
+ !
+{_IPV4_UNDERLAY}
  !
  address-family l2vpn evpn
 {up_evpn}
@@ -600,6 +636,8 @@ router bgp {asn}
  bgp router-id {router_id}
  bgp bestpath as-path multipath-relax
 {ifaces}
+ !
+{_IPV4_UNDERLAY}
  !
  address-family l2vpn evpn
 {ifaces_evpn}
