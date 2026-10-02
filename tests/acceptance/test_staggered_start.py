@@ -31,6 +31,10 @@ async def _identity(nodes):  # noqa: ANN001, ANN201
     return list(nodes)
 
 
+async def _noop(*a, **k):  # noqa: ANN002, ANN003, ANN201
+    return None
+
+
 class _FakeSession:
     """Stands in for the session _run_in_waves opens per node.
 
@@ -316,3 +320,111 @@ async def test_a_failure_reports_why_not_a_pointer_to_an_empty_field(monkeypatch
     # way count as one reason rather than two near-identical strings.
     assert any("already starting" in why and "n1" not in why for why in reasons), reasons
     assert len(reasons) == 2, reasons
+
+
+async def test_apply_configs_pushes_and_runs_the_startup_config(monkeypatch) -> None:
+    """`generate --with-bgp-evpn` wrote each node a config and stopped there:
+    applying it was push + exec, two manual calls per node. On a 3267-node fat
+    tree that is 6534 operations, so in practice the fabric came up with
+    bgpd=no everywhere and `show bgp summary` said "bgpd is not running".
+    """
+    pushed: list[tuple[str, str]] = []
+    ran: list[str] = []
+
+    class FakeRuntime:
+        async def write_file(self, h, path, content):  # noqa: ANN001, ANN202
+            pushed.append((h.node_id, path))
+
+        async def exec_shell(self, h, command):  # noqa: ANN001, ANN202
+            ran.append(command)
+            return 0, ""
+
+    class Node:
+        def __init__(self, nid: str) -> None:
+            self.id = nid
+            self.name = nid
+            self.startup_config = "#!/bin/sh\necho hi\n"
+            self.state = "running"
+            self.runtime_ref = f"ref-{nid}"
+            self.runtime = "docker"
+
+    nodes = [Node(f"n{i}") for i in range(4)]
+    monkeypatch.setattr(tasks_mod, "get_runtime", lambda kind: FakeRuntime())
+    monkeypatch.setattr(tasks_mod, "_set_progress", _noop)
+    monkeypatch.setattr(tasks_mod, "_ordered_for_start", _identity)
+    monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
+    monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
+
+    done, failed, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
+        "t", "apply_configs", nodes, len(nodes),
+        TaskIn(kind="apply_configs", min_free_mb=0, batch=2, stagger_ms=0),
+    )
+
+    assert (done, failed) == (4, 0)
+    assert len(pushed) == 4
+    assert all(p[1] == "/config/startup-config" for p in pushed)
+    assert ran == ["sh /config/startup-config"] * 4, ran
+
+
+async def test_a_config_that_fails_to_apply_is_reported_not_silently_skipped(
+    monkeypatch,
+) -> None:
+    """A non-zero exit from the install script means the node is running FRR
+    with whatever it had before — which looks identical to success unless the
+    rc is checked."""
+    class FakeRuntime:
+        async def write_file(self, h, path, content):  # noqa: ANN001, ANN202
+            return None
+
+        async def exec_shell(self, h, command):  # noqa: ANN001, ANN202
+            return 1, "vtysh: syntax error at line 4"
+
+    class Node:
+        def __init__(self, nid: str) -> None:
+            self.id = nid
+            self.name = nid
+            self.startup_config = "x"
+            self.state = "running"
+            self.runtime_ref = f"ref-{nid}"
+            self.runtime = "docker"
+
+    nodes = [Node("n0"), Node("n1")]
+    monkeypatch.setattr(tasks_mod, "get_runtime", lambda kind: FakeRuntime())
+    monkeypatch.setattr(tasks_mod, "_set_progress", _noop)
+    monkeypatch.setattr(tasks_mod, "_ordered_for_start", _identity)
+    monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
+    monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
+
+    done, failed, reasons = await tasks_mod._run_in_waves(  # noqa: SLF001
+        "t", "apply_configs", nodes, len(nodes),
+        TaskIn(kind="apply_configs", min_free_mb=0, batch=2, stagger_ms=0),
+    )
+
+    assert (done, failed) == (0, 2)
+    assert any("syntax error" in why for why in reasons), reasons
+
+
+async def test_a_node_with_no_config_is_not_a_failure(monkeypatch) -> None:
+    """A plain alpine host in a generated fabric has no startup-config, and
+    counting it as failed would make every mixed lab look broken."""
+    class Node:
+        def __init__(self, nid: str) -> None:
+            self.id = nid
+            self.name = nid
+            self.startup_config = None
+            self.state = "running"
+            self.runtime_ref = "r"
+            self.runtime = "docker"
+
+    nodes = [Node("h0"), Node("h1")]
+    monkeypatch.setattr(tasks_mod, "_set_progress", _noop)
+    monkeypatch.setattr(tasks_mod, "_ordered_for_start", _identity)
+    monkeypatch.setattr(tasks_mod, "SessionLocal", _fake_sessions(nodes))
+    monkeypatch.setattr(tasks_mod, "_mem_available_mb", lambda: 999_999)
+
+    done, failed, _ = await tasks_mod._run_in_waves(  # noqa: SLF001
+        "t", "apply_configs", nodes, len(nodes),
+        TaskIn(kind="apply_configs", min_free_mb=0, batch=2, stagger_ms=0),
+    )
+
+    assert (done, failed) == (2, 0)

@@ -11,13 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from labtris_api.auth import get_current_user
 from labtris_api.config import settings
 from labtris_api.db import SessionLocal, get_session
-from labtris_api.errors import not_found
+from labtris_api.errors import conflict, not_found, runtime_error
 from labtris_api.lifecycle import get_lab, new_id, start_node, stop_node
 from labtris_api.models import Interface, Node, Task
-from labtris_api.runtime.base import StopMode
+from labtris_api.runtime.base import RuntimeHandle, StopMode
 from labtris_api.runtime.docker import _docker as _new_docker_client
 from labtris_api.runtime.docker import docker_runtime
 from labtris_api.runtime.qemu import _resolve_base_image, image_status
+from labtris_api.runtime.registry import get_runtime
 from labtris_api.schemas import TaskIn, TaskOut
 
 router = APIRouter(tags=["tasks"])
@@ -108,6 +109,14 @@ async def _run_task(task_id: str, lab_id: str, kind: str, opts: TaskIn) -> None:
                         await docker.close()
                 done += 1
                 await _set_progress(task_id, done, total, f"pulled {image}")
+        elif kind == "apply_configs":
+            done, failed, reasons = await _run_in_waves(task_id, kind, nodes, total, opts)
+            note = f"{done} of {total} configured"
+            if failed:
+                top = sorted(reasons.items(), key=lambda kv: -kv[1])[:3]
+                note += f", {failed} failed: " + "; ".join(f"{n}x {why}" for why, n in top)
+            await _finish(task_id, "done" if done else "failed", note)
+            return
         elif kind in ("start_all", "stop_all"):
             done, failed, reasons = await _run_in_waves(task_id, kind, nodes, total, opts)
             if failed and not done:
@@ -173,11 +182,39 @@ async def _ordered_for_start(nodes: list[Node]) -> list[Node]:
     return sorted(nodes, key=lambda n: (-degree.get(n.id, 0), n.name))
 
 
+async def _apply_config(session: AsyncSession, node: Node) -> bool:
+    """Push the node's startup-config and run it, which is what makes a
+    generated EVPN fabric actually route.
+
+    `labtris lab generate --with-bgp-evpn` writes each node a startup-config
+    and stopped there: applying it was two manual calls per node, push then
+    exec. On a 3267-node fat tree that is 6534 operations, so in practice the
+    fabric came up with bgpd=no everywhere and `show bgp summary` answered
+    "bgpd is not running" — the generator advertised an EVPN underlay and
+    produced one that was not running any.
+    """
+    if not node.startup_config:
+        return True  # nothing to apply is not a failure
+    if node.state != "running" or not node.runtime_ref:
+        raise conflict(f"node {node.name!r} must be running to configure")
+    runtime = get_runtime(node.runtime)
+    handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
+    await runtime.write_file(handle, "/config/startup-config", node.startup_config)
+    # The config is a self-installing script: it writes /etc/frr/daemons and
+    # frr.conf, then restarts FRR so the daemons the image shipped disabled
+    # are actually running.
+    rc, out = await runtime.exec_shell(handle, "sh /config/startup-config")
+    if rc != 0:
+        raise runtime_error(f"applying config failed (rc={rc}): {out[-200:]}")
+    return True
+
+
 async def _run_in_waves(
     task_id: str, kind: str, nodes: list[Node], total: int, opts: TaskIn
 ) -> tuple[int, int, dict[str, int]]:
-    """Start or stop in waves of `batch`, pausing `stagger_ms` between them."""
+    """Start, stop or configure in waves of `batch`, pausing between them."""
     starting = kind == "start_all"
+    applying = kind == "apply_configs"
     # Each node in flight holds a database session for as long as its start
     # takes, so an unbounded wave can drain the pool and starve the HTTP
     # handlers — which is how a large batch first showed up: not as a slow
@@ -187,7 +224,11 @@ async def _run_in_waves(
     # taking all of it however large a batch someone asks for.
     budget = max(1, (settings.db_pool_size + settings.db_max_overflow) // 2)
     width = min(opts.batch, budget)
-    ordered = await _ordered_for_start(nodes) if starting else list(nodes)
+    # Configuring follows the same order as starting: a leaf that comes up
+    # before its spine has nobody to peer with, and the same is true of a leaf
+    # that is *configured* first — it spends the convergence waiting on BGP's
+    # retry timer instead of on the rollout.
+    ordered = await _ordered_for_start(nodes) if (starting or applying) else list(nodes)
     done = 0
     failed = 0
     #: Why nodes failed, counted by reason. The first version of this threw
@@ -205,6 +246,8 @@ async def _run_in_waves(
                 reasons["node deleted mid-run"] = reasons.get("node deleted mid-run", 0) + 1
                 return False
             try:
+                if applying:
+                    return await _apply_config(session, n)
                 if starting:
                     await start_node(session, n)
                 else:
@@ -223,7 +266,7 @@ async def _run_in_waves(
                 return False
 
     for i in range(0, len(ordered), opts.batch):
-        if starting and opts.min_free_mb:
+        if (starting or applying) and opts.min_free_mb:
             free = _mem_available_mb()
             if free is not None and free < opts.min_free_mb:
                 await _set_progress(

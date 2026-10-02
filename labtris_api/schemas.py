@@ -502,7 +502,7 @@ class TaskOut(ORMModel):
 
 
 class TaskIn(BaseModel):
-    kind: Literal["pull_images", "start_all", "stop_all"]
+    kind: Literal["pull_images", "start_all", "stop_all", "apply_configs"]
 
     #: start_all/stop_all. How many nodes to bring up at once, and how long
     #: to wait between waves — the stagger.
