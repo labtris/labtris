@@ -989,7 +989,32 @@
             <tr><td class="lbl">qemu</td><td class="mono tiny">{diag.qemu}</td></tr>
             <tr><td class="lbl">docker</td><td class="mono tiny">{diag.docker?.version ?? "unreachable"}</td></tr>
             <tr><td class="lbl">database</td><td class="mono tiny">migration {diag.database?.migration} · {diag.database?.labs} labs, {diag.database?.nodes} nodes</td></tr>
-            <tr><td class="lbl">ksm</td><td class="mono tiny">{diag.ksm?.enabled ? "on" : "off"} · scan {diag.ksm?.pages_to_scan}</td></tr>
+            <!--
+              "on · scan 1250" threw away the only numbers anyone wants: how
+              much memory dedup is actually saving, and whether container
+              nodes are included at all. The API has returned ratio, saved_gb
+              and containers_included all along — a host could show "on" while
+              merging nothing, which is exactly how the container gap went
+              unnoticed for so long.
+            -->
+            <tr>
+              <td class="lbl">memory dedup</td>
+              <td class="mono tiny">
+                {#if !diag.ksm?.available}
+                  unavailable — {diag.ksm?.note ?? "no KSM in this kernel"}
+                {:else if !diag.ksm?.enabled}
+                  off — a lab host wastes most of its memory this way
+                {:else}
+                  {#if diag.ksm?.ratio}
+                    <strong>{diag.ksm.ratio}:1</strong> · {diag.ksm.saved_gb} GB saved
+                  {:else}
+                    on, nothing merged yet
+                  {/if}
+                  · {diag.ksm?.containers_included ? "qemu + containers" : "qemu only"}
+                  · scan {diag.ksm?.pages_to_scan}/{diag.ksm?.sleep_millisecs}ms
+                {/if}
+              </td>
+            </tr>
           </tbody>
         </table>
       {/if}
