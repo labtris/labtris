@@ -905,9 +905,11 @@
               <tr>
                 <td class="mono">{u.username}{u.id === currentUser?.id ? " (you)" : ""}</td>
                 <td>{u.display_name || ""}</td>
-                <td>
-                  {u.role}{u.is_admin ? " · admin" : ""}
-                </td>
+                <!-- Just the role. is_admin is derived from role == "admin",
+                     so appending it here could only ever render "admin · admin"
+                     or nothing — it was written when is_admin was missing from
+                     this payload altogether and so never rendered at all. -->
+                <td>{u.role}</td>
                 <td class="row-actions">
                   {#if currentUser?.is_admin || u.id === currentUser?.id}
                     <button class="ghost" disabled={usersBusy} onclick={() => startPassword(u)}>Password</button>
@@ -1333,7 +1335,13 @@
   .themebtn:hover { color: var(--text); background: var(--raise); }
   .themebtn.on { color: var(--accent); background: var(--raise); }
   /* Audit */
-  .auditstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 6px; }
+  /* auto-fit rather than a fixed 4, because the unattributed tile only
+     appears when there is something unattributed — pinned at 4 columns
+     it dropped onto a row of its own with three empty cells beside it. */
+  .auditstats {
+    display: grid; gap: 8px; margin: 10px 0 6px;
+    grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+  }
   .auditstats div { border: 1px solid var(--stroke); border-radius: 6px; padding: 7px 9px; }
   .auditstats strong { display: block; font-size: 17px; }
   .auditstats span { font-size: 10px; color: var(--muted); }
