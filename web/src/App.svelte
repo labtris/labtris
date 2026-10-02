@@ -3187,6 +3187,43 @@
     return items;
   }
 
+//: Which palette sections are open.
+  //:
+  //: The palette is one long scroll, and a QEMU image card is five or six
+  //: lines once it carries a version picker, its specs, a download state and
+  //: its default login — so about three items fit on screen at a time and
+  //: everything else is below the fold. Someone wiring a topology wants the
+  //: networks; someone adding a VM wants the images; nobody wants both at
+  //: once, and scrolling past the one to reach the other is the whole
+  //: complaint.
+  //:
+  //: Sections rather than tabs: a tab would hide a drop target completely,
+  //: and dragging a bridge onto the canvas and then a node onto it is one
+  //: motion. Collapsed sections keep their header visible, so the thing you
+  //: are not using costs one line instead of a screen.
+  const PAL_SECTIONS = ["networks", "qemu", "catalog", "any", "templates"];
+  let palOpen = $state(loadPalOpen());
+
+  function loadPalOpen() {
+    const dflt = { networks: true, qemu: true, catalog: true, any: true, templates: true };
+    try {
+      const raw = localStorage.getItem("labtris.palette.open");
+      return raw ? { ...dflt, ...JSON.parse(raw) } : dflt;
+    } catch {
+      //: A blocked or full localStorage must not cost you the palette.
+      return dflt;
+    }
+  }
+
+  function togglePal(key) {
+    palOpen = { ...palOpen, [key]: !palOpen[key] };
+    try {
+      localStorage.setItem("labtris.palette.open", JSON.stringify(palOpen));
+    } catch {
+      /* not worth telling anyone about */
+    }
+  }
+
   function startEdit(mode) {
     const modes = {
       rename: { prompt: "Rename to", value: lab?.name ?? "", placeholder: "lab name" },
@@ -4345,12 +4382,16 @@
         placeholder="filter images and networks…"
       />
       {#if palMatch("internal bridge cloud network segment host nic")}
-        <h3>
-          Networks
+        <h3 class="palhead">
+          <button class="paltoggle" onclick={() => togglePal("networks")} aria-expanded={palOpen.networks}>
+            <span class="chev" class:open={palOpen.networks}>›</span>
+            Networks
+          </button>
           <Hint
             text="Drop a segment on the canvas, then drag a node's link handle onto it. A bridge joins nodes to each other; a cloud enslaves one of this host's NICs so the lab can reach outside. One NIC can back only one cloud."
           />
         </h3>
+        {#if palOpen.networks}
       <div
         class="kind"
         draggable="true"
@@ -4391,14 +4432,20 @@
           <div class="mono tiny">bridges to a real interface</div>
         </div>
       </div>
+        {/if}
       {/if}
       {#if qemuFamilies.filter(familyMatches).length}
-        <h3>
-          QEMU images
+        <h3 class="palhead">
+          <button class="paltoggle" onclick={() => togglePal("qemu")} aria-expanded={palOpen.qemu}>
+            <span class="chev" class:open={palOpen.qemu}>›</span>
+            QEMU images
+            <span class="palcount">{qemuFamilies.filter(familyMatches).length}</span>
+          </button>
           <Hint
             text="Real VMs, software-emulated (TCG) on this host. Where an OS ships several releases, pick the version from the dropdown before dragging. Cloud images are a tenth the size of a desktop install, boot in seconds and already have a serial console; desktop images are multi-GB and want VNC."
           />
         </h3>
+        {#if palOpen.qemu}
         {#each qemuFamilies.filter(familyMatches) as fam (fam.key)}
           {@const q = fam.chosen}
           <div
@@ -4459,11 +4506,21 @@
             </div>
           </div>
         {/each}
+        {/if}
       {/if}
       {#if palKinds.length}
-        <h3>Node catalog</h3>
-        <p class="hint">Drag any image onto the canvas. No templates required.</p>
+        <h3 class="palhead">
+          <button class="paltoggle" onclick={() => togglePal("catalog")} aria-expanded={palOpen.catalog}>
+            <span class="chev" class:open={palOpen.catalog}>›</span>
+            Node catalog
+            <span class="palcount">{palKinds.length}</span>
+          </button>
+        </h3>
+        {#if palOpen.catalog}
+          <p class="hint">Drag any image onto the canvas. No templates required.</p>
+        {/if}
       {/if}
+      {#if palOpen.catalog}
       {#each palKinds as k}
         {@const dCat = dockerCatalogImages.find((i) => i.image === k.image)}
         {@const uncached = dCat && dCat.cached === false && !pullingDockerImages[k.image]}
@@ -4508,6 +4565,7 @@
           {/if}
         </div>
       {/each}
+      {/if}
       <h3>Any image</h3>
       <input bind:value={customImage} placeholder="nginx:alpine" class="mono" />
       <input bind:value={customName} placeholder="optional name prefix" />
@@ -6881,6 +6939,28 @@
   .composer-el { color: var(--muted); margin-bottom: 5px; word-break: break-all; }
   .composer-ctx { color: var(--muted); margin: 5px 0; line-height: 1.4; }
   .themepick { font-size: 11px; padding: 4px 6px; }
+  /* Section headers are buttons now. They have to look like the headings they
+     replaced, not like controls — a palette full of buttons reads as noise. */
+  .palhead { display: flex; align-items: center; gap: 6px; }
+  .paltoggle {
+    display: flex; align-items: center; gap: 6px;
+    flex: 1; min-width: 0;
+    background: none; border: 0; padding: 0;
+    font: inherit; color: inherit; text-align: left; cursor: pointer;
+  }
+  .paltoggle:hover .chev { color: var(--fg); }
+  .chev {
+    display: inline-block; width: 10px;
+    color: var(--muted); transition: transform 120ms ease;
+  }
+  .chev.open { transform: rotate(90deg); }
+  /* The count is what makes a collapsed section worth collapsing: you can see
+     there are eleven images in there without opening it. */
+  .palcount {
+    margin-left: auto; padding: 0 5px;
+    border-radius: 7px; background: var(--panel-2, var(--panel));
+    color: var(--muted); font-size: 10px; font-weight: 500;
+  }
   .palfilter { width: 100%; margin-bottom: 10px; font-size: 12px; }
   table.tc { width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 11px; }
   table.tc th { color: var(--muted); font-weight: 500; text-align: right; padding: 2px 4px; }
