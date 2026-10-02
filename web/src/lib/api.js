@@ -326,6 +326,11 @@ export const api = {
     req(`/api/v1/labs/${labId}/ai`, { method: "POST", body: JSON.stringify({ message }) }),
 
   renameLab: (id, body) => req(`/api/v1/labs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  //: Nodes have always been renameable through the API; only the
+  //: interface had no way to ask. Same PATCH that carries env, cmd and
+  //: the resource limits.
+  patchNode: (id, body) =>
+    req(`/api/v1/nodes/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   lockLab: (id) => req(`/api/v1/labs/${id}/lock`, { method: "POST" }),
   unlockLab: (id) => req(`/api/v1/labs/${id}/unlock`, { method: "POST" }),
   importLab: (payload) =>

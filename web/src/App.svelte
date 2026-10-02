@@ -1083,7 +1083,10 @@
     //: folklore.
     if (e.key === "F2" && lab && !lab.locked) {
       e.preventDefault();
-      startEdit("rename");
+      //: F2 renames whatever is selected, which is what every file manager
+      //: does. With a node selected that is the node; with nothing selected
+      //: it falls back to the lab, which is what F2 did before.
+      startEdit(selected ? "rename-node" : "rename");
       return;
     }
     if (e.key === "Escape") {
@@ -1750,6 +1753,7 @@
         { sep: true },
         { label: "Config", glyph: "≡", run: openConfig },
         { label: "Logs", glyph: "☰", run: openLogs },
+        { label: "Rename…", glyph: "✎", hint: "F2", run: () => startEdit("rename-node") },
         { label: "RAM / vCPU…", glyph: "⚙", run: editSize },
         ...(node.runtime === "qemu"
           ? [{ label: "Machine options…", glyph: "🖧", run: openQemuOptions }]
@@ -3189,6 +3193,15 @@
       move: { prompt: "Move to folder", value: lab?.folder ?? "", placeholder: "CCNA/Week 1 — empty for the root" },
       clone: { prompt: "Duplicate as", value: `${lab?.name ?? "lab"} copy`, placeholder: "name for the copy" },
       create: { prompt: "New lab", value: "", placeholder: "lab name" },
+      //: Node rename. The API has always taken a name on PATCH /nodes/{id};
+      //: the interface simply never asked, so a node called "h-1-1-1" stayed
+      //: that way for the life of the lab while the lab around it could be
+      //: renamed with F2. Same dialog, so the two behave alike.
+      "rename-node": {
+        prompt: "Rename node to",
+        value: selectedNode?.name ?? "",
+        placeholder: "node name",
+      },
     };
     edit = { mode, ...modes[mode] };
   }
@@ -3199,7 +3212,13 @@
     const name = value.trim();
     edit = null;
     try {
-      if (mode === "rename" && name) {
+      if (mode === "rename-node" && name) {
+        //: The node keeps its id, so nothing that points at it breaks — the
+        //: name is a label, and links, interfaces and configs all reference
+        //: the id.
+        await api.patchNode(selected, { name });
+        await loadLab(lab.id, true);
+      } else if (mode === "rename" && name) {
         await api.renameLab(lab.id, { name });
         await refreshLabs();
         await loadLab(lab.id, true);
