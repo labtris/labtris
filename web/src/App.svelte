@@ -3515,7 +3515,8 @@
     busy = true;
     taskProgress = { kind, progress: 0, total: 0, status: "pending" };
     try {
-      const task = await api.createTask(lab.id, kind);
+      const { batch, stagger_ms } = PACES[pace] ?? PACES.paced;
+      const task = await api.createTask(lab.id, kind, { batch, stagger_ms });
       for (let i = 0; i < 100; i++) {
         const got = await api.task(task.id);
         taskProgress = got;
@@ -4085,6 +4086,24 @@
   //: buttons; it is one action and a checkbox, because "queued" is a property
   //: of how you start, not a different thing to start.
   let queuedBulk = $state(false);
+  //: How hard to push when starting a whole lab.
+  //:
+  //: This was a single "Start one at a time (queued)" checkbox, and after the
+  //: task runner learned to start in waves that label was simply false — the
+  //: default became eight at a time. Worse, one setting cannot serve both
+  //: cases: a cold lab wants to go as fast as the host allows, and a large
+  //: converged fabric wants room to settle between waves, because restarting
+  //: a routing daemon disturbs every peer it has.
+  //:
+  //: Named for what they are for, not for their numbers, with the numbers
+  //: shown so nobody has to guess what "gentle" means.
+  const PACES = {
+    quick: { batch: 16, stagger_ms: 150, label: "Quick", hint: "16 at a time, 150ms apart — a cold lab on an idle host" },
+    paced: { batch: 8, stagger_ms: 250, label: "Paced", hint: "8 at a time, 250ms apart — the default, fine for most labs" },
+    gentle: { batch: 4, stagger_ms: 10000, label: "Gentle", hint: "4 at a time, 10s apart — large fabrics, or anything already converged" },
+    single: { batch: 1, stagger_ms: 1000, label: "One at a time", hint: "strictly sequential — slowest, and the easiest to watch" },
+  };
+  let pace = $state("paced");
 
   async function restartSelected() {
     if (!selected) return;
@@ -5332,12 +5351,37 @@
               {/if}
               <label class="opt">
                 <input type="checkbox" bind:checked={queuedBulk} />
-                <span>Start one at a time (queued)</span>
+                <span>Start in the background (queued)</span>
               </label>
               <p class="hint tiny">
                 Queued runs in the background with a progress bar, which is what you want
                 once a lab is large enough that starting it takes a while.
               </p>
+              {#if queuedBulk}
+                <label class="opt pace">
+                  <span>Pace</span>
+                  <select bind:value={pace}>
+                    {#each Object.entries(PACES) as [key, p]}
+                      <option value={key}>{p.label}</option>
+                    {/each}
+                  </select>
+                </label>
+                <p class="hint tiny">{PACES[pace].hint}</p>
+                {#if pace === "quick"}
+                  <p class="hint tiny">
+                    Starting a node is a container create, a netns, veth pairs and
+                    whatever runs inside. Too many at once buries the runtime and
+                    nodes start failing for reasons that have nothing to do with
+                    the node.
+                  </p>
+                {:else if pace === "gentle"}
+                  <p class="hint tiny">
+                    Applying config to a converged fabric restarts a routing daemon
+                    on each node, and every peer sees that. The pause is what lets
+                    each wave settle before the next one lands.
+                  </p>
+                {/if}
+              {/if}
 
               <h3>
                 Images
@@ -7001,6 +7045,10 @@
   .node-row .dot.fail { background: var(--danger); }
   .opt { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; }
   .opt input { min-height: 0; }
+  /* The pace row is a label and a select rather than a checkbox, so it needs
+     the select to take the free space instead of hugging its longest option. */
+  .opt.pace { justify-content: space-between; gap: 12px; }
+  .opt.pace select { flex: 1; min-width: 0; font-size: 12px; }
   h3 { margin: 16px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
   h3:first-child { margin-top: 0; }
   .hint { color: var(--muted); font-size: 13px; }

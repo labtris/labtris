@@ -386,8 +386,14 @@ export const api = {
   restoreSnapshot: (id, name) =>
     req(`/api/v1/nodes/${id}/snapshot/${encodeURIComponent(name)}/restore`, { method: "POST" }),
 
-  createTask: (labId, kind) =>
-    req(`/api/v1/labs/${labId}/tasks`, { method: "POST", body: JSON.stringify({ kind }) }),
+  //: `opts` carries batch / stagger_ms / min_free_mb. Omitted entirely rather
+  //: than sent as nulls, so the API's own defaults apply and the two places
+  //: do not have to agree on what "default" means.
+  createTask: (labId, kind, opts = {}) =>
+    req(`/api/v1/labs/${labId}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ kind, ...opts }),
+    }),
   task: (id) => req(`/api/v1/tasks/${id}`),
 
   hosts: () => req("/api/v1/hosts"),
