@@ -18,6 +18,50 @@ export const KIND = [
     boot: 3,
     note: "Real UET wire-format daemon. Pairs with another ue-stack node for uestack send↔listen.",
   },
+  //: The four below were in the backend catalogue and not here, so they
+  //: could be created over the API and never dragged from the palette —
+  //: including uet-ref and uet-htsim, the two UET nodes the site leads
+  //: with. This list is hand-kept; the catalogue is not. Keep them aligned
+  //: or a new kind ships invisible.
+  {
+    id: "uet-ref",
+    label: "UET reference provider (UEC)",
+    image: "ghcr.io/labtris/uet-ref:latest",
+    cmd: null,
+    color: "#f472b6",
+    glyph: "⇌",
+    boot: 3,
+    note: "The consortium's reference implementation. Real UET frames on a real veth: every sequence number and NACK code is a protocol fact.",
+  },
+  {
+    id: "uet-htsim",
+    label: "UET congestion-control simulator (UEC htsim)",
+    image: "ghcr.io/labtris/uet-htsim:latest",
+    cmd: null,
+    color: "#a78bfa",
+    glyph: "⊛",
+    boot: 3,
+    note: "No real packets. The link is 800 Gbps because you said so, and incast and fairness at that rate mean something. Nine congestion-control algorithms to compare.",
+  },
+  {
+    id: "astra-sim",
+    label: "Scale-up domain model (ASTRA-sim)",
+    image: "ghcr.io/labtris/astra-sim:latest",
+    cmd: null,
+    color: "#34d399",
+    glyph: "⊛",
+    boot: 2,
+    note: "Models a rack-scale scale-up domain and the fabric above it. Give it a collective and a topology; it tells you how long the collective takes and where the time went. Nothing touches a wire.",
+  },
+  {
+    id: "coredns",
+    label: "CoreDNS",
+    image: "coredns/coredns",
+    cmd: null,
+    color: "#fbbf24",
+    glyph: "◉",
+    boot: 3,
+  },
   // UE-Sim — Kaima Lab's ns-3-based UEC/UET simulator. Discrete-event
   // simulation of the Ultra Ethernet spec's SES + PDS + PDC layers.
   // Distinct glyph (⊛) so a research/simulator node is visually
