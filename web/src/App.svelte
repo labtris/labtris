@@ -3274,6 +3274,15 @@
   //: What is being named right now, or null. Replaces two permanent text
   //: boxes that four different buttons silently read from.
   let edit = $state(null);
+  //: The text itself lives apart from `edit`. It used to be `edit.value`,
+  //: bound straight into the input — and commit and Escape both set
+  //: `edit = null` from inside that input's own keydown handler, so the
+  //: binding read `.value` off null before the {#if edit} block had torn
+  //: the input down. Every rename and every Escape threw a TypeError into
+  //: the console and lit the Events badge, and had done since the dialog
+  //: was written; nobody looked. A value that is never inside a nullable
+  //: object has nothing to read through.
+  let editValue = $state("");
   let headerMenu = $state(null);
 
   function openHeaderMenu(e, items, filter = "") {
@@ -3389,12 +3398,14 @@
         placeholder: "node name",
       },
     };
-    edit = { mode, ...modes[mode] };
+    editValue = modes[mode].value ?? "";
+    edit = { mode, prompt: modes[mode].prompt, placeholder: modes[mode].placeholder };
   }
 
   async function commitEdit() {
     if (!edit) return;
-    const { mode, value } = edit;
+    const { mode } = edit;
+    const value = editValue;
     const name = value.trim();
     edit = null;
     try {
@@ -4420,7 +4431,7 @@
         <input
           class="edit-box mono"
           autofocus
-          bind:value={edit.value}
+          bind:value={editValue}
           placeholder={edit.placeholder}
           onkeydown={(e) => {
             if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
