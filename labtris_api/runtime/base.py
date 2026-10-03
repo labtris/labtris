@@ -94,6 +94,16 @@ class NodeSpec:
     #: this node keeps a data volume. Ignored by runtimes that have no machine
     #: to configure.
     qemu_opts: dict[str, Any] = field(default_factory=dict)
+    #: Files to place inside the node before anything in it runs, as
+    #: {absolute container path: contents}.
+    #:
+    #: write_file() cannot do this: it shells into the node, so the node has
+    #: to be up, and by then the thing you wanted to configure has already
+    #: started with the config it shipped. FRR is the case that forced it —
+    #: its entrypoint runs `frrinit.sh start` against /etc/frr/daemons, so a
+    #: config applied afterwards means bgpd was already running with the
+    #: image's defaults and has to be restarted into the new ones.
+    seed_files: dict[str, str] = field(default_factory=dict)
 
 
 class NodeRuntime(Protocol):

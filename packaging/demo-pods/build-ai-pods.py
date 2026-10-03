@@ -44,6 +44,7 @@ _frr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_frr)
 _FRR_DAEMONS_EVPN = _frr._FRR_DAEMONS_EVPN
 _frr_installer = _frr._frr_installer
+_seed_files_from_installer = _frr.seed_files_from_installer
 
 # Deterministic ids. They are remapped on load, so they only have to be
 # internally consistent and 26 chars of Crockford-ish base32.
@@ -90,7 +91,20 @@ def node(
         "last_error": None,
         "name": name,
         "nic_model": None,
-        "opts": opts or {},
+        # An FRR node carries its config twice: as the installer script, for
+        # `lab configure` and for runtimes with no seeding, and as the files
+        # themselves so they can be written in before the container starts.
+        # Seeded, `frrinit.sh start` reads a daemons file that already says
+        # bgpd=yes — the pod converges on boot instead of after a push, an
+        # exec and a restart.
+        "opts": {
+            **(opts or {}),
+            **(
+                {"seed_files": _seed_files_from_installer(startup_config)}
+                if startup_config and _seed_files_from_installer(startup_config)
+                else {}
+            ),
+        },
         "paused": False,
         "qemu_opts": {},
         "ram_mb": None,

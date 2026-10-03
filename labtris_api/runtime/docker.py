@@ -31,6 +31,48 @@ def _docker() -> aiodocker.Docker:
     return aiodocker.Docker(url)
 
 
+#: Guard rails on seed_files. These come from a node's `opts`, which the API
+#: lets a user set, and they are written into the container as root before it
+#: starts. Nothing here is a privilege a lab user does not already have — they
+#: can exec into their own node — but a typo should fail loudly rather than
+#: fill a disk.
+_SEED_MAX_FILES = 32
+_SEED_MAX_BYTES = 512 * 1024
+
+
+def _seed_tar(files: dict[str, str]) -> bytes:
+    """Pack {container path: contents} into a tar for put_archive.
+
+    Paths in the archive are relative to "/", which is where it is unpacked,
+    so a leading slash has to come off or Docker writes nothing and says
+    nothing about it.
+    """
+    import io as _io
+    import tarfile as _tarfile
+
+    if len(files) > _SEED_MAX_FILES:
+        raise runtime_error(
+            f"too many seed files ({len(files)}); the limit is {_SEED_MAX_FILES}"
+        )
+    total = sum(len(v.encode()) for v in files.values())
+    if total > _SEED_MAX_BYTES:
+        raise runtime_error(
+            f"seed files total {total} bytes; the limit is {_SEED_MAX_BYTES}"
+        )
+
+    buf = _io.BytesIO()
+    with _tarfile.open(fileobj=buf, mode="w") as tar:
+        for path, content in files.items():
+            if not path.startswith("/") or ".." in path.split("/"):
+                raise runtime_error(f"seed file path must be absolute and plain: {path!r}")
+            data = content.encode()
+            info = _tarfile.TarInfo(name=path.lstrip("/"))
+            info.size = len(data)
+            info.mode = 0o644
+            tar.addfile(info, _io.BytesIO(data))
+    return buf.getvalue()
+
+
 def _per_node_dir(node_id: str, subdir: str) -> str:
     """Where a node's per-instance bind-mount subdir lives on the host.
 
@@ -153,6 +195,12 @@ class DockerRuntime:
             if profile is not None and profile.user is not None:
                 config["User"] = profile.user
             container = await docker.containers.create(config=config)
+            # Into the created container, before it is started. This is the
+            # only window where a config lands *before* the thing that reads
+            # it runs — which for FRR is the difference between booting with
+            # bgpd enabled and booting without it and being restarted later.
+            if spec.seed_files:
+                await container.put_archive("/", _seed_tar(spec.seed_files))
             info = await container.show()
             return RuntimeHandle(node_id=spec.node_id, ref=info["Id"], pid=None)
         except DockerError as exc:

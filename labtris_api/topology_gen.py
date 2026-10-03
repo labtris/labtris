@@ -38,7 +38,11 @@ from labtris_api.errors import bad_request
 #: Both live in frr_templates so the demo-pod builder can load them by
 #: path without importing the application. Re-exported under the names
 #: this module has always used.
-from labtris_api.frr_templates import _FRR_DAEMONS_EVPN, _frr_installer
+from labtris_api.frr_templates import (
+    _FRR_DAEMONS_EVPN,
+    _frr_installer,
+    seed_files_from_installer,
+)
 from labtris_api.lifecycle import (
     allocate_mac,
     get_lab,
@@ -210,6 +214,17 @@ class _Builder:
         each pod as a block rather than stretching one row of hosts across
         half a million pixels."""
         runtime, image = _resolve_kind(kind)
+        # An FRR config is carried twice, on purpose. The script is what a
+        # *running* node can be given, and stays for `lab configure` and for
+        # anything created before seeding existed. The same files are also
+        # put in opts so they can be written into the container before it
+        # starts — which is the difference between FRR coming up with bgpd
+        # enabled and coming up without it, then being restarted into it.
+        node_opts = dict(opts or {})
+        if startup_config:
+            seeds = seed_files_from_installer(startup_config)
+            if seeds:
+                node_opts["seed_files"] = seeds
         node = Node(
             id=new_id(),
             lab_id=self.lab.id,
@@ -219,7 +234,7 @@ class _Builder:
             env={},
             cmd=None,
             state="defined",
-            opts=opts,
+            opts=node_opts or None,
             startup_config=startup_config,
         )
         self.session.add(node)

@@ -309,6 +309,11 @@ async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
         bios=tspec.get("bios"),
         cdrom=tspec.get("cdrom"),
         extra_args=list(tspec.get("qemu_extra_args") or []),
+        # Written into the node before it starts. The generator and the demo
+        # pods put an FRR config here so the daemons come up already
+        # configured, rather than booting with the image's defaults and
+        # needing a push, an exec and a restart afterwards.
+        seed_files=dict((node.opts or {}).get("seed_files") or {}),
         interfaces=ifaces,
     )
 

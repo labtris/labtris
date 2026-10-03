@@ -128,3 +128,58 @@ pathd=no
 zebra_options="-A 127.0.0.1 -s 90000000"
 bgpd_options="-A 127.0.0.1"
 """
+
+
+#: vtysh complains on stderr for every command when this file is missing,
+#: and integrated-vtysh-config is the mode frr.conf already assumes.
+_VTYSH_CONF = "service integrated-vtysh-config\n"
+
+
+def frr_seed_files(daemons: str, frr_conf: str) -> dict[str, str]:
+    """The same config as `_frr_installer`, as files rather than a script.
+
+    The script exists because applying config to a *running* node is the only
+    thing write_file() can do, and it has to restart FRR to pick up a changed
+    daemons file. Seeding these before the container starts avoids all of
+    that: `frrinit.sh start` reads the daemons file we put there, so bgpd
+    comes up enabled and configured the first time, with no restart and no
+    reconvergence.
+
+    Both are emitted. A node created before this existed, or on a runtime
+    with no seeding, still has the script to fall back on.
+    """
+    return {
+        "/etc/frr/daemons": daemons if daemons.endswith("\n") else daemons + "\n",
+        "/etc/frr/frr.conf": frr_conf if frr_conf.endswith("\n") else frr_conf + "\n",
+        "/etc/frr/vtysh.conf": _VTYSH_CONF,
+    }
+
+
+def seed_files_from_installer(script: str) -> dict[str, str]:
+    """Recover the files an installer script writes, for seeding instead.
+
+    Deliberately in this module, next to the function that writes the script:
+    the heredoc markers are ours, not a guess at someone else's format, and
+    keeping both sides in one file means a change to one is a change to the
+    other in the same diff.
+
+    Returns {} for anything that is not one of our FRR installers, so a
+    hand-written startup_config is left alone rather than half-understood.
+    """
+    out: dict[str, str] = {}
+    for marker, path in (
+        ("EOF_DAEMONS", "/etc/frr/daemons"),
+        ("EOF_FRR", "/etc/frr/frr.conf"),
+    ):
+        opener = f"<<'{marker}'\n"
+        start = script.find(opener)
+        if start == -1:
+            return {}
+        start += len(opener)
+        end = script.find(f"\n{marker}\n", start)
+        if end == -1:
+            return {}
+        body = script[start:end]
+        out[path] = body if body.endswith("\n") else body + "\n"
+    out["/etc/frr/vtysh.conf"] = _VTYSH_CONF
+    return out
