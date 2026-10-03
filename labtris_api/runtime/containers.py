@@ -234,6 +234,35 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             boot_seconds=3,
         ),
         ContainerImage(
+            id="astra-sim",
+            label="Scale-up domain model (ASTRA-sim)",
+            image="ghcr.io/labtris/astra-sim:latest",
+            source=(
+                "ghcr.io/labtris/astra-sim — built by CI from "
+                "packaging/dockerfiles/astra-sim/ (upstream: "
+                "github.com/astra-sim/astra-sim, MIT; analytical backend "
+                "only — the ns-3 backend is GPL-2.0 and is not built)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "The scale-up tier, modelled rather than emulated. UALink "
+                "is memory-semantic over its own PHY and has no open "
+                "implementation, so a node claiming to speak it would be a "
+                "guess with no reference to check against. This models the "
+                "domain instead: a hierarchy whose first dimension is the "
+                "scale-up network and whose outer ones are the scale-out "
+                "fabric. Give it a collective and a topology and it tells "
+                "you how long the collective takes and where the time "
+                "went — including how much of it left the rack, which is "
+                "the question that decides whether your scale-out fabric "
+                "is the bottleneck. Nothing touches a wire. uet-ref asks "
+                "whether the protocol is correct, uet-htsim whether the "
+                "algorithm is good; this asks how long the collective "
+                "takes on this rack. Examples in /opt/astra-sim/examples."
+            ),
+            boot_seconds=2,
+        ),
+        ContainerImage(
             id="uet-htsim",
             label="UET congestion-control simulator (UEC htsim)",
             image="ghcr.io/labtris/uet-htsim:latest",

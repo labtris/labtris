@@ -68,6 +68,9 @@ jobs:
           - name: uet-htsim
             context: packaging/dockerfiles/uet-htsim
             file: packaging/dockerfiles/uet-htsim/Dockerfile
+          - name: astra-sim
+            context: packaging/dockerfiles/astra-sim
+            file: packaging/dockerfiles/astra-sim/Dockerfile
           - name: fw
             context: packaging/dockerfiles/fw
             file: packaging/dockerfiles/fw/Dockerfile
