@@ -1098,16 +1098,26 @@ async def _hmp_qmp(vm_dir: Path, command: str, timeout: float = 10.0) -> str:
     return out if isinstance(out, str) else ""
 
 
+#: Cursor movement, erase-to-end and friends, which the raw monitor socket
+#: sprays between the characters it echoes back.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|[\x00-\x08\x0b-\x1f\x7f]")
+
+
 def _hmp_error(out: str) -> str | None:
     """The error line from an HMP reply, or None if it succeeded.
 
-    QEMU prefixes monitor failures with "Error"; a successful savevm says
-    nothing at all. Matched per line and at the start, so a snapshot whose
-    *name* contains the word is not mistaken for a failure.
+    QEMU prefixes monitor failures with "Error"; a command that worked
+    usually says nothing at all. Matched per line and at the start of one,
+    which is what separates a diagnosis from a mention: `savevm
+    before-error-repro` echoes the word back without having failed.
+
+    Escape sequences are stripped first so this is equally correct on the raw
+    monitor socket, where the echoed command arrives interleaved with cursor
+    movement, and on `human-monitor-command`, where it does not.
     """
     for raw in out.splitlines():
-        line = raw.strip()
-        if line.lower().startswith("error"):
+        line = _ANSI.sub("", raw).strip()
+        if line.lower().startswith(("error", "unable")):
             return line
     return None
 
@@ -2212,15 +2222,15 @@ class QemuRuntime:
         out = await _hmp(
             vm_dir, f"netdev_add tap,id={net_id},ifname={i.host_ifname},script=no,downscript=no"
         )
-        if "error" in out.lower() or "unable" in out.lower():
-            raise runtime_error(f"qemu netdev_add failed: {out.strip()}")
+        if (err := _hmp_error(out)) is not None:
+            raise runtime_error(f"qemu netdev_add failed: {err}")
         cfg_path = _config_path(vm_dir)
         model = "virtio-net-pci"
         if cfg_path.exists():
             model = json.loads(cfg_path.read_text()).get("nic_model") or model
         out = await _hmp(vm_dir, f"device_add {model},netdev={net_id},mac={i.mac},id={nic_id}")
-        if "error" in out.lower() or "unable" in out.lower():
-            raise runtime_error(f"qemu device_add failed: {out.strip()}")
+        if (err := _hmp_error(out)) is not None:
+            raise runtime_error(f"qemu device_add failed: {err}")
 
     async def detach_iface(self, h: RuntimeHandle, i: IfaceSpec) -> None:
         vm_dir = Path(h.ref)

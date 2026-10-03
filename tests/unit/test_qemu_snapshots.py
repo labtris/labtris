@@ -26,6 +26,23 @@ def test_a_name_containing_error_is_not_a_failure() -> None:
     )
 
 
+def test_the_raw_monitor_echo_is_not_mistaken_for_an_error() -> None:
+    """attach_iface still reads the raw monitor socket, which interleaves the
+    echoed command with cursor movement. Stripping those is what lets one
+    error check serve both transports."""
+    echoed = (
+        "n\x1b[K\x1b[Dne\x1b[K\x1b[D\x1b[Dnetdev_add tap,id=net3,"
+        "ifname=vun0a1b2c3,script=no,downscript=no\x1b[K\r\n(qemu) "
+    )
+    assert _hmp_error(echoed) is None
+
+    assert _hmp_error(echoed + "\r\nError: Duplicate ID 'net3' for netdev") == (
+        "Error: Duplicate ID 'net3' for netdev"
+    )
+    #: "unable" counts too — the hotplug path has always treated it as one.
+    assert _hmp_error("unable to add device") is not None
+
+
 def test_an_error_anywhere_in_the_reply_is_found() -> None:
     """QEMU prints the error on its own line, not necessarily the first."""
     assert _hmp_error("some preamble\nError: Device 'x' is writable but does not "

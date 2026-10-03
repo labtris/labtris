@@ -22,14 +22,28 @@ you move a local build onto a machine with no registry — see
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import tarfile
 import pathlib
+import tarfile
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+# The FRR installer is imported rather than copied. These pods are the only
+# ones that arrive *configured* — the older ones land wired but with an empty
+# frr.conf and a description telling you to set up the underlay yourself —
+# and a second copy of that script would drift from the generator's within a
+# release.
+_spec = importlib.util.spec_from_file_location(
+    "_frr_templates", HERE.parent.parent / "labtris_api" / "frr_templates.py"
+)
+_frr = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_frr)
+_FRR_DAEMONS_EVPN = _frr._FRR_DAEMONS_EVPN
+_frr_installer = _frr._frr_installer
 
 # Deterministic ids. They are remapped on load, so they only have to be
 # internally consistent and 26 chars of Crockford-ish base32.
@@ -46,6 +60,7 @@ def node(
     env: dict[str, str] | None = None,
     opts: dict[str, object] | None = None,
     iface_scheme: str = "eth",
+    startup_config: str | None = None,
 ) -> dict:
     return {
         "cmd": None,
@@ -81,13 +96,25 @@ def node(
         "ram_mb": None,
         "runtime": "docker",
         "runtime_ref": None,
-        "startup_config": None,
+        "startup_config": startup_config,
         "state": "defined",
         "style": {},
     }
 
 
-def link(lid: str, a: str, b: str, impair: dict | None = None) -> dict:
+def link(
+    lid: str,
+    a: str,
+    b: str,
+    impair: dict | None = None,
+    impair_ba: dict | None = None,
+) -> dict:
+    """`impair` applies both ways unless `impair_ba` overrides the return.
+
+    Separate directions because a real inter-site hop is not symmetric —
+    different paths, different queues — and a demo that pretends otherwise
+    teaches the wrong thing about the one tier where it matters most.
+    """
     return {
         "id": lid,
         "lab_id": "",
@@ -96,7 +123,7 @@ def link(lid: str, a: str, b: str, impair: dict | None = None) -> dict:
         "network_id": None,
         "admin_up": True,
         "impair_ab": impair,
-        "impair_ba": impair,
+        "impair_ba": impair_ba if impair_ba is not None else impair,
     }
 
 
@@ -394,6 +421,167 @@ def fw_vwire() -> dict:
     )
 
 
+def _bgp(hostname: str, asn: int, router_id: str, peers: list[str],
+         extra: str = "") -> str:
+    """Unnumbered eBGP on the named interfaces, redistributing connected.
+
+    Unnumbered because it is what makes these labs start working the moment
+    they boot: no addressing plan to apply by hand before anything routes.
+    """
+    nbrs = "\n".join(
+        f" neighbor {p} interface remote-as external" for p in peers
+    )
+    acts = "\n".join(f"  neighbor {p} activate" for p in peers)
+    return f"""frr defaults datacenter
+hostname {hostname}
+log stdout
+!
+router bgp {asn}
+ bgp router-id {router_id}
+ bgp bestpath as-path multipath-relax
+ no bgp ebgp-requires-policy
+{nbrs}
+ !
+ address-family ipv4 unicast
+  redistribute connected
+{acts}
+ exit-address-family
+{extra}!
+"""
+
+
+def front_end() -> dict:
+    """The north-south tier: a border pair, an access switch, three services.
+
+    Small on purpose. The point of this tier is not scale — it is that the
+    cluster has a front door, that it is redundant, and that the services
+    behind it are named for what they do rather than host-1..3.
+    """
+    b1, b2 = _id("FEB1", 1), _id("FEB2", 2)
+    acc = _id("FEA1", 3)
+    svcs = [_id("FES", 10 + i) for i in range(3)]
+    names = ["storage", "inference-api", "registry"]
+
+    nodes = [
+        node(b1, "border-1", "frrouting/frr:v8.4.0", ifaces=2,
+             startup_config=_frr_installer(
+                 _FRR_DAEMONS_EVPN,
+                 _bgp("border-1", 65001, "10.255.0.1", ["eth0", "eth1"]))),
+        node(b2, "border-2", "frrouting/frr:v8.4.0", ifaces=2,
+             startup_config=_frr_installer(
+                 _FRR_DAEMONS_EVPN,
+                 _bgp("border-2", 65002, "10.255.0.2", ["eth0", "eth1"]))),
+        node(acc, "access-1", "frrouting/frr:v8.4.0", ifaces=5,
+             startup_config=_frr_installer(
+                 _FRR_DAEMONS_EVPN,
+                 _bgp("access-1", 65010, "10.255.0.10", ["eth0", "eth1"]))),
+    ] + [
+        node(h, names[i], "alpine:3.20") for i, h in enumerate(svcs)
+    ]
+
+    links = [
+        link(_id("FEX", 1), iface(b1, 0), iface(b2, 0)),      # border pair
+        link(_id("FEX", 2), iface(b1, 1), iface(acc, 0)),
+        link(_id("FEX", 3), iface(b2, 1), iface(acc, 1)),
+    ] + [
+        link(_id("FEX", 10 + i), iface(h), iface(acc, 2 + i))
+        for i, h in enumerate(svcs)
+    ]
+
+    geo = {
+        b1: {"x": 220, "y": 60}, b2: {"x": 520, "y": 60},
+        acc: {"x": 370, "y": 220},
+        svcs[0]: {"x": 160, "y": 380},
+        svcs[1]: {"x": 370, "y": 380},
+        svcs[2]: {"x": 580, "y": 380},
+    }
+    return pod(
+        "front-end",
+        "The ordinary north-south network, which is the tier everyone "
+        "forgets to model: users, storage and inference requests arriving. "
+        "Two border routers so one can fail, an access switch, and three "
+        "services named for what they do. eBGP is unnumbered and the config "
+        "ships with the pod, so it converges on boot rather than after you "
+        "write an addressing plan. Pull one border link and watch the "
+        "services stay reachable.",
+        nodes, links, geo,
+    )
+
+
+def scale_across() -> dict:
+    """Two sites joined by a slow hop, slow by different amounts each way.
+
+    The topology is deliberately boring — the inter-site link is the whole
+    lesson. A collective that assumes the two directions match is exactly
+    what this shape exists to let you break deliberately.
+    """
+    sites = []
+    for sn in (1, 2):
+        border = _id(f"SAB{sn}", sn)
+        leaf = _id(f"SAL{sn}", 10 + sn)
+        hosts = [_id(f"SAH{sn}", 20 + sn * 10 + i) for i in range(2)]
+        sites.append((border, leaf, hosts))
+
+    nodes = []
+    for i, (border, leaf, hosts) in enumerate(sites, start=1):
+        nodes += [
+            node(border, f"site{i}-border", "frrouting/frr:v8.4.0", ifaces=2,
+                 startup_config=_frr_installer(
+                     _FRR_DAEMONS_EVPN,
+                     _bgp(f"site{i}-border", 65100 + i, f"10.254.0.{i}",
+                          ["eth0", "eth1"]))),
+            node(leaf, f"site{i}-leaf", "frrouting/frr:v8.4.0", ifaces=3,
+                 startup_config=_frr_installer(
+                     _FRR_DAEMONS_EVPN,
+                     _bgp(f"site{i}-leaf", 65110 + i, f"10.254.1.{i}",
+                          ["eth0"]))),
+        ] + [
+            node(h, f"site{i}-h{j+1}", "alpine:3.20")
+            for j, h in enumerate(hosts)
+        ]
+
+    links = []
+    for i, (border, leaf, hosts) in enumerate(sites, start=1):
+        links.append(link(_id(f"SAX{i}", i), iface(border, 1), iface(leaf, 0)))
+        for j, h in enumerate(hosts):
+            links.append(
+                link(_id(f"SAY{i}", i * 10 + j), iface(h), iface(leaf, 1 + j))
+            )
+
+    #: The DCI. 12 ms out, 14 ms back — a metro pair on two different paths.
+    #: Asymmetric because real ones are, and because a lab that ships
+    #: symmetric impairment quietly teaches that symmetry is the default.
+    links.append(
+        link(
+            _id("SADCI", 99),
+            iface(sites[0][0], 0),
+            iface(sites[1][0], 0),
+            impair={"delay_ms": 12},
+            impair_ba={"delay_ms": 14},
+        )
+    )
+
+    geo = {}
+    for i, (border, leaf, hosts) in enumerate(sites):
+        x = 120 + i * 440
+        geo[border] = {"x": x + 90, "y": 60}
+        geo[leaf] = {"x": x + 90, "y": 220}
+        geo[hosts[0]] = {"x": x, "y": 380}
+        geo[hosts[1]] = {"x": x + 180, "y": 380}
+
+    return pod(
+        "scale-across",
+        "Two clusters, one workload. Each site is a border and a leaf with "
+        "two hosts; the interesting part is the hop between them, which "
+        "carries 12 ms one way and 14 ms the other. That asymmetry is the "
+        "point — real inter-site paths differ by direction, and anything "
+        "that assumes they match will be wrong here in a way you can "
+        "measure. Ping across the DCI and compare it with the one-way "
+        "figures. Configs ship with the pod and converge on boot.",
+        nodes, links, geo,
+    )
+
+
 PODS = {
     "uet-pair": uet_pair,
     "rdma-pair": rdma_pair,
@@ -401,6 +589,8 @@ PODS = {
     "pfc-classes": pfc_classes,
     "ai-fabric-uet": ai_fabric,
     "fw-vwire": fw_vwire,
+    "front-end": front_end,
+    "scale-across": scale_across,
 }
 
 
