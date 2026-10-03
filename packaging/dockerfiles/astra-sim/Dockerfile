@@ -37,11 +37,12 @@
 #
 # Upstream: github.com/astra-sim/astra-sim. Pinned by commit so a rebuild
 # does not silently change what an experiment measures — bump
-# ASTRA_SIM_COMMIT to move.
+# ASTRA_SIM_COMMIT to move. Currently 4ce9ecf (2026-09-19), which is what
+# the 57426-cycle HGX-H100 all-reduce figure in the node notes came from.
 
 FROM debian:bookworm-slim AS build
 ENV DEBIAN_FRONTEND=noninteractive
-ARG ASTRA_SIM_COMMIT=master
+ARG ASTRA_SIM_COMMIT=4ce9ecfe746a3ee5fe47559a11d91644d641fa7f
 
 RUN apt-get -y update \
  && apt-get -y install --no-install-recommends \
