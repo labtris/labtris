@@ -39,6 +39,7 @@ VERBS = frozenset(
         "host.uplink_probe",
         "host.configure_uplinks",
         "cloud.attach",
+        "cloud.confirm",
         "cloud.detach",
         "vxlan.create",
         "vxlan.delete",
@@ -132,6 +133,7 @@ class NetOps(Protocol):
     def uplink_probe(self) -> dict[str, Any]: ...
     def configure_uplinks(self, pairs: list[dict[str, str]]) -> dict[str, Any]: ...
     def cloud_attach(self, name: str, bridge: str, force: bool) -> dict[str, Any]: ...
+    def cloud_confirm(self, name: str) -> dict[str, Any]: ...
     def cloud_detach(self, name: str) -> dict[str, Any]: ...
     def vxlan_create(
         self, name: str, vni: int, remote: str, local: str | None, dstport: int
@@ -511,6 +513,8 @@ def _call(verb: str, params: dict[str, Any], net: NetOps) -> dict[str, Any]:
             _require_ifname(params.get("bridge"), "bridge"),
             force,
         )
+    if verb == "cloud.confirm":
+        return net.cloud_confirm(_require_host_ifname(params.get("name")))
     if verb == "cloud.detach":
         return net.cloud_detach(_require_host_ifname(params.get("name")))
     if verb == "vxlan.create":

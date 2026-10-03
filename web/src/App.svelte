@@ -1588,6 +1588,12 @@
       geometry = { ...geoData(), nets: { ...(geometry.nets || {}), [net.id]: at } };
       await persistGeo();
       await loadLab(lab.id, true);
+      //: loadLab just succeeded, so this page can still reach the server —
+      //: through the bridge now, if the NIC was the management one. Say so,
+      //: or netd will assume it cut us off and put everything back.
+      if (kind === "cloud" && allow_default_route) {
+        await api.confirmNetwork(net.id).catch(() => {});
+      }
     } catch (e) {
       error = e.message;
     } finally {
@@ -6041,9 +6047,10 @@
               </p>
             {:else}
               <p class="hint tiny danger-text">
-                That NIC carries this host's default route. Enslaving it to a lab bridge moves
-                its traffic onto the bridge and will take the host off the network — including
-                this session. netd refuses it unless you tick this.
+                That NIC carries this host's default route. With this ticked, Labtris moves the
+                host's address and default route onto the lab bridge so the host stays reachable
+                through it — and if this page cannot reach the server again within 90 seconds,
+                netd undoes the whole change by itself. Without it, netd refuses.
               </p>
             {/if}
             <label class="pick">

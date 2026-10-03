@@ -224,6 +224,10 @@ export const api = {
   patchNetwork: (id, body) =>
     req(`/api/v1/networks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   netLeases: (id) => req(`/api/v1/networks/${id}/leases`),
+  //: After a forced cloud attach: this request arriving is the proof the
+  //: browser can still reach the server through the bridge. Without it,
+  //: netd reverts the attach on a timer.
+  confirmNetwork: (id) => req(`/api/v1/networks/${id}/confirm`, { method: "POST" }),
   netSessions: (id) => req(`/api/v1/networks/${id}/sessions`),
   agentTools: () => req("/api/v1/agent/tools"),
   agentTool: (body) =>

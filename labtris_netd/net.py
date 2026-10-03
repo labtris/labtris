@@ -325,7 +325,19 @@ def _apply_netplan_write(
     return {"files_written": touched, "netplan_output": (proc.stdout or "").strip()}
 
 
+#: How long a forced cloud attach has to be confirmed before netd undoes it.
+#: Long enough for a browser to re-fetch the lab through the new path; short
+#: enough that a cut-off operator is not locked out for the afternoon.
+CLOUD_CONFIRM_SECONDS = 90.0
+
+
 class PyrouteNet:
+    def __init__(self) -> None:
+        #: Forced cloud attaches awaiting confirmation: NIC name -> what was
+        #: moved and the timer that will move it back. See cloud_attach.
+        self._cloud_pending: dict[str, dict[str, Any]] = {}
+        self._cloud_lock = threading.Lock()
+
     def bridge_create(self, name: str) -> dict[str, Any]:
         with IPRoute() as ipr:
             try:
@@ -1883,12 +1895,24 @@ class PyrouteNet:
                     "A cloud network needs a physical NIC or a veth — pick the "
                     "interface that carries the traffic, not a bridge over it.",
                 )
-        if not force and name in self._default_route_ifaces():
+        on_default_route = name in self._default_route_ifaces()
+        if not force and on_default_route:
             raise NetdFault(
                 "EPERM",
                 f"{name} carries this host's default route; enslaving it to {bridge} "
                 "would take the host off the network. Pass force to override.",
             )
+        # Forced, on the management NIC. This used to just enslave, which took
+        # the address and the default route down with the NIC and left no way
+        # back on a host whose only path in was that NIC — a reboot was the
+        # recovery. Now the enslave is a hand-over: the addresses and the
+        # default route move onto the bridge first (what EVE-NG's pnet0 does),
+        # so the host stays reachable through it, and a timer undoes the whole
+        # thing unless cloud.confirm arrives — proof that whoever asked can
+        # still reach us through the new path.
+        moved: dict[str, Any] | None = None
+        if force and on_default_route:
+            moved = self._move_uplink(name, bridge)
         with IPRoute() as ipr:
             idx = _lookup(ipr, name)
             # A NIC can only be enslaved to one bridge, so a second attach
@@ -1908,18 +1932,117 @@ class PyrouteNet:
                 ipr.link("set", index=idx, master=master)
                 ipr.link("set", index=idx, state="up")
             except NetlinkError as exc:
+                if moved is not None:
+                    self._move_uplink_back(name, bridge, moved)
                 raise _map_nl(exc, name) from exc
-        return {"index": idx, "master": master}
+        out: dict[str, Any] = {"index": idx, "master": master}
+        if moved is not None:
+            self._arm_revert(name, bridge, moved)
+            out["moved"] = moved
+            out["confirm_within"] = CLOUD_CONFIRM_SECONDS
+        return out
+
+    def cloud_confirm(self, name: str) -> dict[str, Any]:
+        """The caller can still reach us through the new path. Keep it."""
+        with self._cloud_lock:
+            pending = self._cloud_pending.pop(name, None)
+        if pending is None:
+            return {"confirmed": False, "pending": False}
+        pending["timer"].cancel()
+        return {"confirmed": True, "pending": False}
 
     def cloud_detach(self, name: str) -> dict[str, Any]:
-        """Give a host NIC back: release it from whatever bridge holds it."""
+        """Give a host NIC back: release it from whatever bridge holds it, and
+        if the bridge had taken over its address and default route, hand
+        those back too."""
+        with self._cloud_lock:
+            pending = self._cloud_pending.pop(name, None)
+        if pending is not None:
+            pending["timer"].cancel()
         with IPRoute() as ipr:
             idx = _lookup(ipr, name)
+            master = ipr.get_links(idx)[0].get_attr("IFLA_MASTER")
+            bridge = _ifname_of(ipr, master) if master is not None else None
             try:
                 ipr.link("set", index=idx, master=0)
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc
+        if bridge is not None:
+            moved = pending["moved"] if pending is not None else self._uplink_on(bridge)
+            if moved:
+                self._move_uplink_back(name, bridge, moved)
         return {"index": idx}
+
+    # ---- the hand-over itself ---------------------------------------
+    #
+    # Three small steps, each a plain netlink operation, kept apart from
+    # cloud_attach so the timer can call the reverse without re-reading it.
+
+    def _uplink_on(self, ifname: str) -> dict[str, Any]:
+        """IPv4 addresses on `ifname`, and the default gateway if the default
+        route leaves through it. Empty dict when it carries nothing."""
+        out: dict[str, Any] = {"addrs": [], "gateway": None}
+        with IPRoute() as ipr:
+            idx = _lookup(ipr, ifname)
+            for a in ipr.get_addr(index=idx, family=2):
+                addr = a.get_attr("IFA_ADDRESS")
+                if addr:
+                    out["addrs"].append([addr, int(a["prefixlen"])])
+            for r in ipr.get_routes(family=2):
+                if r.get_attr("RTA_DST") is None and r.get_attr("RTA_OIF") == idx:
+                    out["gateway"] = r.get_attr("RTA_GATEWAY")
+        return out if (out["addrs"] or out["gateway"]) else {}
+
+    def _move_uplink(self, src: str, dst: str) -> dict[str, Any]:
+        moved = self._uplink_on(src)
+        if not moved:
+            return {}
+        with IPRoute() as ipr:
+            s, d = _lookup(ipr, src), _lookup(ipr, dst)
+            ipr.link("set", index=d, state="up")
+            for addr, plen in moved["addrs"]:
+                with contextlib.suppress(NetlinkError):
+                    ipr.addr("del", index=s, address=addr, prefixlen=plen)
+                ipr.addr("add", index=d, address=addr, prefixlen=plen)
+            if moved["gateway"]:
+                ipr.route("replace", dst="default", gateway=moved["gateway"], oif=d)
+        return moved
+
+    def _move_uplink_back(self, nic: str, bridge: str, moved: dict[str, Any]) -> None:
+        if not moved:
+            return
+        with IPRoute() as ipr:
+            n, b = _lookup(ipr, nic), _lookup(ipr, bridge)
+            for addr, plen in moved.get("addrs", []):
+                with contextlib.suppress(NetlinkError):
+                    ipr.addr("del", index=b, address=addr, prefixlen=plen)
+                with contextlib.suppress(NetlinkError):
+                    ipr.addr("add", index=n, address=addr, prefixlen=plen)
+            if moved.get("gateway"):
+                with contextlib.suppress(NetlinkError):
+                    ipr.route("replace", dst="default", gateway=moved["gateway"], oif=n)
+
+    def _arm_revert(self, name: str, bridge: str, moved: dict[str, Any]) -> None:
+        timer = threading.Timer(CLOUD_CONFIRM_SECONDS, self._cloud_revert, [name])
+        timer.daemon = True
+        with self._cloud_lock:
+            old = self._cloud_pending.pop(name, None)
+            if old is not None:
+                old["timer"].cancel()
+            self._cloud_pending[name] = {"bridge": bridge, "moved": moved, "timer": timer}
+        timer.start()
+
+    def _cloud_revert(self, name: str) -> None:
+        """Nobody confirmed. Put the NIC back the way it was."""
+        with self._cloud_lock:
+            pending = self._cloud_pending.pop(name, None)
+        if pending is None:
+            return
+        with contextlib.suppress(Exception):
+            with IPRoute() as ipr:
+                ipr.link("set", index=_lookup(ipr, name), master=0)
+        with contextlib.suppress(Exception):
+            self._move_uplink_back(name, pending["bridge"], pending["moved"])
 
     def vxlan_create(
         self, name: str, vni: int, remote: str, local: str | None, dstport: int

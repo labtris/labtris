@@ -524,6 +524,28 @@ async def update_network(
     return net
 
 
+@router.post("/networks/{network_id}/confirm")
+async def confirm_network(
+    network_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Tell netd the caller can still reach us after a forced cloud attach.
+
+    A cloud network on the host's management NIC now moves the address and
+    default route onto the bridge rather than cutting them off, and netd
+    arms a timer to undo that unless this arrives. The browser sends it
+    after it has successfully re-fetched the lab — which is the proof.
+    Harmless on a network that was not forced: netd answers pending=false.
+    """
+    net = await session.get(Network, network_id)
+    if net is None:
+        raise not_found("network not found")
+    if net.kind != "cloud" or not net.cloud_ref or net.cloud_ref == net.host_ifname:
+        return {"confirmed": False, "pending": False}
+    return await netd.call("cloud.confirm", {"name": net.cloud_ref})
+
+
 @router.get("/networks/{network_id}/leases")
 async def network_leases(
     network_id: str,
