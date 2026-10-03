@@ -39,6 +39,11 @@ SEED = (
     "p4-trim",
     "pfc-classes",
     "ai-fabric-uet",
+    #: The two tiers /ai-fabrics called real and nothing shipped for. Both
+    #: arrive configured, so they converge on boot rather than waiting for
+    #: someone to write an underlay.
+    "front-end",
+    "scale-across",
 )
 
 #: Which pods this machine has already been offered, one name per line.
