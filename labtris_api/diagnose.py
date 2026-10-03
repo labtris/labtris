@@ -29,6 +29,12 @@ def _run(*cmd: str, timeout: float = 5.0) -> str:
         return ""
 
 
+def _resolve_accel() -> str:
+    from labtris_api.runtime.qemu import resolve_accel
+
+    return resolve_accel()
+
+
 def _first_line(text: str) -> str:
     return text.splitlines()[0].strip() if text.strip() else ""
 
@@ -192,6 +198,9 @@ def host_facts() -> dict[str, Any]:
         },
         "qemu": _first_line(_run("qemu-system-x86_64", "--version")),
         "accel_setting": settings.qemu_accel,
+        #: What "auto" resolves to on this host right now — the figure that
+        #: matters, since the setting alone no longer says.
+        "accel_effective": _resolve_accel(),
         "disks": [_disk(vm_dir), _disk(cache)],
         "image_cache_gb": _dir_size_gb(cache),
         "vm_dir_gb": _dir_size_gb(vm_dir),

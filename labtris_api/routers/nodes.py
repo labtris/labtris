@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -968,6 +969,59 @@ async def resume_node(
     node.paused = False
     await session.commit()
     return await get_node(session, node.id)
+
+
+@router.get("/labs/{lab_id}/vms")
+async def list_lab_vms(
+    lab_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Runtime facts for every QEMU node in a lab: which accelerator it is
+    actually running under, how many vCPUs and how much RAM it was given,
+    and its pid. Read from each VM's own config.json, which the runtime
+    writes at launch, so a node started under TCG before the default
+    changed still reports TCG rather than whatever the setting says now.
+
+    The question this exists to answer is "why is my lab slow", and the
+    usual answer is a VM on software emulation on a host that has /dev/kvm.
+    """
+    from pathlib import Path
+
+    from labtris_api.runtime.qemu import _config_path, _read_pid, resolve_accel
+
+    lab = await get_lab(session, lab_id)
+    nodes = (
+        await session.execute(select(Node).where(Node.lab_id == lab.id).order_by(Node.name))
+    ).scalars()
+    out = []
+    for n in nodes:
+        if n.runtime != "qemu":
+            continue
+        row: dict[str, Any] = {
+            "id": n.id, "name": n.name, "state": n.state,
+            "accel": None, "cpus": None, "ram_mb": None, "pid": None,
+        }
+        if n.runtime_ref:
+            vm_dir = Path(n.runtime_ref)
+            cfg_path = _config_path(vm_dir)
+            if cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text())
+                except ValueError:
+                    cfg = {}
+                row["accel"] = cfg.get("accel")
+                row["cpus"] = cfg.get("cpus")
+                row["ram_mb"] = cfg.get("ram_mb")
+            row["pid"] = _read_pid(vm_dir) if n.state == "running" else None
+        out.append(row)
+    return {
+        "lab_id": lab.id,
+        "lab": lab.name,
+        #: What a VM started now would get, for comparison with the rows.
+        "host_accel": resolve_accel(),
+        "vms": out,
+    }
 
 
 @router.post("/nodes/{node_id}/snapshot")

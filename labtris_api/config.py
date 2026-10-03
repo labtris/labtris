@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     # is unreliable on generic cloud VMs (some silently hang on first vcpu run
     # despite /dev/kvm + kvm-ok reporting success). Set LABTRIS_QEMU_ACCEL=kvm on a
     # host where nested virtualization is verified to actually execute.
-    qemu_accel: str = "tcg"
+    #: "auto" uses KVM when /dev/kvm is present and writable, TCG otherwise.
+    #: This was "tcg": on a host with hardware virtualisation every VM booted
+    #: under software emulation — ten to fifty times slower — unless someone
+    #: knew to set LABTRIS_QEMU_ACCEL=kvm. The fast path should not be a
+    #: setting you have to discover.
+    qemu_accel: str = "auto"
     #: Where the session signing key lives when one is not configured. Kept
     #: outside the repo so it is not committed by accident.
     session_secret: str = ""

@@ -39,9 +39,10 @@ EDITABLE: dict[str, dict[str, Any]] = {
         "section": "virtualisation",
         "label": "QEMU acceleration",
         "kind": "choice",
-        "choices": ["tcg", "kvm"],
+        "choices": ["auto", "kvm", "tcg"],
         "live": False,
-        "note": "kvm needs /dev/kvm and a host where nested virtualisation actually executes",
+        "note": "auto picks kvm when /dev/kvm is usable and tcg otherwise; "
+                "kvm needs /dev/kvm and a host where nested virtualisation actually executes",
     },
     "qemu_image_cache_dir": {
         "section": "virtualisation",

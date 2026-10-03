@@ -20,6 +20,76 @@ p4_app = typer.Typer(
 app.add_typer(p4_app, name="p4")
 
 
+@app.command("perf")
+def cmd_perf(
+    lab: str | None = typer.Option(None, "--lab", help="Restrict to one lab id."),
+    fmt: str = format_option(),
+) -> None:
+    """Which VMs are on hardware acceleration, and which are not.
+
+    A lab that boots slowly is usually a VM running under TCG — software
+    emulation — on a host that has /dev/kvm. This lists every QEMU node with
+    the accelerator it actually started under, next to what a VM started now
+    would get, so the slow ones are a glance rather than a hunch.
+    """
+    api = api_for(require_session())
+    try:
+        diag = api.get("/api/v1/system/diagnostics?fmt=json") or {}
+        lab_ids = [lab] if lab else [s["id"] for s in (api.get("/api/v1/labs") or [])]
+        reports = [api.get(f"/api/v1/labs/{lid}/vms") for lid in lab_ids]
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+
+    kvm = diag.get("kvm") or {}
+    host = (
+        f"host: /dev/kvm {'usable' if kvm.get('writable') else 'absent or not writable'} · "
+        f"setting {diag.get('accel_setting', '?')} → effective {diag.get('accel_effective', '?')}"
+    )
+    rows = []
+    slow = 0
+    for r in reports:
+        for v in r.get("vms", []):
+            on_tcg = v.get("accel") == "tcg"
+            if on_tcg and kvm.get("writable"):
+                slow += 1
+            rows.append(
+                {
+                    "lab": r.get("lab", ""),
+                    "name": v.get("name"),
+                    "state": v.get("state"),
+                    "accel": (v.get("accel") or "—")
+                    + (" ⚠ slow" if on_tcg and kvm.get("writable") else ""),
+                    "cpus": v.get("cpus") or "",
+                    "ram_mb": v.get("ram_mb") or "",
+                    "pid": v.get("pid") or "",
+                }
+            )
+    if fmt == "table":
+        console.print(host)
+    print_table(
+        fmt,
+        rows,
+        [
+            ("Lab", "lab"),
+            ("VM", "name"),
+            ("State", "state"),
+            ("Accel", "accel"),
+            ("vCPU", "cpus"),
+            ("RAM MB", "ram_mb"),
+            ("PID", "pid"),
+        ],
+    )
+    if fmt == "table":
+        if not rows:
+            console.print("no QEMU nodes in scope")
+        elif slow:
+            console.print(
+                f"{slow} VM(s) on software emulation although this host has KVM — "
+                "stop and start them to pick up hardware acceleration."
+            )
+
+
 @app.command("list")
 def cmd_list(
     lab: str | None = typer.Option(None, "--lab", help="Restrict to one lab id."),

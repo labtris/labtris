@@ -952,6 +952,22 @@ def _strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
+def resolve_accel(setting: str | None = None) -> str:
+    """The accelerator a VM will actually start with.
+
+    "auto" becomes "kvm" when /dev/kvm exists and this process may open it,
+    and "tcg" otherwise; an explicit value is returned as given. Resolved at
+    start and written into the VM's config.json, so what a running node got
+    is a recorded fact rather than an inference from a setting that may have
+    changed since.
+    """
+    want = (setting if setting is not None else settings.qemu_accel) or "auto"
+    if want != "auto":
+        return want
+    kvm = Path("/dev/kvm")
+    return "kvm" if kvm.exists() and os.access(kvm, os.W_OK) else "tcg"
+
+
 async def _hmp(vm_dir: Path, command: str, wait: float = 0.4) -> str:
     """Send one Human Monitor Protocol command and return the raw reply text."""
     mon = vm_dir / "mon.sock"
@@ -1931,6 +1947,12 @@ class QemuRuntime:
             display = _pick_free_vnc_display()
             cfg["vnc_display"] = display
             _config_path(vm_dir).write_text(json.dumps(cfg))
+        # Decided here, next to the launch that uses it, and recorded so
+        # `labtris node perf` can say which VMs are on software emulation.
+        accel = resolve_accel()
+        if cfg.get("accel") != accel:
+            cfg["accel"] = accel
+            _config_path(vm_dir).write_text(json.dumps(cfg))
         serial_sock = vm_dir / "serial.sock"
         mon_sock = vm_dir / "mon.sock"
         # QMP is opened as a *second* monitor alongside HMP. HMP is our
@@ -2022,7 +2044,7 @@ class QemuRuntime:
             "-boot",
             str(opts.get("boot") or "c"),
             "-accel",
-            settings.qemu_accel,
+            accel,
             "-m",
             str(cfg.get("ram_mb", 256)),
             "-smp",
