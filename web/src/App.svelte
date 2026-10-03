@@ -18,7 +18,12 @@
 
   let labs = $state([]);
   let lab = $state(null);
-  let geometry = $state({ nodes: {}, nets: {}, links: {}, view: { x: 0, y: 0, k: 1 } });
+  //: `annotations` are boxes and text on the canvas — presentation, like
+  //: node positions, so they live in geometry rather than the topology and
+  //: travel with a pod or a clone for free.
+  let geometry = $state({ nodes: {}, nets: {}, links: {}, annotations: {}, view: { x: 0, y: 0, k: 1 } });
+  let selAnno = $state(null);
+  let resizing = $state(null);
   let health = $state(null);
   let selected = $state(null);
   let selectedLink = $state(null);
@@ -661,7 +666,121 @@
       nodes: { ...(geometry.nodes || {}) },
       nets: { ...(geometry.nets || {}) },
       links: { ...(geometry.links || {}) },
+      annotations: { ...(geometry.annotations || {}) },
       view: { x: pan.x, y: pan.y, k: pan.k },
+    };
+  }
+
+  // ---- annotations: boxes and text on the canvas -----------------------
+  //: The handful of colours offered are theme tokens, so a box drawn on a
+  //: dark theme is still the right colour on a light one. A custom colour
+  //: is a plain CSS colour string and is stored as given.
+  const ANNO_COLORS = [
+    ["accent", "var(--accent)"],
+    ["alt", "var(--accent-2)"],
+    ["warn", "var(--warn)"],
+    ["danger", "var(--danger)"],
+    ["muted", "var(--muted)"],
+  ];
+
+  function annoAt(clientX, clientY) {
+    const box = canvasBox();
+    return {
+      x: snap((clientX - box.left - pan.x) / pan.k),
+      y: snap((clientY - box.top - pan.y) / pan.k),
+    };
+  }
+
+  function addAnno(kind, clientX, clientY) {
+    if (!lab) return;
+    const { x, y } = annoAt(clientX, clientY);
+    const id = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const anno =
+      kind === "box"
+        ? { kind, x, y, w: 260, h: 160, color: "var(--accent)", text: "" }
+        : { kind, x, y, color: "var(--accent)", text: "text", size: 14 };
+    geometry = { ...geoData(), annotations: { ...(geometry.annotations || {}), [id]: anno } };
+    selAnno = id;
+    selected = null;
+    selectedIds = [];
+    persistGeo();
+    if (kind === "text") startEdit("anno-text");
+  }
+
+  function patchAnno(id, patch) {
+    const cur = geometry.annotations?.[id];
+    if (!cur) return;
+    geometry = {
+      ...geoData(),
+      annotations: { ...(geometry.annotations || {}), [id]: { ...cur, ...patch } },
+    };
+  }
+
+  function deleteAnno(id) {
+    const rest = { ...(geometry.annotations || {}) };
+    delete rest[id];
+    geometry = { ...geoData(), annotations: rest };
+    if (selAnno === id) selAnno = null;
+    persistGeo();
+  }
+
+  function onAnnoDown(e, id) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* not a pointer event */
+    }
+    selAnno = id;
+    selected = null;
+    selectedLink = null;
+    selectedNet = null;
+    selectedIds = [];
+    const a = geometry.annotations[id];
+    dragging = {
+      kind: "anno",
+      id,
+      dx: e.clientX - pan.x - a.x * pan.k,
+      dy: e.clientY - pan.y - a.y * pan.k,
+    };
+  }
+
+  function onAnnoResizeDown(e, id) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* not a pointer event */
+    }
+    const a = geometry.annotations[id];
+    resizing = { id, x0: e.clientX, y0: e.clientY, w0: a.w, h0: a.h };
+  }
+
+  function annoMenu(e, id) {
+    e.preventDefault();
+    e.stopPropagation();
+    selAnno = id;
+    const a = geometry.annotations[id];
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      title: a.kind === "box" ? "Box" : "Text",
+      items: [
+        { label: "Edit text", glyph: "✎", run: () => startEdit("anno-text") },
+        { sep: true },
+        ...ANNO_COLORS.map(([name, css]) => ({
+          label: `Colour: ${name}`,
+          glyph: "●",
+          run: () => {
+            patchAnno(id, { color: css });
+            persistGeo();
+          },
+        })),
+        { sep: true },
+        { label: "Delete", glyph: "✕", run: () => deleteAnno(id) },
+      ],
     };
   }
 
@@ -956,6 +1075,7 @@
       selectedIds = [node.id];
     }
     selected = node.id;
+    selAnno = null;
     selectedLink = null;
     selectedNet = null;
     linkPop = null;
@@ -997,9 +1117,19 @@
       };
       return;
     }
+    if (resizing && lab) {
+      const w = Math.max(60, snap(resizing.w0 + (e.clientX - resizing.x0) / pan.k));
+      const h = Math.max(40, snap(resizing.h0 + (e.clientY - resizing.y0) / pan.k));
+      patchAnno(resizing.id, { w, h });
+      return;
+    }
     if (dragging && lab) {
       const x = snap((e.clientX - pan.x - dragging.dx) / pan.k);
       const y = snap((e.clientY - pan.y - dragging.dy) / pan.k);
+      if (dragging.kind === "anno") {
+        patchAnno(dragging.id, { x, y });
+        return;
+      }
       const bucket = dragging.kind === "net" ? "nets" : "nodes";
       const moved = { ...(geometry[bucket] || {}), [dragging.id]: { x, y } };
       // Dragging one of several selected nodes moves the group: the whole
@@ -1026,6 +1156,10 @@
       marquee = null;
     }
     if (wiring) wiring = null;
+    if (resizing) {
+      resizing = null;
+      await persistGeo();
+    }
     if (dragging) {
       dragging = null;
       await persistGeo();
@@ -1047,6 +1181,7 @@
     if (e.button !== 0) return;
     const add = e.ctrlKey || e.metaKey || e.shiftKey;
     selected = null;
+    selAnno = null;
     selectedLink = null;
     selectedNet = null;
     linkPop = null;
@@ -1092,6 +1227,11 @@
     if (e.key === "Escape") {
       marquee = null;
       selectedIds = [];
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && selAnno) {
+      e.preventDefault();
+      deleteAnno(selAnno);
+      return;
     }
     if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.length > 1) {
       e.preventDefault();
@@ -1971,6 +2111,10 @@
       items: [
         { label: "Start all", glyph: "▶", run: startAll },
         { label: "Stop all", glyph: "■", run: stopAll },
+        { sep: true },
+        //: Placed where you right-clicked, which is where you meant.
+        { label: "Add box here", glyph: "▭", run: () => addAnno("box", e.clientX, e.clientY) },
+        { label: "Add text here", glyph: "T", run: () => addAnno("text", e.clientX, e.clientY) },
       ],
     };
   }
@@ -3234,6 +3378,11 @@
       //: the interface simply never asked, so a node called "h-1-1-1" stayed
       //: that way for the life of the lab while the lab around it could be
       //: renamed with F2. Same dialog, so the two behave alike.
+      "anno-text": {
+        prompt: "Text",
+        value: geometry.annotations?.[selAnno]?.text ?? "",
+        placeholder: "label",
+      },
       "rename-node": {
         prompt: "Rename node to",
         value: selectedNode?.name ?? "",
@@ -3249,7 +3398,12 @@
     const name = value.trim();
     edit = null;
     try {
-      if (mode === "rename-node" && name) {
+      if (mode === "anno-text") {
+        if (selAnno) {
+          patchAnno(selAnno, { text: value.trim() });
+          await persistGeo();
+        }
+      } else if (mode === "rename-node" && name) {
         //: The node keeps its id, so nothing that points at it breaks — the
         //: name is a label, and links, interfaces and configs all reference
         //: the id.
@@ -4671,6 +4825,43 @@
       }}
     >
       <div class="grid" style={`transform: translate(${pan.x}px, ${pan.y}px) scale(${pan.k})`}>
+        <!-- Annotations go first in the DOM and carry no z-index of their
+             own, so a box drawn round a group sits behind the nodes it
+             groups and behind the wires; what it never does is intercept a
+             click meant for a node. -->
+        <div class="annos">
+          {#each Object.entries(geometry.annotations || {}) as [aid, a] (aid)}
+            {#if a.kind === "box"}
+              <div
+                class="anno box"
+                class:sel={selAnno === aid}
+                style={`left:${a.x}px; top:${a.y}px; width:${a.w}px; height:${a.h}px; --ac:${a.color}`}
+                role="button"
+                tabindex="-1"
+                onpointerdown={(e) => onAnnoDown(e, aid)}
+                ondblclick={() => { selAnno = aid; startEdit("anno-text"); }}
+                oncontextmenu={(e) => annoMenu(e, aid)}
+              >
+                {#if a.text}<span class="anno-label">{a.text}</span>{/if}
+                {#if selAnno === aid}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div class="anno-grip" onpointerdown={(e) => onAnnoResizeDown(e, aid)}></div>
+                {/if}
+              </div>
+            {:else}
+              <div
+                class="anno text"
+                class:sel={selAnno === aid}
+                style={`left:${a.x}px; top:${a.y}px; --ac:${a.color}; font-size:${a.size || 14}px`}
+                role="button"
+                tabindex="-1"
+                onpointerdown={(e) => onAnnoDown(e, aid)}
+                ondblclick={() => { selAnno = aid; startEdit("anno-text"); }}
+                oncontextmenu={(e) => annoMenu(e, aid)}
+              >{a.text || "text"}</div>
+            {/if}
+          {/each}
+        </div>
         <svg class="wires" width="4000" height="3000">
           <defs>
             <marker
@@ -7188,6 +7379,23 @@
      links with one end past the origin appeared to start in mid-air at x=0.
      The canvas still clips at the viewport, which is what panning is for. */
   .wires { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: visible; }
+  .annos { position: absolute; inset: 0; pointer-events: none; }
+  .anno { position: absolute; pointer-events: auto; touch-action: none; cursor: move; color: var(--ac); }
+  .anno.box {
+    border: 2px solid var(--ac); border-radius: 8px;
+    background: color-mix(in srgb, var(--ac) 7%, transparent);
+  }
+  .anno.box.sel { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ac) 45%, transparent); }
+  .anno-label {
+    position: absolute; left: 8px; top: 4px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.04em; text-transform: uppercase; color: var(--ac); user-select: none;
+  }
+  .anno-grip {
+    position: absolute; right: -6px; bottom: -6px; width: 12px; height: 12px;
+    border-radius: 3px; background: var(--ac); cursor: nwse-resize;
+  }
+  .anno.text { padding: 2px 4px; font-weight: 600; white-space: pre; user-select: none; border-radius: 4px; }
+  .anno.text.sel { outline: 1px dashed var(--ac); }
   /* Thinner and calmer: a 3px glowing cable per link turned a dense lab into
      soup. The glow is kept for the selected one, where it means something. */
   .link { fill: none; stroke: var(--wire); stroke-width: 1.75; stroke-linecap: round; opacity: .85; pointer-events: none; transition: stroke .15s, opacity .15s; }

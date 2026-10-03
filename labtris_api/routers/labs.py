@@ -789,8 +789,21 @@ async def _clone_topology(
 
 
 def _remap_geometry(geometry: dict[str, Any], node_id_map: dict[str, str]) -> dict[str, Any]:
+    """Geometry for a lab whose node ids have just been minted afresh.
+
+    Node positions are re-keyed. Link and net positions are dropped on
+    purpose: both are rebuilt from the topology on the way in, so their old
+    ids point at nothing. Annotations — boxes and text — reference no id at
+    all and are carried over as they are; a box drawn round a pod's spines
+    is part of what the pod is.
+    """
     nodes = {node_id_map.get(k, k): v for k, v in (geometry.get("nodes") or {}).items()}
-    return {"nodes": nodes, "links": {}, "view": geometry.get("view") or {"x": 80, "y": 40, "k": 1}}
+    return {
+        "nodes": nodes,
+        "links": {},
+        "annotations": dict(geometry.get("annotations") or {}),
+        "view": geometry.get("view") or {"x": 80, "y": 40, "k": 1},
+    }
 
 
 @router.post("/labs/import", response_model=LabDetail, status_code=201)
