@@ -120,8 +120,15 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             # "sidecar processes only, keep the container alive").
             # The daemon reload guidance stays in `notes` for the
             # assistant to prefer (1) when possible.
+            # chown before start, because a seeded /etc/frr arrives owned by
+            # root: NodeSpec.seed_files writes a plain tar into the created
+            # container and has no business knowing that this image wants
+            # uid 100. FRR reads world-readable files either way, but `write
+            # memory` and vtysh's own history need the ownership the image
+            # ships. A no-op when nothing was seeded.
             cmd=[
                 "/bin/bash", "-c",
+                "chown -R frr:frr /etc/frr 2>/dev/null || true; "
                 "/usr/lib/frr/frrinit.sh start && exec tail -f /dev/null",
             ],
             notes="Extra caps SYS_ADMIN, NET_BIND_SERVICE, SYS_NICE on "
