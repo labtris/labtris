@@ -221,6 +221,7 @@ async def delete_node(
 @router.post("/nodes/{node_id}/wipe", response_model=NodeOut)
 async def wipe_node(
     node_id: str,
+    deep: bool = False,
     session: AsyncSession = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> Node:
@@ -229,13 +230,35 @@ async def wipe_node(
     The topology — name, links, addresses, position on the canvas — is the part
     worth keeping when an experiment has made a mess of the guest. Deleting the
     overlay means the next start builds a fresh one from the shared base image,
-    so this costs a boot rather than a re-download."""
+    so this costs a boot rather than a re-download.
+
+    `deep=true` extends the wipe to the node's host-side bind mounts
+    (`~/.local/share/labtris/node-mounts/<node_id>/`). Default is false
+    because that directory holds things a user does not usually want to
+    lose with a wipe — bmv2's /p4 program, an FRR config dir, a saved
+    cumulus startup. Pass `deep=true` when the goal is "zero all state
+    on this node"; the next start re-seeds those directories from the
+    profile defaults (bmv2 gets basic_switch.p4 back, FRR gets the
+    stock daemons file, etc)."""
     from labtris_api.lifecycle import destroy_node_runtime
 
     node = await get_node(session, node_id)
     await require_lab_owner(session, node.lab_id, user)
     await get_unlocked_lab(session, node.lab_id)
     await destroy_node_runtime(session, node)
+    if deep:
+        # Local import because the mounts dir is a docker-runtime concept
+        # and the wipe path has to work for QEMU nodes too (where the dir
+        # does not exist). shutil.rmtree is tolerant of the missing-path
+        # case via `ignore_errors=True`.
+        import shutil
+        from pathlib import Path
+        root = Path(
+            __import__("os").environ.get("LABTRIS_NODE_MOUNTS_DIR")
+            or "~/.local/share/labtris/node-mounts"
+        ).expanduser() / node.id
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
     node.state = "defined"
     node.last_error = None
     await session.commit()

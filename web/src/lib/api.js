@@ -306,7 +306,8 @@ export const api = {
     req(`/api/v1/labs/${labId}/nodes`, { method: "POST", body: JSON.stringify(body) }),
   node: (id) => req(`/api/v1/nodes/${id}`),
   start: (id) => req(`/api/v1/nodes/${id}/start`, { method: "POST", body: "{}" }),
-  wipe: (id) => req(`/api/v1/nodes/${id}/wipe`, { method: "POST", body: "{}" }),
+  wipe: (id, { deep = false } = {}) =>
+    req(`/api/v1/nodes/${id}/wipe${deep ? "?deep=true" : ""}`, { method: "POST", body: "{}" }),
   qemuOptions: () => req("/api/v1/qemu/options"),
   setQemuOptions: (id, opts) =>
     req(`/api/v1/nodes/${id}/qemu-options`, { method: "PATCH", body: JSON.stringify(opts) }),
