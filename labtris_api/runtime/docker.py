@@ -456,27 +456,47 @@ class DockerRuntime:
         # prompt to *stderr*, and the `2>/dev/null` was swallowing it. Every
         # keystroke worked; the guest just had no visible prompt. Do not
         # reintroduce the stderr redirect.
-        proc = await container.exec(
-            [
-                "/bin/sh",
-                "-c",
-                "if command -v bash >/dev/null 2>&1; then exec bash -i; "
-                "else exec /bin/sh -i; fi",
-            ],
-            stdin=True,
-            stdout=True,
-            stderr=True,
-            tty=True,
-            environment=[
-                "TERM=xterm-256color",
-                f"COLUMNS={cols}",
-                f"LINES={rows}",
-                # Busybox-sh fallback: it does not set a prompt in interactive
-                # mode unless one is in the env. Bash ignores this and uses
-                # its own default.
-                "PS1=\\u@\\h:\\w\\$ ",
-            ],
-        )
+        try:
+            proc = await container.exec(
+                [
+                    "/bin/sh",
+                    "-c",
+                    "if command -v bash >/dev/null 2>&1; then exec bash -i; "
+                    "else exec /bin/sh -i; fi",
+                ],
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                tty=True,
+                environment=[
+                    "TERM=xterm-256color",
+                    f"COLUMNS={cols}",
+                    f"LINES={rows}",
+                    # Busybox-sh fallback: it does not set a prompt in interactive
+                    # mode unless one is in the env. Bash ignores this and uses
+                    # its own default.
+                    "PS1=\\u@\\h:\\w\\$ ",
+                ],
+            )
+        except DockerError as exc:
+            # Same drift as exec_shell: when a lab is being deleted, any
+            # open console tab's WebSocket auto-reconnects and lands here
+            # against a container that is already stopped (409) or already
+            # removed (404). Without this, aiodocker's raw DockerError
+            # repr leaks all the way to the user as "DockerError(409,
+            # 'container <id> is not running')" on the delete action.
+            await docker.close()
+            if exc.status == 409:
+                raise runtime_error(
+                    "container is not running — its state has drifted "
+                    "from Labtris. Start the node again."
+                ) from exc
+            if exc.status == 404:
+                raise runtime_error(
+                    "container no longer exists — it was removed outside "
+                    "Labtris. Recreate the node."
+                ) from exc
+            raise runtime_error(f"docker exec failed: {exc}") from exc
         stream = proc.start(detach=False)
         return stream, proc, docker
 
