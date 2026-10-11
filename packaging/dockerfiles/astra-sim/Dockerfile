@@ -99,6 +99,12 @@ RUN printf '%s\n' '#!/bin/sh' \
 RUN rm -rf /opt/astra-sim/examples/run_scripts/ns3 \
            /opt/astra-sim/examples/run_scripts/htsim
 
+# Labtris's own example: the three inner tiers — scale-in (die to die),
+# scale-up (the node) and scale-out (the fabric) — as one three-dimensional
+# model. Upstream's examples are one dimension each; this is the shape the
+# tier questions are actually asked in.
+COPY labtris /opt/astra-sim/labtris
+
 WORKDIR /opt/astra-sim
 # A simulator node has nothing to listen on; it exists to be exec'd into and
 # run. Same shape as uet-htsim.

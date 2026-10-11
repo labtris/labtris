@@ -86,7 +86,8 @@ def _resolve_kind(kind: str) -> tuple[str, str]:
 
 class GenerateIn(BaseModel):
     pattern: Literal[
-        "spine-leaf", "rail-optimised", "fat-tree", "front-end", "scale-across"
+        "spine-leaf", "rail-optimised", "fat-tree", "front-end", "scale-across",
+        "scale-above", "scale-edge",
     ]
     #: Sizes — meaning depends on pattern.
     spines: int = Field(2, ge=1, le=32)
@@ -138,7 +139,26 @@ class GenerateIn(BaseModel):
     #: per-direction impairment rather than quietly ignoring it.
     dci_return_delay_ms: int = Field(14, ge=0, le=500)
     #: front-end only: how many service hosts hang off the access switch.
+    #: scale-edge reuses it for the services at the core.
     services: int = Field(3, ge=0, le=32)
+    #: scale-above only: regions above the DCI, and the transit routers
+    #: between them. Every region border peers with every transit, so there
+    #: are as many paths between two regions as there are transits, and the
+    #: path chosen each way is BGP's business rather than the generator's.
+    regions: int = Field(3, ge=2, le=6)
+    transits: int = Field(2, ge=1, le=4)
+    #: scale-above only: one-way delay region→transit. Each transit adds
+    #: `above_delay_step_ms` more than the last, so the transits are not
+    #: interchangeable and the shorter path is worth finding.
+    above_delay_ms: int = Field(25, ge=0, le=500)
+    above_delay_step_ms: int = Field(8, ge=0, le=100)
+    #: scale-edge only: edge sites hanging off the core, hosts at each, and
+    #: the impairment preset on the last mile. "auto" cycles through the
+    #: presets that describe real last miles — satellite, 3g, wifi,
+    #: lossy-wan — so a four-edge lab has one of each.
+    edges: int = Field(4, ge=1, le=32)
+    hosts_per_edge: int = Field(1, ge=0, le=8)
+    edge_preset: str = "auto"
     #: front-end only: give the border pair a NAT segment for egress, so
     #: the lab can actually reach the internet rather than only looking as
     #: though it could.
@@ -960,6 +980,9 @@ def _border_frr_conf(idx: int, peers: int, services: int) -> str:
     return f"""frr defaults datacenter
 hostname border-{idx}
 !
+interface lo
+ ip address 10.255.0.{idx}/32
+!
 router bgp 6500{idx}
  bgp router-id 10.255.0.{idx}
  bgp bestpath as-path multipath-relax
@@ -1049,9 +1072,42 @@ async def _front_end(b: _Builder, body: GenerateIn) -> None:
 # way.
 
 
-def _site_border_frr_conf(site: int, sites: int, leaves: int) -> str:
+def _uplink_leaf_frr_conf(hostname: str, asn: int, router_id: str) -> str:
+    """A leaf whose uplink is eth0 and whose hosts hang off the rest. Used by
+    the site, region and core-access roles, which all have that shape."""
+    return f"""frr defaults datacenter
+hostname {hostname}
+!
+interface lo
+ ip address {router_id}/32
+!
+router bgp {asn}
+ bgp router-id {router_id}
+ no bgp ebgp-requires-policy
+ neighbor eth0 interface remote-as external
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor eth0 activate
+ exit-address-family
+!
+"""
+
+
+def _site_border_frr_conf(site: int, sites: int, leaves: int, dci_hops: int = 1) -> str:
+    """Leaves are eth0..eth{leaves-1}, the DCI hops come after — the order
+    _scale_across adds interfaces in. A peer-group with no members is a
+    config that parses and peers with nobody, which is what this produced
+    before the members were written out."""
+    members = "\n".join(
+        [f" neighbor eth{j} interface peer-group fabric" for j in range(leaves)]
+        + [f" neighbor eth{leaves + k} interface peer-group dci" for k in range(dci_hops)]
+    )
     return f"""frr defaults datacenter
 hostname site{site}-border
+!
+interface lo
+ ip address 10.254.0.{site}/32
 !
 router bgp 6510{site}
  bgp router-id 10.254.0.{site}
@@ -1061,6 +1117,7 @@ router bgp 6510{site}
  neighbor fabric remote-as external
  neighbor dci peer-group
  neighbor dci remote-as external
+{members}
  !
  address-family ipv4 unicast
   redistribute connected
@@ -1092,7 +1149,10 @@ async def _scale_across(b: _Builder, body: GenerateIn) -> None:
         if body.leaf_kind == "frr":
             cfg = _frr_installer(
                 _FRR_DAEMONS_EVPN,
-                _site_border_frr_conf(site + 1, body.sites, body.leaves),
+                _site_border_frr_conf(
+                    site + 1, body.sites, body.leaves,
+                    dci_hops=1 if body.sites == 2 else 2,
+                ),
             )
         border = await b.add_node(
             f"site{site+1}-border", body.leaf_kind,
@@ -1107,6 +1167,13 @@ async def _scale_across(b: _Builder, body: GenerateIn) -> None:
                 f"site{site+1}-leaf-{j+1}", body.leaf_kind,
                 row=1, col=base_col + j,
                 row_wide=body.sites * (body.leaves + 1),
+                startup_config=(
+                    _frr_installer(_FRR_DAEMONS_EVPN,
+                                   _uplink_leaf_frr_conf(f"site{site+1}-leaf-{j+1}",
+                                                         65120 + site * 64 + j,
+                                                         f"10.254.{site+1}.{j+1}"))
+                    if body.leaf_kind == "frr" else None
+                ),
             )
             leaves.append(leaf)
         await b.flush()
@@ -1142,6 +1209,329 @@ async def _scale_across(b: _Builder, body: GenerateIn) -> None:
         link.impair_ba = {"delay_ms": body.dci_return_delay_ms}
 
 
+# ---- scale-above -----------------------------------------------------
+#
+# The tier above scale-across: regions that are not one operator's DCI
+# apart but a public transit apart. "Scale-above" is not an industry term
+# the way the other four are — Broadcom and Marvell stop at scale-across —
+# and the name is used here for the shape that sits above it: several
+# transit ASes, every region peering with all of them, and the path each
+# way chosen by BGP. The point is that the two directions between a pair of
+# regions need not use the same transit, and that withdrawing one transit
+# re-routes rather than partitions.
+
+
+def _transit_frr_conf(idx: int, ports: int) -> str:
+    """Every port on a transit is an eBGP peer: the other transits first
+    (mesh), then one per region, in the order the generator wires them."""
+    members = "\n".join(f" neighbor eth{i} interface peer-group peers" for i in range(ports))
+    return f"""frr defaults datacenter
+hostname transit-{idx}
+!
+interface lo
+ ip address 10.253.0.{idx}/32
+!
+router bgp 6400{idx}
+ bgp router-id 10.253.0.{idx}
+ bgp bestpath as-path multipath-relax
+ no bgp ebgp-requires-policy
+ neighbor peers peer-group
+ neighbor peers remote-as external
+{members}
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor peers activate
+ exit-address-family
+!
+"""
+
+
+def _region_border_frr_conf(region: int, transits: int, leaves: int) -> str:
+    """Transits are eth0..eth{transits-1}, leaves after."""
+    members = "\n".join(
+        [f" neighbor eth{t} interface peer-group transit" for t in range(transits)]
+        + [f" neighbor eth{transits + j} interface peer-group fabric" for j in range(leaves)]
+    )
+    return f"""frr defaults datacenter
+hostname region{region}-border
+!
+interface lo
+ ip address 10.252.0.{region}/32
+!
+router bgp 6520{region}
+ bgp router-id 10.252.0.{region}
+ bgp bestpath as-path multipath-relax
+ no bgp ebgp-requires-policy
+ neighbor fabric peer-group
+ neighbor fabric remote-as external
+ neighbor transit peer-group
+ neighbor transit remote-as external
+{members}
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor fabric activate
+  neighbor transit activate
+ exit-address-family
+!
+"""
+
+
+async def _scale_above(b: _Builder, body: GenerateIn) -> None:
+    """N regions over T transit routers, every region on every transit.
+
+    Each region is a border, a leaf and its hosts — the smallest thing that
+    is still a site. The transits are full-meshed with each other so a
+    region can be reached through any of them, and the region→transit link
+    gets a different delay per transit, so the paths are not equivalent and
+    BGP has a reason to prefer one. The return delay is one step higher, as
+    on the DCI: asymmetry is the default here, not the exception.
+    """
+    wide = max(body.regions * (body.leaves + 1), body.transits)
+    transits: list[Node] = []
+    for t in range(body.transits):
+        cfg = None
+        if body.leaf_kind == "frr":
+            cfg = _frr_installer(
+                _FRR_DAEMONS_EVPN,
+                _transit_frr_conf(t + 1, body.transits - 1 + body.regions),
+            )
+        transits.append(
+            await b.add_node(
+                f"transit-{t+1}", body.leaf_kind, row=0, col=t, row_wide=body.transits,
+                startup_config=cfg,
+            )
+        )
+    await b.flush()
+    # Transit full mesh.
+    for i in range(body.transits):
+        for j in range(i + 1, body.transits):
+            x = await b.add_interface(transits[i])
+            y = await b.add_interface(transits[j])
+            await b.wire(x, y)
+
+    for r in range(body.regions):
+        base_col = r * (body.leaves + 1)
+        cfg = None
+        if body.leaf_kind == "frr":
+            cfg = _frr_installer(
+                _FRR_DAEMONS_EVPN,
+                _region_border_frr_conf(r + 1, body.transits, body.leaves),
+            )
+        border = await b.add_node(
+            f"region{r+1}-border", body.leaf_kind,
+            row=1, col=base_col, row_wide=wide, startup_config=cfg,
+        )
+        leaves: list[Node] = []
+        for j in range(body.leaves):
+            leaves.append(await b.add_node(
+                f"region{r+1}-leaf-{j+1}", body.leaf_kind,
+                row=2, col=base_col + j, row_wide=wide,
+                startup_config=(
+                    _frr_installer(_FRR_DAEMONS_EVPN,
+                                   _uplink_leaf_frr_conf(f"region{r+1}-leaf-{j+1}",
+                                                         65220 + r * 64 + j,
+                                                         f"10.252.{r+1}.{j+1}"))
+                    if body.leaf_kind == "frr" else None
+                ),
+            ))
+        await b.flush()
+
+        # Up to every transit, with a delay that depends on which one.
+        for t, transit in enumerate(transits):
+            x = await b.add_interface(border)
+            y = await b.add_interface(transit)
+            link = await b.wire(x, y)
+            out = body.above_delay_ms + t * body.above_delay_step_ms
+            link.impair_ab = {"delay_ms": out}
+            link.impair_ba = {"delay_ms": out + body.above_delay_step_ms}
+
+        for leaf in leaves:
+            x = await b.add_interface(border)
+            y = await b.add_interface(leaf)
+            await b.wire(x, y)
+
+        for j, leaf in enumerate(leaves):
+            for h in range(body.hosts_per_leaf):
+                host = await b.add_node(
+                    f"region{r+1}-h-{j+1}-{h+1}", body.host_kind,
+                    row=3, col=base_col + j * max(1, body.hosts_per_leaf) + h,
+                    row_wide=wide * max(1, body.hosts_per_leaf),
+                )
+                await b.flush()
+                hi = await b.add_interface(host)
+                li = await b.add_interface(leaf)
+                await b.wire(hi, li)
+
+
+# ---- scale-edge ------------------------------------------------------
+#
+# The other direction from scale-above: not bigger sites further apart, but
+# many small ones on bad links. Inference moves to the edge, and what the
+# edge has is a last mile — satellite, cellular, a shared radio, a lossy
+# WAN — not a DCI. The impairment presets already describe those; this
+# pattern puts one on each edge link so the lab ships with a different
+# last mile per site rather than four copies of the same one. Also not an
+# industry tier name; it is the shape /ai-fabrics needed a word for.
+
+_EDGE_PRESET_CYCLE = ("satellite", "3g", "wifi", "lossy-wan")
+
+
+def _edge_core_frr_conf(edges: int) -> str:
+    """eth0 is the access switch; the edges are eth1..eth{edges}; the NAT
+    egress, if any, comes after and is not a peer."""
+    members = "\n".join(
+        [" neighbor eth0 interface peer-group fabric"]
+        + [f" neighbor eth{e + 1} interface peer-group edges" for e in range(edges)]
+    )
+    return f"""frr defaults datacenter
+hostname core-border
+!
+interface lo
+ ip address 10.251.0.1/32
+!
+router bgp 65300
+ bgp router-id 10.251.0.1
+ bgp bestpath as-path multipath-relax
+ no bgp ebgp-requires-policy
+ neighbor edges peer-group
+ neighbor edges remote-as external
+ neighbor fabric peer-group
+ neighbor fabric remote-as external
+{members}
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor edges activate
+  neighbor fabric activate
+ exit-address-family
+!
+"""
+
+
+def _edge_site_frr_conf(idx: int) -> str:
+    return f"""frr defaults datacenter
+hostname edge-{idx}
+!
+interface lo
+ ip address 10.251.1.{idx}/32
+!
+router bgp {65300 + idx}
+ bgp router-id 10.251.1.{idx}
+ no bgp ebgp-requires-policy
+ neighbor eth0 interface remote-as external
+ !
+ address-family ipv4 unicast
+  redistribute connected
+  neighbor eth0 activate
+ exit-address-family
+!
+"""
+
+
+async def _scale_edge(b: _Builder, body: GenerateIn) -> None:
+    """One core, many edges, a different last mile to each.
+
+    The core is a border and an access switch with the front-end services
+    behind it (inference-api first, because that is what the edges call).
+    Each edge is one router and its hosts, reached over a link carrying the
+    preset for that edge's kind of last mile. `edge_preset` names one preset
+    for all of them; "auto" hands out satellite, 3g, wifi and lossy-wan in
+    turn.
+    """
+    from labtris_api.impair import PRESETS
+
+    if body.edge_preset != "auto" and body.edge_preset not in PRESETS:
+        raise bad_request(
+            f"unknown edge_preset {body.edge_preset!r}; one of "
+            + ", ".join(sorted(PRESETS)) + ", or auto"
+        )
+
+    wide = max(body.edges * max(1, body.hosts_per_edge), body.services, 2)
+    core_cfg = None
+    if body.leaf_kind == "frr":
+        core_cfg = _frr_installer(_FRR_DAEMONS_EVPN, _edge_core_frr_conf(body.edges))
+    core = await b.add_node(
+        "core-border", body.leaf_kind, row=0, col=0, row_wide=2, startup_config=core_cfg,
+    )
+    access = await b.add_node(
+        "core-access", body.leaf_kind, row=0, col=1, row_wide=2,
+        startup_config=(
+            _frr_installer(_FRR_DAEMONS_EVPN,
+                           _uplink_leaf_frr_conf("core-access", 65290, "10.251.0.2"))
+            if body.leaf_kind == "frr" else None
+        ),
+    )
+    await b.flush()
+    # core eth0 ↔ access eth0: both configs name eth0 as the peer.
+    x = await b.add_interface(core)
+    y = await b.add_interface(access)
+    await b.wire(x, y)
+
+    roles = ["inference-api", "registry", "monitoring", "storage", "jump"]
+    for h in range(body.services):
+        name = roles[h] if h < len(roles) else f"svc-{h+1}"
+        host = await b.add_node(
+            name, body.host_kind, row=1, col=h, row_wide=max(1, body.services),
+        )
+        await b.flush()
+        hi = await b.add_interface(host)
+        ai = await b.add_interface(access)
+        await b.wire(hi, ai)
+
+    for e in range(body.edges):
+        preset = (
+            _EDGE_PRESET_CYCLE[e % len(_EDGE_PRESET_CYCLE)]
+            if body.edge_preset == "auto" else body.edge_preset
+        )
+        cfg = None
+        if body.leaf_kind == "frr":
+            cfg = _frr_installer(_FRR_DAEMONS_EVPN, _edge_site_frr_conf(e + 1))
+        edge = await b.add_node(
+            f"edge-{e+1}", body.leaf_kind,
+            row=2, col=e * max(1, body.hosts_per_edge), row_wide=wide,
+            startup_config=cfg,
+        )
+        await b.flush()
+        # eth0 on the edge router is the uplink: the FRR config above names
+        # it, so it has to be the first interface added.
+        ei = await b.add_interface(edge)
+        ci = await b.add_interface(core)
+        link = await b.wire(ei, ci)
+        # The same preset both ways. A last mile is usually asymmetric in
+        # rate, not delay, and the presets carry one rate; a caller who
+        # wants the asymmetry sets impair_ba afterwards.
+        link.impair_ab = dict(PRESETS[preset])
+        link.impair_ba = dict(PRESETS[preset])
+
+        for h in range(body.hosts_per_edge):
+            host = await b.add_node(
+                f"edge-{e+1}-h{h+1}", body.host_kind,
+                row=3, col=e * max(1, body.hosts_per_edge) + h, row_wide=wide,
+            )
+            await b.flush()
+            hi = await b.add_interface(host)
+            ri = await b.add_interface(edge)
+            await b.wire(hi, ri)
+
+    if body.with_egress:
+        from labtris_api.nat import pick_subnet, pool_for
+
+        subnet = await pick_subnet(b.session, None)
+        gateway, first, last = pool_for(subnet)
+        egress = Network(
+            id=new_id(), lab_id=b.lab.id, name="egress", kind="nat",
+            subnet=str(subnet), gateway=gateway,
+            dhcp_first=first, dhcp_last=last,
+        )
+        b.session.add(egress)
+        await b.session.flush()
+        b.networks_created.append(egress)
+        iface = await b.add_interface(core)
+        iface.network_id = egress.id
+
+
 async def generate(session: AsyncSession, lab_id: str, body: GenerateIn) -> GenerateOut:
     lab = await get_lab(session, lab_id)
     b = _Builder(session, lab)
@@ -1156,6 +1546,10 @@ async def generate(session: AsyncSession, lab_id: str, body: GenerateIn) -> Gene
         await _front_end(b, body)
     elif body.pattern == "scale-across":
         await _scale_across(b, body)
+    elif body.pattern == "scale-above":
+        await _scale_above(b, body)
+    elif body.pattern == "scale-edge":
+        await _scale_edge(b, body)
     else:  # pragma: no cover - Pydantic Literal blocks the else path
         raise bad_request(f"unknown pattern {body.pattern!r}")
 

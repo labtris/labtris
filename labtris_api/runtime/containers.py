@@ -258,7 +258,11 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
                 "is the bottleneck. Nothing touches a wire. uet-ref asks "
                 "whether the protocol is correct, uet-htsim whether the "
                 "algorithm is good; this asks how long the collective "
-                "takes on this rack. Examples in /opt/astra-sim/examples."
+                "takes on this rack. Examples in /opt/astra-sim/examples; "
+                "/opt/astra-sim/labtris/run-scale-in-up-out.sh is a "
+                "three-dimension model — die-to-die (scale-in), the rack "
+                "(scale-up) and the fabric (scale-out) — with the numbers "
+                "and their provenance in the yml beside it."
             ),
             boot_seconds=2,
         ),

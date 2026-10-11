@@ -44,6 +44,10 @@ SEED = (
     #: someone to write an underlay.
     "front-end",
     "scale-across",
+    #: The tiers above and around those: regions over transit ASes, and
+    #: edges on real last miles.
+    "scale-above",
+    "scale-edge",
 )
 
 #: Which pods this machine has already been offered, one name per line.

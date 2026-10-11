@@ -1,0 +1,29 @@
+# Three tiers in one model: scale-in, scale-up, scale-out.
+#
+# ASTRA-sim's analytical backend takes a hierarchy — one entry per
+# dimension, innermost first — and the industry's tiers map onto it
+# directly. Dimension 0 is the package (die-to-die), 1 the node (the
+# scale-up domain), 2 the fabric between nodes (scale-out).
+#
+#   dim 0  scale-in   2 dies per package, fully connected
+#   dim 1  scale-up   4 packages per node on a switch (NVSwitch / UALink class)
+#   dim 2  scale-out  2 nodes on a switch (the Ethernet fabric)
+#
+# 2 × 4 × 2 = 16 NPUs, which is the size of the 16npus_1MB workloads that
+# ship under examples/workload/microbenchmarks.
+#
+# The numbers are a Blackwell-class package from the public specifications,
+# NOT a validated model. Only the single-dimension HGX-H100 file next to it
+# (examples/network/analytical/HGX-H100-validated.yml) has been checked
+# against hardware. Die-to-die: NV-HBI, 10 TB/s bidirectional, so 5 TB/s a
+# direction. Scale-up: NVLink 5, 1.8 TB/s bidirectional per GPU, so 900 GB/s
+# a direction. Scale-out: one 400G NIC per GPU, 50 GB/s. Latencies are
+# round figures for the same reason; edit them before trusting a result.
+#
+# Run it with:
+#   /opt/astra-sim/labtris/run-scale-in-up-out.sh
+#
+topology: [ FullyConnected, Switch, Switch ]
+npus_count: [ 2, 4, 2 ]
+bandwidth: [ 5000.0, 900.0, 50.0 ]   # GB/s per direction
+latency: [ 100.0, 936.25, 2000.0 ]   # ns

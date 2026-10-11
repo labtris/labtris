@@ -596,6 +596,158 @@ def scale_across() -> dict:
     )
 
 
+def scale_above() -> dict:
+    """Three regions, two transits, every region on both transits.
+
+    The smallest shape in which the path between two regions is a choice.
+    Transit-2 is 8 ms further than transit-1 and every return leg is 8 ms
+    more than the outbound, so `traceroute` from region1-h1 to region3-h1
+    goes one way and comes back another — and stopping transit-1 re-routes
+    through transit-2 instead of cutting the regions off.
+    """
+    transits = [_id("SBT", t) for t in (1, 2)]
+    regions = []
+    for rn in (1, 2, 3):
+        regions.append((
+            _id(f"SBB{rn}", rn),          # border
+            _id(f"SBL{rn}", 10 + rn),     # leaf
+            _id(f"SBH{rn}", 20 + rn),     # host
+        ))
+
+    nodes = []
+    # transit-N: eth0 mesh, eth1..eth3 regions
+    for t, tid in enumerate(transits, start=1):
+        nodes.append(node(
+            tid, f"transit-{t}", "frrouting/frr:v8.4.0", ifaces=4,
+            startup_config=_frr_installer(
+                _FRR_DAEMONS_EVPN,
+                _bgp(f"transit-{t}", 64000 + t, f"10.253.0.{t}",
+                     ["eth0", "eth1", "eth2", "eth3"],
+                     extra=f"interface lo\n ip address 10.253.0.{t}/32\n")),
+        ))
+    for rn, (border, leaf, host) in enumerate(regions, start=1):
+        nodes += [
+            # region border: eth0 transit-1, eth1 transit-2, eth2 leaf
+            node(border, f"region{rn}-border", "frrouting/frr:v8.4.0", ifaces=3,
+                 startup_config=_frr_installer(
+                     _FRR_DAEMONS_EVPN,
+                     _bgp(f"region{rn}-border", 65200 + rn, f"10.252.0.{rn}",
+                          ["eth0", "eth1", "eth2"],
+                          extra=f"interface lo\n ip address 10.252.0.{rn}/32\n"))),
+            node(leaf, f"region{rn}-leaf", "frrouting/frr:v8.4.0", ifaces=2,
+                 startup_config=_frr_installer(
+                     _FRR_DAEMONS_EVPN,
+                     _bgp(f"region{rn}-leaf", 65220 + rn, f"10.252.{rn}.1",
+                          ["eth0"],
+                          extra=f"interface lo\n ip address 10.252.{rn}.1/32\n"))),
+            node(host, f"region{rn}-h1", "alpine:3.20"),
+        ]
+
+    links = [link(_id("SBTM", 1), iface(transits[0], 0), iface(transits[1], 0))]
+    for rn, (border, leaf, host) in enumerate(regions, start=1):
+        for t, tid in enumerate(transits):
+            out = 25 + t * 8
+            links.append(link(
+                _id(f"SBU{rn}", rn * 10 + t),
+                iface(border, t), iface(tid, rn),
+                impair={"delay_ms": out}, impair_ba={"delay_ms": out + 8},
+            ))
+        links.append(link(_id(f"SBX{rn}", rn), iface(border, 2), iface(leaf, 0)))
+        links.append(link(_id(f"SBY{rn}", rn), iface(host), iface(leaf, 1)))
+
+    geo = {transits[0]: {"x": 330, "y": 40}, transits[1]: {"x": 590, "y": 40}}
+    for i, (border, leaf, host) in enumerate(regions):
+        x = 120 + i * 340
+        geo[border] = {"x": x, "y": 220}
+        geo[leaf] = {"x": x, "y": 380}
+        geo[host] = {"x": x, "y": 540}
+
+    return pod(
+        "scale-above",
+        "Three regions over two transit networks, every region peering with "
+        "both. The transits are not equivalent — the second is 8 ms further, "
+        "and every return leg is 8 ms more than the outbound — so BGP has a "
+        "real choice and the two directions between a pair of regions need "
+        "not match. Traceroute region1-h1 → region3-h1, then stop transit-1 "
+        "and watch it re-route rather than partition. Everything converges "
+        "on boot.",
+        nodes, links, geo,
+    )
+
+
+def scale_edge() -> dict:
+    """One core, four edges, a different last mile to each.
+
+    Satellite, 3G, Wi-Fi and a lossy WAN — the four impairment presets that
+    describe a real last mile — one per edge, so the same request from
+    four places arrives four different ways. The core is a border, an
+    access switch and an inference-api host; the edges are a router and a
+    host each.
+    """
+    from labtris_api.impair import PRESETS  # presets are the lesson here
+
+    core = _id("SEC", 1)
+    access = _id("SEA", 1)
+    api_host = _id("SES", 1)
+    presets = ("satellite", "3g", "wifi", "lossy-wan")
+    edges = [(_id(f"SER{e}", e), _id(f"SEH{e}", 10 + e), presets[e - 1]) for e in (1, 2, 3, 4)]
+
+    nodes = [
+        # core-border: eth0 access, eth1..eth4 edges
+        node(core, "core-border", "frrouting/frr:v8.4.0", ifaces=5,
+             startup_config=_frr_installer(
+                 _FRR_DAEMONS_EVPN,
+                 _bgp("core-border", 65300, "10.251.0.1",
+                      ["eth0", "eth1", "eth2", "eth3", "eth4"],
+                      extra="interface lo\n ip address 10.251.0.1/32\n"))),
+        node(access, "core-access", "frrouting/frr:v8.4.0", ifaces=2,
+             startup_config=_frr_installer(
+                 _FRR_DAEMONS_EVPN,
+                 _bgp("core-access", 65290, "10.251.0.2", ["eth0"],
+                      extra="interface lo\n ip address 10.251.0.2/32\n"))),
+        node(api_host, "inference-api", "alpine:3.20"),
+    ]
+    for e, (router, host, preset) in enumerate(edges, start=1):
+        nodes += [
+            node(router, f"edge-{e}", "frrouting/frr:v8.4.0", ifaces=2,
+                 startup_config=_frr_installer(
+                     _FRR_DAEMONS_EVPN,
+                     _bgp(f"edge-{e}", 65300 + e, f"10.251.1.{e}", ["eth0"],
+                          extra=f"interface lo\n ip address 10.251.1.{e}/32\n"))),
+            node(host, f"edge-{e}-h1", "alpine:3.20"),
+        ]
+
+    links = [
+        link(_id("SEX", 1), iface(core, 0), iface(access, 0)),
+        link(_id("SEY", 1), iface(api_host), iface(access, 1)),
+    ]
+    for e, (router, host, preset) in enumerate(edges, start=1):
+        links.append(link(
+            _id(f"SEU{e}", e), iface(router, 0), iface(core, e),
+            impair=dict(PRESETS[preset]),
+        ))
+        links.append(link(_id(f"SEW{e}", e), iface(host), iface(router, 1)))
+
+    geo = {core: {"x": 420, "y": 40}, access: {"x": 420, "y": 200}, api_host: {"x": 420, "y": 360}}
+    for i, (router, host, _preset) in enumerate(edges):
+        x = 60 + i * 240
+        geo[router] = {"x": x, "y": 540}
+        geo[host] = {"x": x, "y": 700}
+
+    return pod(
+        "scale-edge",
+        "One core and four edge sites, each on a different last mile: "
+        "satellite (550 ms, 2 Mbit), 3G (150 ms, 384 kbit, 1% loss), Wi-Fi "
+        "(15 ms with jitter) and a lossy WAN (5% loss). The core has an "
+        "inference-api host behind an access switch; each edge is a router "
+        "and a host. Ping inference-api from each edge host and compare; "
+        "then change one edge's preset and see the difference it makes. "
+        "Everything converges on boot.",
+        nodes, links, geo,
+    )
+
+
+
 PODS = {
     "uet-pair": uet_pair,
     "rdma-pair": rdma_pair,
@@ -605,6 +757,8 @@ PODS = {
     "fw-vwire": fw_vwire,
     "front-end": front_end,
     "scale-across": scale_across,
+    "scale-above": scale_above,
+    "scale-edge": scale_edge,
 }
 
 

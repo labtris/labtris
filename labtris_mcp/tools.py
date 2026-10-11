@@ -748,17 +748,32 @@ def _lab_link_stats(api: Api, a: dict[str, Any]) -> Any:
 
 @tool(
     "lab_generate",
-    "Materialise an AI-fabric pattern topology into an existing lab: "
-    "spine-leaf (spines × leaves × hosts), rail-optimised (GPU-cluster "
-    "shape with one spine per rail), or fat-tree (Al-Fares 2008 k-ary). "
-    "Create an empty lab first, then generate — the pattern lands on "
-    "top of whatever is there. Use spine_kind=bmv2 + p4_program=ecmp "
-    "for a spraying-fabric prototype.",
+    "Materialise an AI-fabric pattern topology into an existing lab. "
+    "Scale-out: spine-leaf (spines × leaves × hosts), rail-optimised "
+    "(one spine per rail), fat-tree (Al-Fares k-ary). North-south: "
+    "front-end (border pair, access switch, named services, NAT egress). "
+    "Scale-across: sites, each a border+leaves, in a ring over a DCI with "
+    "per-direction delay (dci_delay_ms / dci_return_delay_ms). "
+    "Scale-above: regions that each peer with every transit router; "
+    "delays differ per transit and per direction, so BGP has a real choice "
+    "and withdrawing a transit re-routes. Scale-edge: one core with "
+    "services and N edge sites, each reached over a different last-mile "
+    "preset (satellite, 3g, wifi, lossy-wan, or one named edge_preset). "
+    "Create an empty lab first, then generate — the pattern lands on top "
+    "of whatever is there. FRR configs are seeded so BGP converges on boot.",
     {
         "lab_id": STR,
-        "pattern": {"type": "string", "enum": ["spine-leaf", "rail-optimised", "fat-tree"]},
+        "pattern": {"type": "string", "enum": [
+            "spine-leaf", "rail-optimised", "fat-tree", "front-end",
+            "scale-across", "scale-above", "scale-edge",
+        ]},
         "spines": INT, "leaves": INT, "hosts_per_leaf": INT,
         "rails": INT, "hosts_per_rail": INT, "k": INT,
+        "sites": INT, "dci_delay_ms": INT, "dci_return_delay_ms": INT,
+        "services": INT, "with_egress": {"type": "boolean"},
+        "regions": INT, "transits": INT,
+        "above_delay_ms": INT, "above_delay_step_ms": INT,
+        "edges": INT, "hosts_per_edge": INT, "edge_preset": STR,
         "spine_kind": STR, "leaf_kind": STR, "host_kind": STR,
         "p4_program": STR, "with_bgp_evpn": {"type": "boolean"},
     },

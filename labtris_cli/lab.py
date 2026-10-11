@@ -154,7 +154,10 @@ def cmd_generate(
     lab_id: str,
     pattern: str = typer.Option(
         "spine-leaf", "--pattern",
-        help="spine-leaf | rail-optimised | fat-tree",
+        help=(
+            "spine-leaf | rail-optimised | fat-tree | front-end | "
+            "scale-across | scale-above | scale-edge"
+        ),
     ),
     spines: int = typer.Option(2, "--spines"),
     leaves: int = typer.Option(4, "--leaves"),
@@ -162,6 +165,26 @@ def cmd_generate(
     rails: int = typer.Option(4, "--rails", help="rail-optimised only"),
     hosts_per_rail: int = typer.Option(2, "--hosts-per-rail", help="rail-optimised only"),
     k: int = typer.Option(4, "--k", help="fat-tree only (even)"),
+    sites: int = typer.Option(2, "--sites", help="scale-across only"),
+    dci_delay_ms: int = typer.Option(12, "--dci-delay-ms", help="scale-across only"),
+    dci_return_delay_ms: int = typer.Option(14, "--dci-return-delay-ms", help="scale-across only"),
+    services: int = typer.Option(
+        3, "--services", help="front-end / scale-edge: service hosts at the core"),
+    with_egress: bool = typer.Option(
+        True, "--with-egress/--no-egress",
+        help="front-end / scale-edge: NAT segment on the border"),
+    regions: int = typer.Option(3, "--regions", help="scale-above only"),
+    transits: int = typer.Option(2, "--transits", help="scale-above only"),
+    above_delay_ms: int = typer.Option(
+        25, "--above-delay-ms", help="scale-above: region→first transit, one way"),
+    above_delay_step_ms: int = typer.Option(
+        8, "--above-delay-step-ms",
+        help="scale-above: added per further transit and on the return leg"),
+    edges: int = typer.Option(4, "--edges", help="scale-edge only"),
+    hosts_per_edge: int = typer.Option(1, "--hosts-per-edge", help="scale-edge only"),
+    edge_preset: str = typer.Option(
+        "auto", "--edge-preset",
+        help="scale-edge: satellite | 3g | wifi | lossy-wan | ... | auto (one of each)"),
     spine_kind: str = typer.Option("bmv2", "--spine-kind"),
     leaf_kind: str = typer.Option("frr", "--leaf-kind"),
     host_kind: str = typer.Option("alpine", "--host-kind"),
@@ -169,8 +192,10 @@ def cmd_generate(
     with_bgp_evpn: bool = typer.Option(False, "--with-bgp-evpn"),
     fmt: str = format_option(),
 ) -> None:
-    """Materialise a pattern topology (spine-leaf / rail-optimised / fat-tree)
-    into an existing lab. Create the lab first (empty) with the UI or API;
+    """Materialise a pattern topology into an existing lab: spine-leaf,
+    rail-optimised and fat-tree (scale-out), front-end, scale-across (sites
+    over a DCI), scale-above (regions over transit ASes) and scale-edge (a
+    core and many edges on different last miles). Create the lab first (empty) with the UI or API;
     then generate. Existing nodes are left alone; the pattern is added on top.
     """
     api = api_for(require_session())
@@ -182,6 +207,18 @@ def cmd_generate(
         "rails": rails,
         "hosts_per_rail": hosts_per_rail,
         "k": k,
+        "sites": sites,
+        "dci_delay_ms": dci_delay_ms,
+        "dci_return_delay_ms": dci_return_delay_ms,
+        "services": services,
+        "with_egress": with_egress,
+        "regions": regions,
+        "transits": transits,
+        "above_delay_ms": above_delay_ms,
+        "above_delay_step_ms": above_delay_step_ms,
+        "edges": edges,
+        "hosts_per_edge": hosts_per_edge,
+        "edge_preset": edge_preset,
         "spine_kind": spine_kind,
         "leaf_kind": leaf_kind,
         "host_kind": host_kind,
