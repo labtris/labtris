@@ -31,6 +31,9 @@ PREFIX=${LABTRIS_PREFIX:-/opt/labtris}
 CONFDIR=${CONFDIR:-/etc/labtris}
 REPO=${LABTRIS_REPO:-https://github.com/labtris/labtris.git}
 BACKUP_DIR=${LABTRIS_BACKUP_DIR:-/var/backups/labtris}
+# Private repository: the same LABTRIS_TOKEN the installer took. Sent as a
+# header on the fetch and the release lookup, never stored.
+TOKEN=${LABTRIS_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}
 TARGET=""
 CHECK_ONLY=0
 
@@ -103,6 +106,9 @@ current_version() {
 # global config to work around something this script already knows about, and
 # it would persist long after the upgrade.
 GIT=(git -C "$PREFIX" -c "safe.directory=$PREFIX")
+if [ -n "$TOKEN" ]; then
+  GIT+=(-c "http.https://github.com/.extraheader=Authorization: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')")
+fi
 
 current_ref() { "${GIT[@]}" rev-parse --short HEAD 2>/dev/null; }
 
@@ -110,7 +116,7 @@ current_ref() { "${GIT[@]}" rev-parse --short HEAD 2>/dev/null; }
 # clone has no tags to sort, and `git tag | tail` sorts lexically anyway,
 # which puts v0.9.0 after v0.12.0 and has already caused one wrong answer.
 latest_release() {
-  curl -fsSL --max-time 20 \
+  curl -fsSL --max-time 20 ${TOKEN:+-H "Authorization: Bearer $TOKEN"} \
     https://api.github.com/repos/labtris/labtris/releases/latest 2>/dev/null |
     sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
 }
@@ -168,7 +174,8 @@ fi
 # ---------------------------------------------------------------------- update
 say "Fetching $TARGET"
 "${GIT[@]}" fetch --depth 1 origin "$TARGET" \
-  || die "could not fetch '$TARGET'. Is it a real tag or branch?"
+  || die "could not fetch '$TARGET'. Is it a real tag or branch? The repository
+       is private — set LABTRIS_TOKEN if this host was installed with one."
 "${GIT[@]}" checkout -f FETCH_HEAD \
   || die "checkout failed — $PREFIX may have local modifications"
 

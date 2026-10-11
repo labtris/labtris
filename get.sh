@@ -10,7 +10,8 @@
 #
 # Override any of these on the command line:
 #
-#   sudo LABTRIS_BRANCH=some-topic bash -c "$(curl -fsSL labtris.com/install)"
+#   sudo LABTRIS_TOKEN=github_pat_… bash -c "$(curl -fsSL labtris.com/install)"
+#   sudo LABTRIS_BRANCH=some-topic bash -c ...
 #   sudo LABTRIS_REPO=https://github.com/labtris/labtris.git bash -c ...
 #   sudo LABTRIS_PREFIX=/srv/labtris bash -c ...
 #   sudo LABTRIS_FORCE_OS=1 bash -c ...           # try on another distribution
@@ -21,6 +22,16 @@ REPO=${LABTRIS_REPO:-https://github.com/labtris/labtris.git}
 BRANCH=${LABTRIS_BRANCH:-main}
 PREFIX=${LABTRIS_PREFIX:-/opt/labtris}
 FORCE_OS=${LABTRIS_FORCE_OS:-0}
+# The repository is private. A token from your access invitation goes in
+# LABTRIS_TOKEN (GH_TOKEN and GITHUB_TOKEN are read too, for people who
+# already have one in the environment). It is sent as a header on this
+# clone only — nothing is written into $PREFIX/.git/config, so the token
+# does not outlive the command that used it.
+TOKEN=${LABTRIS_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}
+GIT=(git)
+if [ -n "$TOKEN" ]; then
+  GIT=(git -c "http.https://github.com/.extraheader=Authorization: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')")
+fi
 
 say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -94,11 +105,13 @@ apt-get install -y --no-install-recommends git curl ca-certificates
 
 say "Fetching Labtris to $PREFIX (branch: $BRANCH)"
 if [ -d "$PREFIX/.git" ]; then
-  git -C "$PREFIX" fetch --depth 1 origin "$BRANCH"
+  "${GIT[@]}" -C "$PREFIX" fetch --depth 1 origin "$BRANCH"
   git -C "$PREFIX" checkout -f FETCH_HEAD
 else
   # --depth 1: the installer needs the tree, not the history.
-  git clone --depth 1 --branch "$BRANCH" "$REPO" "$PREFIX"
+  GIT_TERMINAL_PROMPT=0 "${GIT[@]}" clone --depth 1 --branch "$BRANCH" "$REPO" "$PREFIX" \
+    || die "could not clone $REPO. It is a private repository: set LABTRIS_TOKEN to the
+       token from your access invitation, or ask for one at contact@labtris.com."
 fi
 
 INSTALLER="$PREFIX/packaging/install-labtris.sh"
