@@ -252,6 +252,19 @@ async def lookup_peer(session: AsyncSession, iface_id: str) -> str:
     return row.host_ifname
 
 
+def _clamp_queues(queues: int | None, cpus: float | None) -> int | None:
+    """A virtio queue pair is serviced by one vCPU; more queues than vCPUs is
+    interrupt overhead with nothing to parallelise. Clamp rather than refuse,
+    because the vCPU count can change later and a stale refusal is worse than
+    a quiet cap — the QEMU side caps at 8 as well."""
+    if queues is None:
+        return None
+    q = max(1, min(8, int(queues)))
+    if cpus:
+        q = min(q, max(1, int(round(float(cpus)))))
+    return q
+
+
 async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
     ifaces: list[IfaceSpec] = []
     for iface in node.interfaces:
@@ -300,8 +313,12 @@ async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
         cmd=list(node.cmd) if node.cmd else None,
         cpu_limit=cpu,
         nic_model=node.nic_model or tspec.get("nic_model"),
-        nic_queues=(
-            node.nic_queues if node.nic_queues is not None else tspec.get("nic_queues")
+        # Clamped here, where the template fallback is applied, so a value
+        # that came from the template is capped against the vCPUs the same
+        # way a value set on the node is in the router — one place, one rule.
+        nic_queues=_clamp_queues(
+            node.nic_queues if node.nic_queues is not None else tspec.get("nic_queues"),
+            cpu if cpu is not None else tspec.get("cpus"),
         ),
         ram_mb=node.ram_mb or tspec.get("ram_mb"),
         disk_bus=tspec.get("disk_bus"),
@@ -573,6 +590,17 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
 
     created_bridges: list[str] = []
     handle: RuntimeHandle | None = None
+    # Resolved before the tap loop because the tap's queue flag has to agree
+    # with what QEMU will ask for, and QEMU reads config.json, which is
+    # filled from this spec — template fallback included. Deciding from the
+    # node row alone made a tap single-queue for a node whose template said
+    # four, and the boot failed with EINVAL. Same function as the QEMU side.
+    from labtris_api.runtime.qemu import nic_queue_count
+
+    pre_spec = await node_spec(session, node)
+    multi_queue = node.runtime == "qemu" and nic_queue_count(
+        {"nic_model": pre_spec.nic_model, "nic_queues": pre_spec.nic_queues}
+    ) > 1
     try:
         for iface in node.interfaces:
             if not iface.host_ifname:
@@ -593,15 +621,11 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
                 except NetdError:
                     pass
                 # The tap has to be multi-queue before qemu opens it, or
-                # `queues=N` fails at boot with EINVAL. Same rule as the
-                # QEMU side: only virtio has queues to speak of.
-                mq = bool(
-                    (node.nic_queues or 1) > 1
-                    and (node.nic_model or "virtio-net-pci").startswith("virtio-net")
-                )
+                # `queues=N` fails at boot with EINVAL.
                 await netd.call(
                     "tap.create",
-                    {"name": iface.host_ifname, "owner_uid": os.getuid(), "multi_queue": mq},
+                    {"name": iface.host_ifname, "owner_uid": os.getuid(),
+                     "multi_queue": multi_queue},
                 )
             if not iface.network_id:
                 continue

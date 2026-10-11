@@ -14,6 +14,7 @@ from labtris_api.auth import User, forbidden, get_current_user
 from labtris_api.db import get_session
 from labtris_api.errors import conflict, not_found, unprocessable
 from labtris_api.lifecycle import (
+    _clamp_queues,
     allocate_mac,
     get_lab,
     get_node,
@@ -86,18 +87,6 @@ async def _saved_image_spec(session: AsyncSession, image: str) -> dict[str, Any]
     return dict(row.spec or {}) if row else {}
 
 
-
-def _clamp_queues(queues: int | None, cpus: float | None) -> int | None:
-    """A virtio queue pair is serviced by one vCPU; more queues than vCPUs is
-    interrupt overhead with nothing to parallelise. Clamp rather than refuse,
-    because the vCPU count can change later and a stale refusal is worse than
-    a quiet cap — the QEMU side caps at 8 as well."""
-    if queues is None:
-        return None
-    q = max(1, min(8, int(queues)))
-    if cpus:
-        q = min(q, max(1, int(round(float(cpus)))))
-    return q
 
 
 @router.post("/labs/{lab_id}/nodes", response_model=NodeOut, status_code=201)

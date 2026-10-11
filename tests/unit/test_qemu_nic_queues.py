@@ -59,10 +59,47 @@ def test_count_is_bounded_and_tolerant() -> None:
 
 
 def test_router_clamps_queues_to_vcpus() -> None:
-    from labtris_api.routers.nodes import _clamp_queues
+    from labtris_api.lifecycle import _clamp_queues
 
     assert _clamp_queues(None, 4) is None
     assert _clamp_queues(4, 2) == 2
     assert _clamp_queues(4, None) == 4
     assert _clamp_queues(4, 0.5) == 1
     assert _clamp_queues(16, 32) == 8
+
+
+
+async def test_template_fallback_is_clamped_and_reaches_the_tap_decision() -> None:
+    """nic_queues on the template, nothing on the node. node_spec() must
+    carry it (capped at the template's cpus), and the tap flag start_node
+    derives from that same spec must say multi-queue — the case where the
+    node row said 1 and QEMU asked for N, and the boot died with EINVAL."""
+    from types import SimpleNamespace
+
+    from labtris_api import lifecycle
+    from labtris_api.runtime.qemu import CUSTOM_PREFIX, nic_queue_count
+
+    template = SimpleNamespace(spec={"nic_queues": 8, "cpus": 2, "nic_model": "virtio-net-pci"})
+
+    class _Result:
+        def scalars(self):  # noqa: ANN202
+            return self
+        def first(self):  # noqa: ANN202
+            return template
+
+    class _Session:
+        async def execute(self, stmt):  # noqa: ANN001, ANN202
+            return _Result()
+
+    node = SimpleNamespace(
+        id="n1", lab_id="l1", name="r1", image=f"{CUSTOM_PREFIX}appliance",
+        env={}, cmd=None, cpu_limit=None, nic_model=None, nic_queues=None, ram_mb=None,
+        qemu_opts={}, interfaces=[], runtime="qemu", startup_config=None, opts=None,
+        console={}, iface_scheme=None,
+    )
+    spec = await lifecycle.node_spec(_Session(), node)
+
+    assert spec.nic_queues == 2, "8 from the template, capped at the template's 2 vCPUs"
+    assert nic_queue_count({"nic_model": spec.nic_model, "nic_queues": spec.nic_queues}) == 2
+    # And the old decision, from the node row alone, would have said no.
+    assert (node.nic_queues or 1) == 1
