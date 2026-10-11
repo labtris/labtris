@@ -127,6 +127,10 @@ class Node(Base):
     )
     # Which emulated NIC QEMU gives this guest. Null takes the image's default.
     nic_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # virtio-net queue pairs per NIC. Null is one queue, today's path; >1 is
+    # the multi-queue + vhost opt-in. Lives on the node like nic_model so it
+    # survives a wipe and travels in a lab export.
+    nic_queues: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # How the machine itself is built, as opposed to what runs inside it:
     # chipset, acceleration, boot order, whether it gets a data volume. Kept
     # on the node rather than in the VM directory so it survives a wipe and

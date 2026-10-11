@@ -300,6 +300,9 @@ async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
         cmd=list(node.cmd) if node.cmd else None,
         cpu_limit=cpu,
         nic_model=node.nic_model or tspec.get("nic_model"),
+        nic_queues=(
+            node.nic_queues if node.nic_queues is not None else tspec.get("nic_queues")
+        ),
         ram_mb=node.ram_mb or tspec.get("ram_mb"),
         disk_bus=tspec.get("disk_bus"),
         graphical=tspec.get("graphical"),
@@ -589,9 +592,16 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
                     await netd.call("iface.delete", {"name": iface.host_ifname})
                 except NetdError:
                     pass
+                # The tap has to be multi-queue before qemu opens it, or
+                # `queues=N` fails at boot with EINVAL. Same rule as the
+                # QEMU side: only virtio has queues to speak of.
+                mq = bool(
+                    (node.nic_queues or 1) > 1
+                    and (node.nic_model or "virtio-net-pci").startswith("virtio-net")
+                )
                 await netd.call(
                     "tap.create",
-                    {"name": iface.host_ifname, "owner_uid": os.getuid()},
+                    {"name": iface.host_ifname, "owner_uid": os.getuid(), "multi_queue": mq},
                 )
             if not iface.network_id:
                 continue

@@ -83,6 +83,9 @@ class QemuImage:
     #: driver the guest may not have; e1000 is the safe fallback for anything
     #: old, minimal, or shipped without virtio.
     nic_model: str = "virtio-net-pci"
+    #: virtio queue pairs per NIC; None is one. Left unset for every shipped
+    #: image — multi-queue is a per-lab decision, not an image property.
+    nic_queues: int | None = None
     #: Which disk controller this image's kernel can boot from. Same problem as
     #: nic_model one layer down, and far less forgiving: a guest handed a
     #: virtio disk with no virtio-blk driver does not boot at all, and does not
@@ -1491,6 +1494,56 @@ def _seed_path(vm_dir: Path) -> Path:
     return vm_dir / "seed.iso"
 
 
+#: vhost-net moves the virtio-net data path out of QEMU's main loop and into a
+#: kernel thread, which is most of the throughput difference between a lab NIC
+#: and a real one. It needs the character device open-able by *this* process:
+#: the one that spawns qemu, unprivileged. Checked per start rather than once,
+#: because the compose file and the installer are where the device gets
+#: granted, and a host that gains it should not need an API restart.
+_VHOST_NET = Path("/dev/vhost-net")
+
+
+def vhost_available() -> bool:
+    return _VHOST_NET.exists() and os.access(_VHOST_NET, os.R_OK | os.W_OK)
+
+
+def nic_queue_count(cfg: dict[str, Any]) -> int:
+    """How many virtio queue pairs this VM's NICs get, from its config.json.
+
+    1 unless nic_queues is set above it *and* the model is virtio: e1000 and
+    the rest have no multi-queue, and QEMU rejects `mq=on` on them outright
+    rather than ignoring it."""
+    try:
+        q = int(cfg.get("nic_queues") or 1)
+    except (TypeError, ValueError):
+        q = 1
+    model = cfg.get("nic_model") or "virtio-net-pci"
+    if not model.startswith("virtio-net"):
+        return 1
+    return max(1, min(q, 8))
+
+
+def netdev_args(net_id: str, host_ifname: str, queues: int, vhost: bool) -> str:
+    """The -netdev / netdev_add argument string, one function for both so the
+    cold-boot NIC and a hot-plugged one cannot drift apart."""
+    s = f"tap,id={net_id},ifname={host_ifname},script=no,downscript=no"
+    if queues > 1:
+        s += f",queues={queues}"
+    if vhost:
+        s += ",vhost=on"
+    return s
+
+
+def device_args(model: str, net_id: str, mac: str, nic_id: str, queues: int) -> str:
+    """The -device / device_add argument string. `vectors` is the MSI-X count
+    virtio-net wants for N queue pairs: one per RX queue, one per TX queue,
+    one for config and one for control — 2N+2."""
+    s = f"{model},netdev={net_id},mac={mac},id={nic_id}"
+    if queues > 1:
+        s += f",mq=on,vectors={2 * queues + 2}"
+    return s
+
+
 def _serialize_ifaces(ifaces: list["IfaceSpec"]) -> list[dict[str, Any]]:
     """Persist the shape start() needs to emit -netdev/-device pairs.
 
@@ -1803,6 +1856,7 @@ class QemuRuntime:
                     "cpus": cpus,
                     "graphical": graphical_val,
                     "nic_model": nic,
+                    "nic_queues": spec.nic_queues or (catalog.nic_queues if catalog else None),
                     "disk_bus": disk_bus_val,
                     "cloud_init": bool(catalog and catalog.cloud_init),
                     "opts": resolved_options(spec.qemu_opts),
@@ -1830,6 +1884,7 @@ class QemuRuntime:
         ram_mb: int | None,
         cpus: int | None,
         nic_model: str | None = None,
+        nic_queues: int | None = None,
     ) -> None:
         """Change what the VM will boot with next time.
 
@@ -1849,6 +1904,8 @@ class QemuRuntime:
             if nic_model not in await available_nic_models():
                 raise unprocessable(f"this qemu build has no {nic_model!r} device")
             cfg["nic_model"] = nic_model
+        if nic_queues is not None:
+            cfg["nic_queues"] = max(1, min(8, int(nic_queues)))
         cfg_path.write_text(json.dumps(cfg))
 
     async def sync_from_spec(self, h: RuntimeHandle, spec: "NodeSpec") -> None:
@@ -1876,6 +1933,8 @@ class QemuRuntime:
             cfg["disk_bus"] = spec.disk_bus
         if spec.nic_model:
             cfg["nic_model"] = spec.nic_model
+        if spec.nic_queues is not None:
+            cfg["nic_queues"] = spec.nic_queues
         if spec.ram_mb:
             cfg["ram_mb"] = int(spec.ram_mb)
         if spec.cpu_limit:
@@ -2128,14 +2187,23 @@ class QemuRuntime:
         # launches: the pre-boot loop in lifecycle.start_node calls
         # netd.tap.create for every interface, wired or not.
         nic_model = cfg.get("nic_model") or "virtio-net-pci"
+        queues = nic_queue_count(cfg)
+        # vhost only with multi-queue, on purpose: the single-queue path is
+        # the one every existing lab runs on, and a host that lacks the
+        # device must keep starting exactly as before. Asking for queues is
+        # the opt-in; vhost comes with it when the host allows it.
+        vhost = queues > 1 and vhost_available()
+        if queues > 1 and not vhost:
+            logger.warning(
+                "qemu.vhost_unavailable", vm_dir=str(vm_dir), queues=queues,
+                hint="/dev/vhost-net is not open-able by the API process",
+            )
         for iface in cfg.get("interfaces") or []:
             net_id = f"net{iface['idx']}"
             nic_id = f"nic{iface['idx']}"
             args.extend([
-                "-netdev",
-                f"tap,id={net_id},ifname={iface['host_ifname']},script=no,downscript=no",
-                "-device",
-                f"{nic_model},netdev={net_id},mac={iface['mac']},id={nic_id}",
+                "-netdev", netdev_args(net_id, iface["host_ifname"], queues, vhost),
+                "-device", device_args(nic_model, net_id, iface["mac"], nic_id, queues),
             ])
         # Template-level extras: authored by an admin at template
         # registration (same trust as picking the disk image itself),
@@ -2233,24 +2301,31 @@ class QemuRuntime:
             await netd.call("iface.delete", {"name": i.host_ifname})
         except NetdError:
             pass
-        await netd.call("tap.create", {"name": i.host_ifname, "owner_uid": os.getuid()})
+        # The same queue count the cold-boot NICs got, read from the same
+        # config.json — a port re-plugged at runtime that came back with one
+        # queue while its siblings have four would be a silent regression
+        # nobody could see from the guest.
+        vm_dir = Path(h.ref)
+        cfg_path = _config_path(vm_dir)
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        model = cfg.get("nic_model") or "virtio-net-pci"
+        queues = nic_queue_count(cfg)
+        vhost = queues > 1 and vhost_available()
+        await netd.call("tap.create", {
+            "name": i.host_ifname, "owner_uid": os.getuid(), "multi_queue": queues > 1,
+        })
         await netd.call("iface.attach", {"name": i.host_ifname, "bridge": bridge})
         await netd.call("iface.set_state", {"name": i.host_ifname, "up": True})
 
-        vm_dir = Path(h.ref)
         net_id, nic_id = f"net{i.idx}", f"nic{i.idx}"
         await _hmp(vm_dir, f"device_del {nic_id}")
         await _hmp(vm_dir, f"netdev_del {net_id}")
         out = await _hmp(
-            vm_dir, f"netdev_add tap,id={net_id},ifname={i.host_ifname},script=no,downscript=no"
+            vm_dir, "netdev_add " + netdev_args(net_id, i.host_ifname, queues, vhost)
         )
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"qemu netdev_add failed: {err}")
-        cfg_path = _config_path(vm_dir)
-        model = "virtio-net-pci"
-        if cfg_path.exists():
-            model = json.loads(cfg_path.read_text()).get("nic_model") or model
-        out = await _hmp(vm_dir, f"device_add {model},netdev={net_id},mac={i.mac},id={nic_id}")
+        out = await _hmp(vm_dir, "device_add " + device_args(model, net_id, i.mac, nic_id, queues))
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"qemu device_add failed: {err}")
 

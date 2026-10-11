@@ -55,6 +55,10 @@ class NodeCreate(BaseModel):
     cpu_limit: float | None = None
     ram_mb: int | None = None
     nic_model: str | None = None
+    #: virtio-net queue pairs per NIC, 1–8. Unset keeps the single queue.
+    #: Capped at the node's vCPU count at create/patch time: a queue with
+    #: no vCPU to service it is overhead, not parallelism.
+    nic_queues: int | None = Field(default=None, ge=1, le=8)
     console: dict[str, Any] = Field(default_factory=dict)
     interfaces: list[InterfaceIn] = Field(default_factory=list)
 
@@ -85,6 +89,7 @@ class NodeOut(ORMModel):
     style: dict[str, Any] = Field(default_factory=dict)
     console: dict[str, Any] = Field(default_factory=dict)
     nic_model: str | None = None
+    nic_queues: int | None = None
     paused: bool = False
     qemu_opts: dict[str, Any] = Field(default_factory=dict)
     #: Which convention the guest uses for its port names, so the UI can label
@@ -387,6 +392,7 @@ class NodeResourcesIn(BaseModel):
     ram_mb: int | None = Field(default=None, ge=16, le=262144)
     cpu_limit: float | None = Field(default=None, gt=0, le=64)
     nic_model: str | None = None
+    nic_queues: int | None = Field(default=None, ge=1, le=8)
 
 
 class NodeConsoleIn(BaseModel):
@@ -463,6 +469,7 @@ class TemplatePatch(BaseModel):
     ram_mb: int | None = None
     cpus: int | None = None
     nic_model: str | None = None
+    nic_queues: int | None = Field(default=None, ge=1, le=8)
     disk_bus: str | None = None
     iface_scheme: str | None = None
     graphical: bool | None = None

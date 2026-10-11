@@ -21,8 +21,10 @@ class FakeNet:
     def bridge_list(self) -> dict[str, Any]:
         return {"bridges": []}
 
-    def tap_create(self, name: str, owner_uid: int) -> dict[str, Any]:
-        self.calls.append(("tap_create", (name, owner_uid)))
+    def tap_create(
+        self, name: str, owner_uid: int, multi_queue: bool = False
+    ) -> dict[str, Any]:
+        self.calls.append(("tap_create", (name, owner_uid, multi_queue)))
         return {"index": 2}
 
     def tap_delete(self, name: str) -> dict[str, Any]:
@@ -202,5 +204,41 @@ def test_vxlan_create_rejects_out_of_range_vni() -> None:
         net,
     )
     assert reply["ok"] is False
+    assert reply["error"]["code"] == "EINVAL"
+    assert net.calls == []
+
+
+def test_tap_create_defaults_to_single_queue() -> None:
+    net = FakeNet()
+    reply = dispatch(
+        {"id": "t1", "verb": "tap.create", "params": {"name": "t0123abcd", "owner_uid": 1000}},
+        net,
+    )
+    assert reply["ok"], reply
+    assert net.calls == [("tap_create", ("t0123abcd", 1000, False))]
+
+
+def test_tap_create_passes_multi_queue_through() -> None:
+    """A tap made without IFF_MULTI_QUEUE can back exactly one queue, so the
+    flag has to travel from the API's request to the ioctl or `queues=4` on
+    the QEMU side fails with EINVAL at boot."""
+    net = FakeNet()
+    reply = dispatch(
+        {"id": "t2", "verb": "tap.create",
+         "params": {"name": "t0123abcd", "owner_uid": 1000, "multi_queue": True}},
+        net,
+    )
+    assert reply["ok"], reply
+    assert net.calls == [("tap_create", ("t0123abcd", 1000, True))]
+
+
+def test_tap_create_rejects_a_non_bool_multi_queue() -> None:
+    net = FakeNet()
+    reply = dispatch(
+        {"id": "t3", "verb": "tap.create",
+         "params": {"name": "t0123abcd", "owner_uid": 1000, "multi_queue": 4}},
+        net,
+    )
+    assert not reply["ok"]
     assert reply["error"]["code"] == "EINVAL"
     assert net.calls == []

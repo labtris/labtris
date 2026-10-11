@@ -86,6 +86,20 @@ async def _saved_image_spec(session: AsyncSession, image: str) -> dict[str, Any]
     return dict(row.spec or {}) if row else {}
 
 
+
+def _clamp_queues(queues: int | None, cpus: float | None) -> int | None:
+    """A virtio queue pair is serviced by one vCPU; more queues than vCPUs is
+    interrupt overhead with nothing to parallelise. Clamp rather than refuse,
+    because the vCPU count can change later and a stale refusal is worse than
+    a quiet cap — the QEMU side caps at 8 as well."""
+    if queues is None:
+        return None
+    q = max(1, min(8, int(queues)))
+    if cpus:
+        q = min(q, max(1, int(round(float(cpus)))))
+    return q
+
+
 @router.post("/labs/{lab_id}/nodes", response_model=NodeOut, status_code=201)
 async def create_node(
     lab_id: str,
@@ -120,6 +134,10 @@ async def create_node(
         cpu_limit=body.cpu_limit if body.cpu_limit is not None else tspec.get("cpus"),
         ram_mb=body.ram_mb if body.ram_mb is not None else tspec.get("ram_mb"),
         nic_model=body.nic_model or tspec.get("nic_model"),
+        nic_queues=_clamp_queues(
+            body.nic_queues if body.nic_queues is not None else tspec.get("nic_queues"),
+            body.cpu_limit if body.cpu_limit is not None else tspec.get("cpus"),
+        ),
         qemu_opts=tspec.get("qemu_opts") or {},
         console=body.console,
         state="defined",
@@ -871,6 +889,8 @@ async def set_resources(
         node.cpu_limit = data["cpu_limit"]
     if data.get("nic_model") is not None:
         node.nic_model = data["nic_model"]
+    if data.get("nic_queues") is not None:
+        node.nic_queues = _clamp_queues(data["nic_queues"], node.cpu_limit)
     await session.commit()
 
     runtime = get_runtime(node.runtime)
@@ -881,6 +901,7 @@ async def set_resources(
             node.ram_mb,
             round(node.cpu_limit) if node.cpu_limit else None,
             node.nic_model,
+            node.nic_queues,
         )
     return await get_node(session, node.id)
 
@@ -1145,6 +1166,7 @@ async def export_node_template(
             "ram_mb": node.ram_mb or (base.ram_mb if base else None),
             "cpus": int(node.cpu_limit) if node.cpu_limit else (base.cpus if base else None),
             "nic_model": node.nic_model or (base.nic_model if base else None),
+            "nic_queues": node.nic_queues,
             "graphical": base.graphical if base else False,
             "iface_scheme": node.iface_scheme,
             "qemu_opts": node.qemu_opts or {},

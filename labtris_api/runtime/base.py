@@ -66,6 +66,11 @@ class NodeSpec:
     ram_mb: int | None
     #: Emulated NIC model for hypervisor runtimes; None takes the image default.
     nic_model: str | None
+    #: virtio-net queue pairs per NIC. None/1 is today's single queue through
+    #: QEMU's main loop. >1 asks for a multi-queue tap, `mq=on` on the device
+    #: and vhost-net when the host grants it — the guest then spreads its
+    #: NIC's interrupts over that many vCPUs. Ignored for non-virtio models.
+    nic_queues: int | None = None
     #: Disk controller the guest kernel expects — virtio for most modern
     #: Linuxes, sata for NX-OSv 9000 and some vendor appliances, ide for
     #: guests without virtio-blk. None means "use the runtime's fallback"

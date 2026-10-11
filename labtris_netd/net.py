@@ -622,10 +622,23 @@ class PyrouteNet:
                     bridges.append({"name": ifname, "index": int(link["index"])})
         return {"bridges": bridges}
 
-    def tap_create(self, name: str, owner_uid: int) -> dict[str, Any]:
+    def tap_create(
+        self, name: str, owner_uid: int, multi_queue: bool = False
+    ) -> dict[str, Any]:
+        """A persistent tap, owned by the API's uid so its qemu child can open
+        it by name.
+
+        `multi_queue` sets IFF_MULTI_QUEUE at TUNSETIFF time, and only then:
+        the kernel refuses to attach a multi-queue opener to a tap created
+        without the flag (EINVAL), so a VM asking for N queues needs the tap
+        made for it, not the one from last boot. pyroute2 carries the flag
+        in the `ifr` dict; the other members default to 0."""
         with IPRoute() as ipr:
             try:
-                ipr.link("add", ifname=name, kind="tuntap", mode="tap", uid=owner_uid)
+                ipr.link(
+                    "add", ifname=name, kind="tuntap", mode="tap", uid=owner_uid,
+                    **({"ifr": {"multi_queue": 1}} if multi_queue else {}),
+                )
             except NetlinkError as exc:
                 raise _map_nl(exc, name) from exc
             return {"index": _lookup(ipr, name)}

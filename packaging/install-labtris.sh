@@ -348,6 +348,11 @@ usermod -aG docker "$LABTRIS_USER"
 # and everything silently ran under TCG.
 if getent group kvm >/dev/null 2>&1; then
   usermod -aG kvm "$LABTRIS_USER"
+  # The same membership covers /dev/vhost-net: systemd's 50-udev-default
+  # rules give vhost-net the kvm group at the same mode as /dev/kvm, so a
+  # node that asks for nic_queues > 1 gets vhost without a rule of our own.
+  # If the API logs qemu.vhost_unavailable, that assumption did not hold on
+  # this host — `ls -l /dev/vhost-net` says why.
 fi
 # Capture permission comes from group membership, not from root: the API
 # launches Wireshark through `sg wireshark`, so the service account has to be

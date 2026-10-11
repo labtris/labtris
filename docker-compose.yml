@@ -216,6 +216,12 @@ services:
       # verified (`kvm-ok` reporting success is not sufficient).
       - /dev/kvm
       - /dev/net/tun    # QEMU opens the taps netd creates through this
+      # vhost=on: the virtio-net data path runs in a host kernel thread
+      # instead of QEMU's main loop. Only used when a node asks for more
+      # than one NIC queue (nic_queues); a host without the device still
+      # starts every single-queue lab exactly as before. Comment it out on
+      # a host that lacks /dev/vhost-net or the api service will not start.
+      - /dev/vhost-net
     cap_add:
       - NET_ADMIN       # to open a tap by name
     volumes:

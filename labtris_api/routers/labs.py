@@ -428,6 +428,7 @@ async def clone_lab(
             style=dict(node.style or {}),
             console=dict(node.console or {}),
             nic_model=node.nic_model,
+            nic_queues=node.nic_queues,
             qemu_opts=dict(node.qemu_opts or {}),
             startup_config=node.startup_config,
         )
@@ -740,6 +741,7 @@ async def _clone_topology(
             # console settings or its hypervisor options.
             console=n.get("console") or {},
             nic_model=n.get("nic_model"),
+            nic_queues=n.get("nic_queues"),
             qemu_opts=n.get("qemu_opts") or {},
             startup_config=n.get("startup_config"),
             # opts was the fifth field this path dropped. It carries
