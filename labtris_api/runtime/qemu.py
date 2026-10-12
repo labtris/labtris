@@ -1536,14 +1536,52 @@ def netdev_args(net_id: str, host_ifname: str, queues: int, vhost: bool) -> str:
     return s
 
 
-def device_args(model: str, net_id: str, mac: str, nic_id: str, queues: int) -> str:
+def device_args(
+    model: str, net_id: str, mac: str, nic_id: str, queues: int, viommu: bool = False
+) -> str:
     """The -device / device_add argument string. `vectors` is the MSI-X count
     virtio-net wants for N queue pairs: one per RX queue, one per TX queue,
-    one for config and one for control — 2N+2."""
+    one for config and one for control — 2N+2.
+
+    Under a vIOMMU a virtio NIC is only *behind* the IOMMU if it says so:
+    `iommu_platform=on` makes the device honour the guest's DMA mappings
+    (otherwise vfio in the guest binds it, DPDK programs IOVAs, and the
+    device DMAs to the untranslated address). `ats=on` lets vhost cache
+    translations through the device IOTLB. Both are refused on the default
+    transitional device — "VIRTIO_F_IOMMU_PLATFORM was supported by neither
+    legacy nor transitional device", QEMU 10 — hence `disable-legacy=on`,
+    which makes it a modern-only device (PCI 1af4:1041 instead of 1000).
+    Any kernel since 4.x and DPDK's virtio PMD drive both IDs."""
     s = f"{model},netdev={net_id},mac={mac},id={nic_id}"
     if queues > 1:
         s += f",mq=on,vectors={2 * queues + 2}"
+    if viommu and model.startswith("virtio-net"):
+        s += ",iommu_platform=on,ats=on,disable-legacy=on"
     return s
+
+
+def machine_args(opts: dict[str, Any]) -> list[str]:
+    """`-M` and, with the IOMMU on, the device that provides it.
+
+    Interrupt remapping is what makes the guest's MSI-X work through the
+    IOMMU, and QEMU refuses it with the in-kernel irqchip ("Interrupt
+    Remapping cannot work with kernel-irqchip=on, please use 'split|off'"),
+    so the machine gets kernel-irqchip=split. The intel-iommu device comes
+    before every other PCI device on the command line, which is where QEMU
+    wants it. caching-mode is what lets a vhost backend learn about the
+    guest's mappings; device-iotlb pairs with ats=on on the NICs."""
+    machine = str(opts.get("machine") or "pc")
+    if not opts.get("viommu"):
+        return ["-M", machine]
+    if machine != "q35":
+        raise unprocessable(
+            "the emulated IOMMU needs the q35 chipset — intel-iommu is a "
+            f"q35 device and the node's chipset is {machine!r}"
+        )
+    return [
+        "-M", "q35,kernel-irqchip=split",
+        "-device", "intel-iommu,intremap=on,caching-mode=on,device-iotlb=on",
+    ]
 
 
 def _serialize_ifaces(ifaces: list["IfaceSpec"]) -> list[dict[str, Any]]:
@@ -1631,6 +1669,17 @@ QEMU_OPTIONS: dict[str, dict[str, Any]] = {
         "has no virtio-blk driver will not boot from a virtio disk — and it fails "
         "silently, at a blank console or a bootloader that never continues. If a "
         "VM will not boot and everything else checks out, try ide.",
+    },
+    "viommu": {
+        "label": "Emulated IOMMU",
+        "type": "bool",
+        "default": False,
+        "help": "An Intel VT-d IOMMU in the guest, with every virtio NIC behind "
+        "it, so the guest can bind NICs to vfio-pci and run DPDK, VPP or "
+        "TRex on them with a real IOMMU rather than unsafe no-IOMMU mode. "
+        "Needs the q35 chipset, and the guest kernel booted with "
+        "intel_iommu=on (iommu=pt is the usual companion). Set CPU model to "
+        "host as well: DPDK refuses to start on qemu64, which lacks SSE4.2.",
     },
     "usb_tablet": {
         "label": "Absolute pointer",
@@ -2098,8 +2147,7 @@ class QemuRuntime:
 
         args = [
             "qemu-system-x86_64",
-            "-M",
-            str(opts.get("machine") or "pc"),
+            *machine_args(opts),
             "-cpu",
             str(opts.get("cpu") or "qemu64"),
             "-boot",
@@ -2205,7 +2253,10 @@ class QemuRuntime:
             nic_id = f"nic{iface['idx']}"
             args.extend([
                 "-netdev", netdev_args(net_id, iface["host_ifname"], queues, vhost),
-                "-device", device_args(nic_model, net_id, iface["mac"], nic_id, queues),
+                "-device", device_args(
+                    nic_model, net_id, iface["mac"], nic_id, queues,
+                    viommu=bool(opts.get("viommu")),
+                ),
             ])
         # Template-level extras: authored by an admin at template
         # registration (same trust as picking the disk image itself),
@@ -2313,6 +2364,7 @@ class QemuRuntime:
         model = cfg.get("nic_model") or "virtio-net-pci"
         queues = nic_queue_count(cfg)
         vhost = queues > 1 and vhost_available()
+        viommu = bool(resolved_options(cfg.get("opts")).get("viommu"))
         await netd.call("tap.create", {
             "name": i.host_ifname, "owner_uid": os.getuid(), "multi_queue": queues > 1,
         })
@@ -2327,7 +2379,10 @@ class QemuRuntime:
         )
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"qemu netdev_add failed: {err}")
-        out = await _hmp(vm_dir, "device_add " + device_args(model, net_id, i.mac, nic_id, queues))
+        out = await _hmp(
+            vm_dir,
+            "device_add " + device_args(model, net_id, i.mac, nic_id, queues, viommu=viommu),
+        )
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"qemu device_add failed: {err}")
 
