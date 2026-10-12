@@ -372,10 +372,11 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
                 "5-6 (main on 4), clear of where TRex puts its threads; "
                 "a 7-core host or edit /etc/vpp/startup.conf. `vpp-router` "
                 "is the TRex demo's config (eth0/eth1, routes 16/8 and "
-                "48/8). Forwarded 3 Mpps per direction of 64 B frames "
-                "with zero loss on a 36-core host; past that the veth's "
-                "ring into VPP overflows before VPP does. That is the "
-                "number a software port gives, not VPP's."
+                "48/8). On a 36-core host the vpp-trex lab forwards 1 Mpps "
+                "per direction of 64 B frames with zero loss and 2-4 Mpps "
+                "with ~1 % lost; the loss is the veth's ring into VPP, and "
+                "VPP's own counters show every frame it received went out. "
+                "That is the number a software port gives, not VPP's."
             ),
             boot_seconds=3,
         ),
@@ -401,10 +402,11 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
                 "python3 /opt/trex/labtris/udp-throughput.py --rate 1mpps "
                 "pushes UDP both ways through whatever sits between the "
                 "two links and prints forwarded vs dropped; "
-                "/opt/trex/trex-console is the full console. It generates "
-                "4 Mpps per direction here and is loss-free receiving 3; "
-                "the drop line is the DUT's up to that, the generator's "
-                "above it. What this measures is a DUT's forwarding at "
+                "/opt/trex/trex-console is the full console; `trex-up` "
+                "starts the server in the background for hooks. It "
+                "generates 4 Mpps per direction here and receives 3 "
+                "loss-free on a direct veth pair; the drop line is the "
+                "DUT's up to that, the generator's above it. What this measures is a DUT's forwarding at "
                 "the rate a veth carries — a correct answer about "
                 "behaviour, never a line-rate figure."
             ),

@@ -62,11 +62,13 @@ RUN ln -s /opt/trex/t-rex-64 /usr/local/bin/t-rex-64
 COPY trex_cfg.yaml /etc/trex_cfg.yaml
 COPY udp-throughput.py /opt/trex/labtris/udp-throughput.py
 COPY run-trex.sh /usr/local/bin/run-trex
-RUN chmod +x /usr/local/bin/run-trex
+COPY trex-up.sh /usr/local/bin/trex-up
+RUN chmod +x /usr/local/bin/run-trex /usr/local/bin/trex-up
 
 RUN printf '%s\n' \
     '# trex — Cisco TRex, stateless, software mode (af_packet on eth0/eth1).' \
-    '# run-trex               starts the server on eth0+eth1 (edit /etc/trex_cfg.yaml for other ports)' \
+    '# run-trex               the server, foreground, on eth0+eth1 (edit /etc/trex_cfg.yaml for other ports)' \
+    '# trex-up                the same in the background, returns when both ports are bound' \
     '# python3 /opt/trex/labtris/udp-throughput.py --rate 500kpps --duration 20' \
     '#                        UDP 64B both directions, prints tx/rx pps, Gbps, drops' \
     '# /opt/trex/trex-console  the interactive console (server must be running)' \

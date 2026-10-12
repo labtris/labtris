@@ -43,6 +43,7 @@ Non-goals for v1
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -562,13 +563,14 @@ async def load(
 
         # Restore hooks if the pod carries them.
         hooks_path = staging / "hooks.yml"
+        parsed_hooks: dict[str, Any] | None = None
         if hooks_path.exists():
             try:
                 from labtris_api.runtime import hooks as hk
 
                 source = hooks_path.read_text()
                 lab.hooks_source = source
-                lab.hooks = hk.parse_source(source)
+                lab.hooks = parsed_hooks = hk.parse_source(source)
             except Exception:  # noqa: BLE001 — hooks are opt-in; a bad restore keeps the topology
                 lab.hooks_source = None
                 lab.hooks = None
@@ -578,6 +580,20 @@ async def load(
         except IntegrityError as exc:
             await session.rollback()
             raise conflict("pod load failed — a referenced name already exists") from exc
+
+        # Arm the auto-fire watcher, the same as PUT /hooks does. Stored
+        # hooks with no watcher never fire: the vpp-trex pod loaded, both
+        # nodes came up, and `state` stayed null until someone POSTed
+        # /hooks/run — which is not what "the hooks are the demo" means.
+        if parsed_hooks:
+            from labtris_api.runtime import hooks as hk
+
+            hk.cancel(lab.id)
+            runner = hk.HookRunner(lab.id, parsed_hooks)
+            hk.register(
+                lab.id,
+                asyncio.create_task(runner.watch(), name=f"hooks-watch-{lab.id}"),
+            )
 
         logger.info(
             "pod.load",

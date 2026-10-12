@@ -49,3 +49,18 @@ fix.
 So: 3 Mpps per direction, loss-free, through the whole VPP graph, and
 `vppctl show runtime` tells you which node took the cycles. The ceiling
 is the veth's. The same VPP on a real NIC shows you VPP's.
+
+Through Labtris, where a link is a Linux bridge between two veths rather
+than one pair, the same lab (`vpp-trex` pod, hooks passed, same host):
+
+| offered, per direction | dropped |
+|---|---|
+| 0.5 and 1 Mpps | 0 |
+| 2 Mpps | 1.3 % |
+| 3 Mpps | 0.7 % |
+| 4 Mpps | 1.0 % |
+
+The bridge is the difference. A first run of this table showed 0.3 % at
+500 kpps and was wrong: the prototype containers were still up, pinned
+to the same cores. Two poll-mode VPPs on one pair of cores lose packets
+for both, and nothing in either reports it.

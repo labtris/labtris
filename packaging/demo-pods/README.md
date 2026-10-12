@@ -208,7 +208,8 @@ labtris node exec <vpp-id> -- vppctl show runtime
 ```
 
 Raise `--rate` until the drop line moves. On the 36-core host the images
-were built on that is 3 Mpps per direction; past it the veth's ring into
-VPP overflows while VPP's own counters show every frame it received went
-out. The ceiling is the software port's. `packaging/dockerfiles/vpp/README.md`
-has the run that found it.
+were built on, this lab forwards 1 Mpps per direction with zero loss and
+2 to 4 Mpps with about 1 % lost; a direct veth pair without the Labtris
+bridge between them does 3 Mpps clean. In both cases VPP's own counters
+show every frame it received went out, so the ceiling is the software
+port's. `packaging/dockerfiles/vpp/README.md` has the runs.

@@ -27,7 +27,8 @@ streams, pcap replay. `eth0` and `eth1` are ports 0 and 1.
 ## Using it
 
 ```
-run-trex                                   # server, foreground; log to a file if you background it
+run-trex                                   # server, foreground
+trex-up                                    # server in the background, returns when both ports are bound
 python3 /opt/trex/labtris/udp-throughput.py --rate 1mpps --duration 10
 /opt/trex/trex-console                     # the interactive console
 ```
@@ -42,7 +43,8 @@ never saw; the first version of this script used them.
 ## What the numbers mean
 
 On the 36-core Hetzner host the generator achieved 4 Mpps per direction
-and received 3 without loss. Below that, the drop line is the DUT's.
+and received 3 without loss on a direct veth pair, 1 through a Labtris
+link (a bridge between two veths) with about 1 % lost from 2 Mpps up. Below that, the drop line is the DUT's.
 Above it, it is the generator's. What a run tells you is what the device
 between the two links did with the packets it was handed — a fact about
 the DUT's behaviour, at the rate a software port carries. A throughput
