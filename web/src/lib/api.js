@@ -88,6 +88,29 @@ export const KIND = [
     boot: 2,
     note: "Ubuntu + rdma-core + perftest pre-baked. Host must `modprobe rdma_rxe` once first.",
   },
+  // VPP and TRex — a data-plane DUT and the generator that measures it.
+  // Both run on af_packet over the lab veths: the real VPP graph and the
+  // real TRex API, at the rate a veth carries rather than a NIC's.
+  {
+    id: "vpp",
+    label: "VPP router (FD.io)",
+    image: "ghcr.io/labtris/vpp:latest",
+    cmd: null,
+    color: "#fb923c",
+    glyph: "⟫",
+    boot: 3,
+    note: "FD.io VPP 26.06, DPDK off, lab links as af_packet host-interfaces. `vpp-router` configures the TRex demo.",
+  },
+  {
+    id: "trex",
+    label: "TRex generator",
+    image: "ghcr.io/labtris/trex:latest",
+    cmd: null,
+    color: "#facc15",
+    glyph: "⇶",
+    boot: 12,
+    note: "Cisco TRex v3.08, stateless, software mode on eth0/eth1. `run-trex`, then udp-throughput.py prints forwarded vs dropped.",
+  },
   // bmv2 — the P4 software switch. Ships with a `/p4` mount defaulted to
   // basic_switch.p4; pick another built-in or upload a custom .p4 from
   // the node inspector (or `labtris node p4 …`). Distinct glyph so a

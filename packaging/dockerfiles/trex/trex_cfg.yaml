@@ -1,0 +1,22 @@
+# TRex port map for a Labtris node: a container node has no management
+# interface of its own, so eth0 and eth1 are its first two lab links.
+# Software mode uses DPDK's af_packet PMD on the netdev names, so no PCI
+# addresses and no vfio.
+#
+# A bare netdev name gets DPDK's default rings of 512 frames, which
+# overflow at ~150 kpps because the single data-plane core polls them
+# between its own transmit bursts. The full --vdev form sets 8192-frame
+# rings (16 MiB each) and qdisc_bypass, which measured clean to 500 kpps
+# per direction and pushed the first loss to the DUT where it belongs.
+#
+# The IPs are what TRex answers ARP for and uses as source when resolving
+# the gateway; the DUT's addresses on the two links are the default_gw.
+- version: 2
+  interfaces:
+    - '--vdev=net_af_packet0,iface=eth0,blocksz=1048576,framesz=2048,framecnt=8192,qdisc_bypass=1'
+    - '--vdev=net_af_packet1,iface=eth1,blocksz=1048576,framesz=2048,framecnt=8192,qdisc_bypass=1'
+  port_info:
+    - ip: 10.0.1.2
+      default_gw: 10.0.1.1
+    - ip: 10.0.2.2
+      default_gw: 10.0.2.1

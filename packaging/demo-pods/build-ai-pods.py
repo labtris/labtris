@@ -748,6 +748,64 @@ def scale_edge() -> dict:
 
 
 
+def vpp_trex() -> dict:
+    """A VPP router between TRex's two ports, and a run that says what it
+    forwarded.
+
+    The hooks are the demo: configure VPP, start TRex, push 500 kpps of
+    64 B UDP each way for ten seconds, and insist on zero drops. Then the
+    user raises --rate until the drop line moves, and the number they get
+    is what this host's veths carry through VPP — 3 Mpps per direction on
+    the 36-core box the images were built on. That figure describes the
+    software port, not VPP; the lab's claim is that VPP forwarded every
+    frame it was handed, with the real VPP graph and the real TRex API,
+    which is what a lab can verify. Line rate is a question for a NIC.
+    """
+    v, t = _id("VPPR", 1), _id("TREX", 2)
+    return pod(
+        "vpp-trex",
+        "VPP (FD.io, af_packet) as the device under test, TRex as the "
+        "generator, two links between them. Hooks configure VPP, start "
+        "TRex, and prove 500 kpps per direction of 64 B UDP forwards "
+        "without loss. Then: `labtris node exec <trex> -- python3 "
+        "/opt/trex/labtris/udp-throughput.py --rate 2mpps`. The ceiling "
+        "you find is the veth's, not VPP's — the same pair on real NICs "
+        "would show you VPP's. `vppctl show runtime` on the VPP node "
+        "shows where the cycles went.",
+        [node(v, "vpp", "ghcr.io/labtris/vpp:latest", ifaces=2),
+         node(t, "trex", "ghcr.io/labtris/trex:latest", ifaces=2)],
+        [link(_id("VTL", 1), iface(v, 0), iface(t, 0)),
+         link(_id("VTL", 2), iface(v, 1), iface(t, 1))],
+        {v: {"x": 160, "y": 180}, t: {"x": 560, "y": 180}},
+        hooks="""ready_when: all_nodes_running
+hooks:
+  - name: "VPP: eth0/eth1 up as host-interfaces, 16/8 and 48/8 routed"
+    kind: command
+    node: vpp
+    command: "vpp-router"
+    expect_rc: 0
+    expect_stdout_regex: "10.0.2.1/24"
+    timeout_s: 30
+  - name: "TRex: server up on both ports (software mode, af_packet)"
+    kind: command
+    node: trex
+    command: "sh -c 'nohup run-trex >/tmp/trex.log 2>&1 &
+              for i in $(seq 1 30); do grep -q \"Number of ports found: 2\" /tmp/trex.log && break; sleep 1; done;
+              grep \"Number of ports found\" /tmp/trex.log'"
+    expect_rc: 0
+    expect_stdout_regex: "Number of ports found: 2"
+    timeout_s: 60
+  - name: "500 kpps each way for 10 s, zero drops"
+    kind: command
+    node: trex
+    command: "python3 /opt/trex/labtris/udp-throughput.py --rate 500kpps --duration 10"
+    expect_rc: 0
+    expect_stdout_regex: "total dropped 0 pkts"
+    timeout_s: 60
+""",
+    )
+
+
 PODS = {
     "uet-pair": uet_pair,
     "rdma-pair": rdma_pair,
@@ -759,6 +817,7 @@ PODS = {
     "scale-across": scale_across,
     "scale-above": scale_above,
     "scale-edge": scale_edge,
+    "vpp-trex": vpp_trex,
 }
 
 

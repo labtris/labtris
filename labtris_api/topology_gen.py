@@ -70,6 +70,10 @@ _KINDS: dict[str, tuple[str, str]] = {
     # built first — the generator does not pull them.
     "uet-ref":   ("docker", "labtris/uet-ref:latest"),
     "rdma-host": ("docker", "labtris/rdma-host:latest"),
+    # Data-plane test pair: a VPP router and the TRex generator that
+    # measures it. Both CI-built, both af_packet on the lab veths.
+    "vpp":       ("docker", "ghcr.io/labtris/vpp:latest"),
+    "trex":      ("docker", "ghcr.io/labtris/trex:latest"),
 }
 
 

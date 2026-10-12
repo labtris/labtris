@@ -48,6 +48,9 @@ SEED = (
     #: edges on real last miles.
     "scale-above",
     "scale-edge",
+    #: A data-plane DUT and its generator. The hooks are the demo: VPP
+    #: configured, TRex started, 500 kpps each way forwarded without loss.
+    "vpp-trex",
 )
 
 #: Which pods this machine has already been offered, one name per line.

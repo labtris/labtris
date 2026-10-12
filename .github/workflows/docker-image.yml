@@ -8,6 +8,11 @@ name: docker-image
 #   uet-ref     the UEC reference Ultra Ethernet provider — compiles
 #               libfabric from source, roughly twenty minutes
 #   rdma-host   rdma-core and perftest, needed by the rdma-pair lab
+#   vpp         FD.io VPP on af_packet, the DUT of the vpp-trex lab
+#   trex        Cisco TRex in software mode, the generator of that lab
+#               (downloads the 280 MB release tarball from
+#               trex-tgn.cisco.com, which refuses some hosting networks;
+#               a local build can pass --build-arg TREX_URL=<file>)
 # Triggers:
 #   * push to main       → :latest + :sha-<short>
 #   * tag v*             → :<version> + :latest
@@ -74,6 +79,12 @@ jobs:
           - name: fw
             context: packaging/dockerfiles/fw
             file: packaging/dockerfiles/fw/Dockerfile
+          - name: vpp
+            context: packaging/dockerfiles/vpp
+            file: packaging/dockerfiles/vpp/Dockerfile
+          - name: trex
+            context: packaging/dockerfiles/trex
+            file: packaging/dockerfiles/trex/Dockerfile
     permissions:
       contents: read
       packages: write

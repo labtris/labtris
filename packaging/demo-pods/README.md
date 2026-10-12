@@ -193,3 +193,22 @@ from Docker Hub.
 > The older `rdma-uet-demo` pod has 4 nodes, **0 links** and half its
 > interfaces unattached, so it arrives unwired and points at the
 > superseded `ue-stack` image. `uet-pair` and `rdma-pair` replace it.
+
+## vpp-trex
+
+A VPP router between TRex's two ports. The hooks are the demo: VPP
+configured, TRex started, 500 kpps of 64 B UDP each way for ten seconds,
+zero drops asserted. `labtris lab hooks` shows the three results.
+
+```bash
+labtris lab load packaging/demo-pods/vpp-trex.pod.tar.gz --name vpp-trex
+labtris lab start <lab-id>
+labtris node exec <trex-id> -- python3 /opt/trex/labtris/udp-throughput.py --rate 2mpps
+labtris node exec <vpp-id> -- vppctl show runtime
+```
+
+Raise `--rate` until the drop line moves. On the 36-core host the images
+were built on that is 3 Mpps per direction; past it the veth's ring into
+VPP overflows while VPP's own counters show every frame it received went
+out. The ceiling is the software port's. `packaging/dockerfiles/vpp/README.md`
+has the run that found it.

@@ -350,6 +350,67 @@ CONTAINER_CATALOG: dict[str, ContainerImage] = {
             boot_seconds=2,
         ),
         ContainerImage(
+            id="vpp",
+            label="VPP router (FD.io, af_packet)",
+            image="ghcr.io/labtris/vpp:latest",
+            # mlock for the af_packet rings: without IPC_LOCK `create
+            # host-interface` fails with ENOENT, which reads as a missing
+            # device and is not. Measured: NET_ADMIN+NET_RAW+IPC_LOCK is
+            # the full set; SYS_ADMIN and the rest change nothing.
+            cap_add=("IPC_LOCK",),
+            source=(
+                "ghcr.io/labtris/vpp — built by CI from "
+                "packaging/dockerfiles/vpp/ on ligato/vpp-base (fd.io VPP "
+                "26.06, Apache-2.0)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "FD.io VPP with the DPDK plugin off and each lab link "
+                "attached as an af_packet host-interface, so the whole "
+                "VPP graph — ip4/ip6, ACL, NAT, VXLAN, SRv6, IPsec — "
+                "runs on a veth. Two poll-mode workers pinned to cores "
+                "5-6 (main on 4), clear of where TRex puts its threads; "
+                "a 7-core host or edit /etc/vpp/startup.conf. `vpp-router` "
+                "is the TRex demo's config (eth0/eth1, routes 16/8 and "
+                "48/8). Forwarded 3 Mpps per direction of 64 B frames "
+                "with zero loss on a 36-core host; past that the veth's "
+                "ring into VPP overflows before VPP does. That is the "
+                "number a software port gives, not VPP's."
+            ),
+            boot_seconds=3,
+        ),
+        ContainerImage(
+            id="trex",
+            label="TRex traffic generator (stateless, software mode)",
+            image="ghcr.io/labtris/trex:latest",
+            # DPDK's af_packet PMD mmaps its rings and mlocks them: without
+            # IPC_LOCK the probe fails "call to mmap failed on AF_PACKET
+            # socket ... Resource temporarily unavailable". Nothing else
+            # is needed — no hugepages, no vfio, no SYS_ADMIN.
+            cap_add=("IPC_LOCK",),
+            source=(
+                "ghcr.io/labtris/trex — built by CI from "
+                "packaging/dockerfiles/trex/ (Cisco TRex v3.08, Apache-2.0, "
+                "trex-tgn.cisco.com)"
+            ),
+            iface_scheme="eth",
+            notes=(
+                "Cisco TRex in `--software` mode on eth0 and eth1: DPDK's "
+                "af_packet PMD instead of a bound NIC, one data-plane "
+                "core, 8192-frame rings. `run-trex` starts the server; "
+                "python3 /opt/trex/labtris/udp-throughput.py --rate 1mpps "
+                "pushes UDP both ways through whatever sits between the "
+                "two links and prints forwarded vs dropped; "
+                "/opt/trex/trex-console is the full console. It generates "
+                "4 Mpps per direction here and is loss-free receiving 3; "
+                "the drop line is the DUT's up to that, the generator's "
+                "above it. What this measures is a DUT's forwarding at "
+                "the rate a veth carries — a correct answer about "
+                "behaviour, never a line-rate figure."
+            ),
+            boot_seconds=12,
+        ),
+        ContainerImage(
             id="bmv2",
             label="P4 switch (bmv2)",
             # p4lang/p4c, not p4lang/behavioral-model. The latter ships
