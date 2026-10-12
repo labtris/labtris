@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from labtris_api.runtime.base import MAX_NIC_QUEUES, MAX_VCPUS
+
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -55,10 +57,11 @@ class NodeCreate(BaseModel):
     cpu_limit: float | None = None
     ram_mb: int | None = None
     nic_model: str | None = None
-    #: virtio-net queue pairs per NIC, 1–8. Unset keeps the single queue.
+    #: virtio-net queue pairs per NIC, clamped to the vCPU count and the
+    #: tap's 256. Unset keeps the single queue.
     #: Capped at the node's vCPU count at create/patch time: a queue with
     #: no vCPU to service it is overhead, not parallelism.
-    nic_queues: int | None = Field(default=None, ge=1, le=8)
+    nic_queues: int | None = Field(default=None, ge=1, le=MAX_NIC_QUEUES)
     console: dict[str, Any] = Field(default_factory=dict)
     interfaces: list[InterfaceIn] = Field(default_factory=list)
 
@@ -390,9 +393,9 @@ class NodeResourcesIn(BaseModel):
     """Hardware that takes effect on the node's next start."""
 
     ram_mb: int | None = Field(default=None, ge=16, le=262144)
-    cpu_limit: float | None = Field(default=None, gt=0, le=64)
+    cpu_limit: float | None = Field(default=None, gt=0, le=MAX_VCPUS)
     nic_model: str | None = None
-    nic_queues: int | None = Field(default=None, ge=1, le=8)
+    nic_queues: int | None = Field(default=None, ge=1, le=MAX_NIC_QUEUES)
 
 
 class NodeConsoleIn(BaseModel):
@@ -469,7 +472,7 @@ class TemplatePatch(BaseModel):
     ram_mb: int | None = None
     cpus: int | None = None
     nic_model: str | None = None
-    nic_queues: int | None = Field(default=None, ge=1, le=8)
+    nic_queues: int | None = Field(default=None, ge=1, le=MAX_NIC_QUEUES)
     disk_bus: str | None = None
     iface_scheme: str | None = None
     graphical: bool | None = None

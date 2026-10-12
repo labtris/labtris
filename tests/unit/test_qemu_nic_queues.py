@@ -52,7 +52,8 @@ def test_non_virtio_models_ignore_the_setting() -> None:
 
 
 def test_count_is_bounded_and_tolerant() -> None:
-    assert q.nic_queue_count({"nic_queues": 99}) == 8
+    assert q.nic_queue_count({"nic_queues": 99}) == 99
+    assert q.nic_queue_count({"nic_queues": 1000}) == 256, "MAX_TAP_QUEUES"
     assert q.nic_queue_count({"nic_queues": 0}) == 1
     assert q.nic_queue_count({"nic_queues": "four"}) == 1
     assert q.nic_queue_count({}) == 1
@@ -65,7 +66,9 @@ def test_router_clamps_queues_to_vcpus() -> None:
     assert _clamp_queues(4, 2) == 2
     assert _clamp_queues(4, None) == 4
     assert _clamp_queues(4, 0.5) == 1
-    assert _clamp_queues(16, 32) == 8
+    assert _clamp_queues(16, 32) == 16
+    assert _clamp_queues(64, 32) == 32
+    assert _clamp_queues(1000, 255) == 255
 
 
 

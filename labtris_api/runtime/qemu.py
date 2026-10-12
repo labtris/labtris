@@ -21,6 +21,8 @@ from labtris_api.config import settings
 from labtris_api.errors import ApiError, runtime_error, unprocessable
 from labtris_api.netd_client import NetdError, netd
 from labtris_api.runtime.base import (
+    MAX_NIC_QUEUES,
+    MAX_VCPUS,
     Capability,
     ConsoleEndpoint,
     IfaceSpec,
@@ -1520,7 +1522,7 @@ def nic_queue_count(cfg: dict[str, Any]) -> int:
     model = cfg.get("nic_model") or "virtio-net-pci"
     if not model.startswith("virtio-net"):
         return 1
-    return max(1, min(q, 8))
+    return max(1, min(q, MAX_NIC_QUEUES))
 
 
 def netdev_args(net_id: str, host_ifname: str, queues: int, vhost: bool) -> str:
@@ -1823,7 +1825,7 @@ class QemuRuntime:
         # node itself doesn't ask for a size.
         catalog = QEMU_CATALOG.get(spec.image)
         ram = spec.ram_mb or (catalog.ram_mb if catalog else 256)
-        cpus = max(1, min(8, round(spec.cpu_limit or (catalog.cpus if catalog else 1))))
+        cpus = max(1, min(MAX_VCPUS, round(spec.cpu_limit or (catalog.cpus if catalog else 1))))
         nic = spec.nic_model or (catalog.nic_model if catalog else "virtio-net-pci")
         if nic not in await available_nic_models():
             raise unprocessable(
@@ -1899,13 +1901,13 @@ class QemuRuntime:
         if ram_mb:
             cfg["ram_mb"] = int(ram_mb)
         if cpus:
-            cfg["cpus"] = max(1, min(8, int(cpus)))
+            cfg["cpus"] = max(1, min(MAX_VCPUS, int(cpus)))
         if nic_model:
             if nic_model not in await available_nic_models():
                 raise unprocessable(f"this qemu build has no {nic_model!r} device")
             cfg["nic_model"] = nic_model
         if nic_queues is not None:
-            cfg["nic_queues"] = max(1, min(8, int(nic_queues)))
+            cfg["nic_queues"] = max(1, min(MAX_NIC_QUEUES, int(nic_queues)))
         cfg_path.write_text(json.dumps(cfg))
 
     async def sync_from_spec(self, h: RuntimeHandle, spec: "NodeSpec") -> None:
@@ -1938,7 +1940,7 @@ class QemuRuntime:
         if spec.ram_mb:
             cfg["ram_mb"] = int(spec.ram_mb)
         if spec.cpu_limit:
-            cfg["cpus"] = max(1, min(8, round(float(spec.cpu_limit))))
+            cfg["cpus"] = max(1, min(MAX_VCPUS, round(float(spec.cpu_limit))))
         if spec.graphical is not None:
             cfg["graphical"] = bool(spec.graphical)
         # Companion files + template extras. Set to None/[] explicitly

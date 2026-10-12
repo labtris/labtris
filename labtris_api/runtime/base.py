@@ -4,6 +4,16 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+#: Hard ceilings for a QEMU node, from the emulator rather than from us.
+#: 255 vCPUs is the last APIC ID the default `qemu64` CPU can address
+#: without x2APIC (QEMU 10 aborts at 256: "APIC ID 255 requires x2APIC");
+#: KVM only *warns* above the host's core count, and over-committing is a
+#: legitimate way to stage a wide guest on a narrow box. 256 queue pairs is
+#: the kernel's MAX_TAP_QUEUES, so a tap cannot back more; the per-node
+#: clamp also keeps queues at or below vCPUs, since each pair needs one.
+MAX_VCPUS = 255
+MAX_NIC_QUEUES = 256
+
 
 class Capability(StrEnum):
     SUSPEND = "suspend"

@@ -35,7 +35,13 @@ from labtris_api.naming import (
     host_ifname,
 )
 from labtris_api.netd_client import NetdError, client_for_host, netd
-from labtris_api.runtime.base import IfaceSpec, NodeSpec, RuntimeHandle, StopMode
+from labtris_api.runtime.base import (
+    MAX_NIC_QUEUES,
+    IfaceSpec,
+    NodeSpec,
+    RuntimeHandle,
+    StopMode,
+)
 from labtris_api.runtime.containers import profile_for as container_profile
 from labtris_api.runtime.qemu import QEMU_CATALOG
 from labtris_api.runtime.registry import get_runtime
@@ -256,10 +262,10 @@ def _clamp_queues(queues: int | None, cpus: float | None) -> int | None:
     """A virtio queue pair is serviced by one vCPU; more queues than vCPUs is
     interrupt overhead with nothing to parallelise. Clamp rather than refuse,
     because the vCPU count can change later and a stale refusal is worse than
-    a quiet cap — the QEMU side caps at 8 as well."""
+    a quiet cap. MAX_NIC_QUEUES is the tap's limit, not a policy."""
     if queues is None:
         return None
-    q = max(1, min(8, int(queues)))
+    q = max(1, min(MAX_NIC_QUEUES, int(queues)))
     if cpus:
         q = min(q, max(1, int(round(float(cpus)))))
     return q
