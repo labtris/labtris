@@ -57,3 +57,39 @@ def test_the_option_is_declared_and_defaults_off() -> None:
     assert q.QEMU_OPTIONS["viommu"]["type"] == "bool"
     assert q.option_defaults()["viommu"] is False
     assert q.resolved_options({"viommu": True})["viommu"] is True
+
+
+async def test_a_template_option_added_later_reaches_existing_nodes() -> None:
+    """create() copies the template's options into the node row. A key the
+    template gains afterwards is missing from that copy, and until node_spec
+    merged the two it never reached the node — adding viommu to a template
+    that already had nodes did nothing. The node's own keys still win."""
+    from types import SimpleNamespace
+
+    from labtris_api import lifecycle
+    from labtris_api.runtime.qemu import CUSTOM_PREFIX
+
+    template = SimpleNamespace(spec={
+        "cpus": 4, "qemu_opts": {"machine": "q35", "viommu": True, "cpu": "host"},
+    })
+
+    class _Result:
+        def scalars(self):  # noqa: ANN202
+            return self
+        def first(self):  # noqa: ANN202
+            return template
+
+    class _Session:
+        async def execute(self, stmt):  # noqa: ANN001, ANN202
+            return _Result()
+
+    node = SimpleNamespace(
+        id="n1", lab_id="l1", name="r1", image=f"{CUSTOM_PREFIX}appliance",
+        env={}, cmd=None, cpu_limit=None, nic_model=None, nic_queues=None, ram_mb=None,
+        qemu_opts={"machine": "q35", "cpu": "max"},  # the copy create() made, before viommu
+        interfaces=[], runtime="qemu", startup_config=None, opts=None,
+        console={}, iface_scheme=None,
+    )
+    spec = await lifecycle.node_spec(_Session(), node)
+    assert spec.qemu_opts["viommu"] is True, "gained from the template"
+    assert spec.qemu_opts["cpu"] == "max", "the node's own choice is kept"

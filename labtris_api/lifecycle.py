@@ -310,7 +310,12 @@ async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
             tspec = dict(row.spec or {})
 
     return NodeSpec(
-        qemu_opts=dict(node.qemu_opts or {}),
+        # Template options under the node's. create() copies the template's
+        # options into the row, so a key the template gains later (viommu
+        # on a template that already has nodes) is absent from the copy and
+        # would otherwise never reach those nodes; a key the node has set
+        # itself still wins.
+        qemu_opts={**(tspec.get("qemu_opts") or {}), **(node.qemu_opts or {})},
         node_id=node.id,
         lab_id=node.lab_id,
         name=node.name,
