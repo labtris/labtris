@@ -1972,6 +1972,11 @@ class QemuRuntime:
           virtio node stayed broken even after the template was corrected.
         - `nic_model`, `ram_mb`, `cpus`, `graphical` — a template edit
           (edit-template modal) propagates on the next start.
+        - `opts` — the QEMU options. These were only ever written at
+          create, so `PATCH /nodes/{id}/qemu-options` saved to the row and
+          changed nothing: chipset, CPU model, vIOMMU, mgmt NIC all stayed
+          as the node was born. Found by a user who edited config.json by
+          hand while the node was stopped.
 
         Anything the spec doesn't explicitly say (None) is left alone.
         """
@@ -1992,6 +1997,9 @@ class QemuRuntime:
             cfg["cpus"] = max(1, min(MAX_VCPUS, round(float(spec.cpu_limit))))
         if spec.graphical is not None:
             cfg["graphical"] = bool(spec.graphical)
+        # The node's options are the whole set (create copied the template's
+        # into the row), resolved over the defaults the same way create does.
+        cfg["opts"] = resolved_options(spec.qemu_opts)
         # Companion files + template extras. Set to None/[] explicitly
         # so a template edit that clears a companion actually clears it
         # in the persisted config (a `.get` fallback would leave the
