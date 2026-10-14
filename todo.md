@@ -497,3 +497,17 @@ Each is a separate repo under `github.com/labtris/`:
 - [ ] **"Migrate from EVE-NG" walkthrough** — same
 - [ ] **"LocalStack side-by-side" page** — head-to-head with LocalStack
       showing what runs, what doesn't
+
+## Lab access VPN (design 2026-10-14)
+
+Join a lab from anywhere with an address on it — what EVE-NG and CML bundle
+OpenVPN for. Designed as FluxScale ADR 0017 (`~/ai-study/new-gp/docs/adr/
+0017-lab-access-split-tunnel-and-overlap-nat.md`): one `fluxscale-gateway`
+container per lab on an `access` network, split tunnel carrying only two
+CGNAT-space routes (the device's lease and the lab's *translated* block from
+100.96/12), 1:1 netmap at the gateway so overlapping subnets and a second
+VPN on the laptop both work, and the user↔IP map carrying both the tunnel
+address and the lab-side address for attribution. Labtris's share: the
+`access` network kind, a Connect panel (install line, member list showing
+both addresses), the gateway image in the catalog, and a lab-side address
+reservation. Do the hand-run test in the ADR before building any of it.
