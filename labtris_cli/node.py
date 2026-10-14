@@ -159,6 +159,21 @@ def cmd_stop(
         raise typer.Exit(1) from None
 
 
+@app.command("reboot")
+def cmd_reboot(
+    node_id: str,
+    mode: str = typer.Option("graceful", "--mode", help="graceful | force"),
+) -> None:
+    """Stop and start a node in one call. Picks up resource and option
+    changes the same way a start does."""
+    api = api_for(require_session())
+    try:
+        api.post(f"/api/v1/nodes/{node_id}/reboot", {"mode": mode})
+    except ApiError as exc:
+        error(exc.message)
+        raise typer.Exit(1) from None
+
+
 @app.command("push")
 def cmd_push(node_id: str) -> None:
     """Write the node's saved startup-config into the running container.

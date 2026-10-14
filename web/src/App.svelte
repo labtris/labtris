@@ -4336,8 +4336,8 @@
     if (!selected) return;
     busy = true;
     try {
-      await api.stop(selected);
-      await api.start(selected);
+      // One server call: stop-then-start from here raced the stop's teardown.
+      await api.reboot(selected);
       await loadLab(lab.id, true);
     } catch (e) {
       error = e.message;

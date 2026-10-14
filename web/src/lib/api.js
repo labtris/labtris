@@ -336,6 +336,8 @@ export const api = {
     req(`/api/v1/nodes/${id}/qemu-options`, { method: "PATCH", body: JSON.stringify(opts) }),
   stop: (id, mode = "graceful") =>
     req(`/api/v1/nodes/${id}/stop`, { method: "POST", body: JSON.stringify({ mode }) }),
+  reboot: (id, mode = "graceful") =>
+    req(`/api/v1/nodes/${id}/reboot`, { method: "POST", body: JSON.stringify({ mode }) }),
   deleteNode: (id) => req(`/api/v1/nodes/${id}`, { method: "DELETE" }),
   addIface: (id, name) =>
     req(`/api/v1/nodes/${id}/interfaces`, { method: "POST", body: JSON.stringify({ name }) }),

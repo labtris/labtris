@@ -360,6 +360,27 @@ async def do_stop(
     return await stop_node(session, node, mode)
 
 
+@router.post("/nodes/{node_id}/reboot", response_model=NodeOut)
+async def do_reboot(
+    node_id: str,
+    body: StopBody | None = None,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> Node:
+    """Stop, then start. One call rather than two, because the two-call
+    form raced: a client that fired start before the stop had settled got
+    409 or a start against a half-torn-down handle. The stop is the same
+    stop as /stop (graceful by default, `{"mode": "force"}` to kill), and
+    the start is the same start — so a reboot picks up resource and option
+    changes the way any start does, and a node that was stopped to begin
+    with just starts."""
+    node = await get_node(session, node_id)
+    mode = StopMode(body.mode if body else "graceful")
+    if node.state not in ("stopped", "defined", "error"):
+        node = await stop_node(session, node, mode)
+    return await start_node(session, node)
+
+
 @router.get("/nodes/{node_id}/console", response_model=ConsoleOut)
 async def console(
     node_id: str,

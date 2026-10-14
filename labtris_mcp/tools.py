@@ -164,6 +164,17 @@ def _stop(api: Api, a: dict[str, Any]) -> Any:
 
 
 @tool(
+    "reboot_node",
+    "Stop and start a node in one call; mode is 'graceful' (default) or 'force'. Use this "
+    "after changing resources or QEMU options, which take effect on the next start.",
+    {"node_id": STR, "mode": {"type": "string", "enum": ["graceful", "force"]}},
+    ["node_id"],
+)
+def _reboot(api: Api, a: dict[str, Any]) -> Any:
+    return api.post(f"/api/v1/nodes/{a['node_id']}/reboot", {"mode": a.get("mode", "graceful")})
+
+
+@tool(
     "connect_nodes",
     "Wire two nodes together with a point-to-point link, using the first free interface on "
     "each (adding one if needed).",
