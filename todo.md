@@ -511,3 +511,48 @@ address and the lab-side address for attribution. Labtris's share: the
 `access` network kind, a Connect panel (install line, member list showing
 both addresses), the gateway image in the catalog, and a lab-side address
 reservation. Do the hand-run test in the ADR before building any of it.
+
+## Demo: dense-mesh reconvergence (answer to Aktive / KNE, OCP 2026)
+
+Google's Aktive brings up 512 SONiC switches (Alpine Virtual Switch, Lucius
+software dataplane) on KNE with 12K+ links, and measures BGP reconvergence on
+link events and switch failures. Our 931-node fat tree has 2,058 links (~8 per
+switch) and only proves reachability. Build the comparable test:
+
+- [ ] `mesh` pattern in `lab generate`: N switches, configurable links per
+      switch (target ~24, Aktive's density), unnumbered eBGP, plus a few hosts.
+- [ ] Link-count ceiling: grow the mesh until the host breaks and say where
+      (netlink, veth count, bridge count, inotify, memory). The 3,267-node run
+      broke on the host side; link density is the likelier limit than nodes.
+- [ ] Reconvergence timing as a hook: (a) flap one link via `admin_up`,
+      (b) stop one switch, (c) stop a spine in the 931-node fat tree. Report
+      time from event to 0% loss on every host pair, and BGP time from event
+      to all sessions Established again. Repeat 5x, report median and max.
+- [ ] Same run with the SONiC-VPP template instead of FRR, at whatever size
+      the box allows, so the NOS matches Aktive's.
+- [ ] Memory per switch for FRR and for SONiC-VPP, with and without KSM
+      (containers need containerd `MemoryKSM=yes`). Only then compare to KNE,
+      and only with like-for-like images; read KNE's docs first
+      (memory: verify-competitor-claims).
+
+## Demo: SRv6 steering + packet trimming + congestion telemetry
+
+Same three things Marvell showed at the OCP SONiC booth, for AI back-end
+fabrics. Pod `srv6-trim`, small leaf-spine, two senders doing an all-reduce
+style pair of elephant flows:
+
+- [ ] Static SRv6: leaves encapsulate with an explicit segment list so flow A
+      crosses spine 1 and flow B spine 2. Show the ECMP baseline first (both
+      hash onto one spine, half the bandwidth), then SRv6 (both spines
+      used). Kernel `seg6` on container nodes or VPP's SRv6 plugin; SONiC-VPP
+      template if it carries SRv6 config.
+- [ ] Packet trimming: one spine is the `p4-trim` bmv2 program. Overload it,
+      capture trimmed headers on the receiver side in the Wireshark node.
+- [ ] Telemetry: ECN marks (pfc-classes setup), queue depth from bmv2 and
+      `vppctl show hardware`, and an INT P4 program on bmv2 stamping
+      per-hop queue depth into packets. Plot queue depth against time for
+      the ECMP and SRv6 runs.
+- [ ] Hooks that assert each part: SRv6 run uses both spines (per-link
+      counters within 10% of each other), trimming produced N trimmed
+      frames, INT records present.
+- [ ] Write-up for the blog with the captures, not diagrams.
