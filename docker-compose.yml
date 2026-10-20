@@ -51,7 +51,13 @@ services:
   # The namespace every Labtris process shares. Deliberately idle.
   # -------------------------------------------------------------------
   labnet:
-    image: ${LABTRIS_IMAGE:-ghcr.io/labtris/labtris:latest}
+    # A small image that never changes, not the Labtris one. labnet only holds
+    # the namespace, but it used to run the Labtris image, so every upgrade
+    # recreated it — and recreating labnet recreates everything that joins
+    # its namespace: dind (every lab container), netd (every lab bridge). An
+    # upgrade killed every container node for no reason but a changed tag.
+    # With a fixed image an upgrade recreates only api and netd.
+    image: alpine:3.20
     command: ["sleep", "infinity"]
     # Bound to loopback by default, matching the ISO (where uvicorn listens
     # on 127.0.0.1 behind nginx). This matters on a public host: until the

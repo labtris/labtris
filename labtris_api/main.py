@@ -45,6 +45,10 @@ from labtris_api.routers import (
 )
 
 
+#: Startup work that outlives the lifespan call (see restore_nodes).
+_BACKGROUND: set[asyncio.Task] = set()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Stored overrides have to be live before the first request, or the first
@@ -53,11 +57,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # of all a host reboot, which takes every VM with it while the nodes go on
     # claiming they are up.
     try:
+        from labtris_api.config import settings as _settings
         from labtris_api.db import SessionLocal as _Session
         from labtris_api.reconcile import reconcile
 
         async with _Session() as _session:
-            await reconcile(_session)
+            _rec = await reconcile(_session, wait_s=_settings.reconcile_runtime_wait_s)
+        # In the background: the API answers while the VMs boot, and a
+        # client that polls the lab sees each node come back.
+        if _settings.restore_running_nodes and _rec.get("restore"):
+            from labtris_api.reconcile import restore_nodes
+
+            # Held at module level: the loop keeps only a weak reference to
+            # a task, and a collected one stops halfway through the boots.
+            _BACKGROUND.add(asyncio.create_task(
+                restore_nodes(_Session, _rec["restore"]), name="reconcile-restore"
+            ))
     except Exception:  # noqa: BLE001 - never let housekeeping stop the API booting
         pass
 

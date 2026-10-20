@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     #: unrestricted arguments to a process on this host, which is a very
     #: different trust level from the rest of the node options.
     qemu_allow_extra_args: bool = False
+    #: Start again, at boot, the nodes that were running when the API went
+    #: down (an upgrade, a host reboot, a crash). Off restores the old
+    #: behaviour: they are marked stopped and wait for someone to start them.
+    restore_running_nodes: bool = True
+    #: How long startup waits for a runtime (dind, mostly) to answer before
+    #: it gives up deciding whether that runtime's nodes are alive.
+    reconcile_runtime_wait_s: float = 90.0
     #: Whether this deployment can reconfigure the HOST's own network stack.
     #: True for the ISO and a source install, where netd runs in the host
     #: namespace. The container image sets it false: everything there shares
