@@ -400,14 +400,21 @@ say "Python environment"
 # uninstallable — it has no python3.12 package at all. The check matters
 # both ways: too old fails at install with a clear reason instead of at
 # import, and too new is refused rather than silently untested.
-PY=${PYTHON:-python3}
+# LABTRIS_PYTHON, not PYTHON. The ISO runs this script through `curtin
+# in-target`, which passes the installer's environment straight through, and
+# the Ubuntu installer exports PYTHON=/snap/subiquity/<rev>/usr/bin/python3.10
+# — its own interpreter, which does not exist inside the target. With
+# ${PYTHON:-python3} every ISO install since ccde58b died here with "no
+# /snap/subiquity/.../python3.10 on PATH". A generic name like PYTHON is
+# whatever the caller's environment says; ours cannot be set by accident.
+PY=${LABTRIS_PYTHON:-python3}
 command -v "$PY" >/dev/null 2>&1 || { say "  ERROR: no $PY on PATH"; exit 1; }
 PYVER=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 case "$PYVER" in
   3.12|3.13|3.14) say "  using $PY ($PYVER)" ;;
   *) say "  ERROR: Python $PYVER is outside the supported range (3.12 to 3.14)."
      say "         pyproject.toml says requires-python = \">=3.12,<3.15\"."
-     say "         Install a supported interpreter and re-run with PYTHON=python3.X"
+     say "         Install a supported interpreter and re-run with LABTRIS_PYTHON=python3.X"
      exit 1 ;;
 esac
 [ -d "$PREFIX/.venv" ] || "$PY" -m venv "$PREFIX/.venv"
