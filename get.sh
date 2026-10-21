@@ -10,7 +10,7 @@
 #
 # Override any of these on the command line:
 #
-#   sudo LABTRIS_TOKEN=github_pat_… bash -c "$(curl -fsSL labtris.com/install)"
+#   sudo LABTRIS_TOKEN=github_pat_… bash -c ...   # a fork you made private
 #   sudo LABTRIS_BRANCH=some-topic bash -c ...
 #   sudo LABTRIS_REPO=https://github.com/labtris/labtris.git bash -c ...
 #   sudo LABTRIS_PREFIX=/srv/labtris bash -c ...
@@ -22,11 +22,12 @@ REPO=${LABTRIS_REPO:-https://github.com/labtris/labtris.git}
 BRANCH=${LABTRIS_BRANCH:-main}
 PREFIX=${LABTRIS_PREFIX:-/opt/labtris}
 FORCE_OS=${LABTRIS_FORCE_OS:-0}
-# The repository is private. A token from your access invitation goes in
-# LABTRIS_TOKEN (GH_TOKEN and GITHUB_TOKEN are read too, for people who
-# already have one in the environment). It is sent as a header on this
-# clone only — nothing is written into $PREFIX/.git/config, so the token
-# does not outlive the command that used it.
+# The repository is public, so no token is needed. LABTRIS_TOKEN is for
+# installing from a private fork or mirror (GH_TOKEN and GITHUB_TOKEN are read
+# too, for people who already have one in the environment). It is sent as a
+# header on this clone only — nothing is written into $PREFIX/.git/config, so
+# the token does not outlive the command that used it. (The repository was
+# private from 2026-10-12 to 2026-10-21; this is what that period needed.)
 TOKEN=${LABTRIS_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}
 GIT=(git)
 if [ -n "$TOKEN" ]; then
@@ -110,8 +111,8 @@ if [ -d "$PREFIX/.git" ]; then
 else
   # --depth 1: the installer needs the tree, not the history.
   GIT_TERMINAL_PROMPT=0 "${GIT[@]}" clone --depth 1 --branch "$BRANCH" "$REPO" "$PREFIX" \
-    || die "could not clone $REPO. It is a private repository: set LABTRIS_TOKEN to the
-       token from your access invitation, or ask for one at contact@labtris.com."
+    || die "could not clone $REPO. Check the network and LABTRIS_REPO; for a
+       private fork, set LABTRIS_TOKEN to a token that can read it."
 fi
 
 INSTALLER="$PREFIX/packaging/install-labtris.sh"

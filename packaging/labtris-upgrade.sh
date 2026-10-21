@@ -31,8 +31,8 @@ PREFIX=${LABTRIS_PREFIX:-/opt/labtris}
 CONFDIR=${CONFDIR:-/etc/labtris}
 REPO=${LABTRIS_REPO:-https://github.com/labtris/labtris.git}
 BACKUP_DIR=${LABTRIS_BACKUP_DIR:-/var/backups/labtris}
-# Private repository: the same LABTRIS_TOKEN the installer took. Sent as a
-# header on the fetch and the release lookup, never stored.
+# Only for a private fork or mirror: the same LABTRIS_TOKEN the installer
+# took. Sent as a header on the fetch and the release lookup, never stored.
 TOKEN=${LABTRIS_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}
 TARGET=""
 CHECK_ONLY=0
@@ -175,7 +175,7 @@ fi
 say "Fetching $TARGET"
 "${GIT[@]}" fetch --depth 1 origin "$TARGET" \
   || die "could not fetch '$TARGET'. Is it a real tag or branch? The repository
-       is private — set LABTRIS_TOKEN if this host was installed with one."
+       — and if LABTRIS_REPO is a private fork, set LABTRIS_TOKEN."
 "${GIT[@]}" checkout -f FETCH_HEAD \
   || die "checkout failed — $PREFIX may have local modifications"
 

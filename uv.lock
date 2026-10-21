@@ -640,7 +640,7 @@ wheels = [
 
 [[package]]
 name = "labtris"
-version = "0.13.11"
+version = "0.13.13"
 source = { editable = "." }
 dependencies = [
     { name = "aiodocker" },
