@@ -450,6 +450,34 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Networking / runtime
 
+- [ ] **IMPORTANT: hot insert and removal of links on running nodes.**
+      Adding, deleting or re-pointing a link must work on a running node
+      without a reboot, and say clearly when it cannot. Today it fails
+      silently on QEMU nodes: on 2026-11-05, re-linking `perf-fw` (q35) in
+      lab `flux-perf` left eth6 and eth8 dead while the API returned 201.
+      `QemuRuntime.attach_iface` deletes and recreates the tap, but QEMU
+      keeps the deleted one open. The `device_del`/`device_add` that
+      should re-plug the NIC does nothing, because q35 NICs sit on
+      `pcie.0`, which cannot hot-unplug. Only a reboot recovered it.
+      - **Keep the tap when only the peer changes.** Move the existing
+        tap to the new bridge instead of recreating it. That makes a
+        re-link take effect at once on every machine type.
+      - **Real hot-plug for new interfaces.** On q35, start each VM with
+        spare `pcie-root-port`s (a few beyond the defined NICs) and put
+        NICs on them, so `device_add`/`device_del` work. On i440fx, check
+        that ACPI PCI hot-plug works the same way.
+      - **Containers.** Check that adding and removing a veth on a running
+        container node shows up in the guest (`ip link` without a
+        restart), and that removal does not leave a dangling peer.
+      - **Check the result, not the HMP call.** After a plug, confirm the
+        device in `info qtree`/`query-pci` and the tap's carrier. If
+        anything is off, fail with "needs a node restart", never 201.
+      - **UI.** Allow wiring and unwiring on a running node; mark a link
+        "applies on next restart" when hot-plug is not possible.
+      - **Tests.** Unit tests for the tap-move path. An acceptance run on
+        a q35 VM: add, delete and re-point a link while it runs, and pass
+        traffic across each change.
+
 - [ ] **VyOS firewall compiler** — `authorize-security-group-ingress`
       from labtris-aws compiles to real VyOS config on the in-path
       firewall node. Requires a `firewall` node kind (pluggable, VyOS
