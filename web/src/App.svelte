@@ -10,6 +10,7 @@
   import VncPane from "./lib/VncPane.svelte";
   import Terminal from "./lib/Terminal.svelte";
   import { loadConfig as loadLlm, saveConfig as saveLlm, runTurn } from "./lib/assistant.js";
+  import { eventsToChat, eventToBubble, pickSession } from "./lib/aiSessions.js";
   import CapturePane from "./lib/CapturePane.svelte";
   import WiresharkPane from "./lib/WiresharkPane.svelte";
   import SettingsPane from "./lib/SettingsPane.svelte";
@@ -252,7 +253,16 @@
     aiHistory = [];
     liveTurn = null;
     localStorage.removeItem("labtris.chat");
+    //: A new conversation; the old one stays on the server and in the list.
+    aiSessionId = null;
+    aiLastSeq = 0;
+    rememberAiSession(lab?.id, null);
   }
+  //: Conversations about the open lab, and which one is on screen.
+  let aiSessions = $state([]);
+  let aiSessionId = $state(null);
+  //: Highest event seq drawn, so a reconnect asks only for what is new.
+  let aiLastSeq = 0;
   //: Provider settings for this browser. The key is never sent to Labtris.
   let llm = $state(loadLlm());
   const llmConfigured = () => !!(llm.apiKey && llm.model);
@@ -866,6 +876,7 @@
     };
     pan = geometry.view || pan;
     connectLabWs(id);
+    loadAiSession(id);
     //: The URL names the open lab, so a reload keeps it, a link to a lab
     //: is shareable, and anything driving the app — a screenshot run, an
     //: accessibility tool, an agent — can open one without finding the
@@ -1438,7 +1449,7 @@
       await api.link(lab.id, wiring.from.id, iface.id);
       await loadLab(lab.id, true);
     } catch (err) {
-      error = err.message;
+      await wiringFailed(err);
     } finally {
       wiring = null;
       busy = false;
@@ -1501,6 +1512,17 @@
     };
   }
 
+  //: A link or network join on a running node that cannot take it live is
+  //: saved, not refused: show why, and redraw so the new wire is there.
+  async function wiringFailed(err) {
+    if (err?.code === "needs_restart") {
+      error = `Saved — ${err.message}`;
+      if (lab) await loadLab(lab.id, true);
+    } else {
+      error = err.message;
+    }
+  }
+
   async function confirmPicker() {
     if (!picker || !lab) return;
     busy = true;
@@ -1512,7 +1534,7 @@
       await api.link(lab.id, aId, bId);
       await loadLab(lab.id, true);
     } catch (err) {
-      error = err.message;
+      await wiringFailed(err);
     } finally {
       busy = false;
     }
@@ -1636,7 +1658,7 @@
       await api.setIfaceNetwork(id, net.id);
       await loadLab(lab.id, true);
     } catch (e) {
-      error = e.message;
+      await wiringFailed(e);
     } finally {
       busy = false;
     }
@@ -2577,55 +2599,102 @@
       }
       return;
     }
-    //: Server-side agent path: streams turns over WebSocket so each bubble
-    //: appears as the model produces it, plus a per-tool-call "step" ping
-    //: that keeps the working-strip live between turns. The old batch POST
-    //: at /api/v1/labs/{id}/ai is still there for MCP and tests.
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    aiWs = new WebSocket(`${proto}://${location.host}/api/v1/labs/${lab.id}/ai/ws`);
+    //: Server-side agent path. The turn belongs to a conversation stored on
+    //: the server, not to this socket: closing the tab or signing out
+    //: leaves it running, and reopening the lab here or on another device
+    //: picks it up again (loadAiSession → followAi).
     const pendingAttachments = aiAttachments;
     aiAttachments = [];
-    aiWs.onopen = () => aiWs.send(JSON.stringify({
+    openAiSocket({
       message: msg,
+      session: aiSessionId,
       attachments: pendingAttachments.map(({ filename, mime, data_url }) => ({ filename, mime, data_url })),
-    }));
-    aiWs.onmessage = (ev) => {
+    });
+  }
+
+  //: One socket for both sending a message and following a conversation
+  //: already under way; the server speaks the same events either way.
+  function openAiSocket(first) {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const labId = lab.id;
+    const ws = new WebSocket(`${proto}://${location.host}/api/v1/labs/${labId}/ai/ws`);
+    aiWs = ws;
+    let finished = false;
+    ws.onopen = () => ws.send(JSON.stringify(first));
+    ws.onmessage = (ev) => {
       let m;
       try {
         m = JSON.parse(ev.data);
       } catch {
         return;
       }
-      if (m.kind === "text") {
-        //: Token delta — extend the live bubble. Create it on the first
-        //: delta of a turn so the growing-cursor UI has something to
-        //: anchor on.
+      if (m.kind === "accepted") {
+        aiLastSeq = Math.max(aiLastSeq, m.seq || 0);
+        return;
+      }
+      if (typeof m.seq === "number") {
+        if (m.seq <= aiLastSeq) return;
+        aiLastSeq = m.seq;
+      }
+      if (m.kind === "done") finished = true;
+      handleAiEvent(m);
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => {
+      if (aiWs === ws) aiWs = null;
+      aiStep = "";
+      liveTurn = null;
+      if (finished) return;
+      //: The socket dropped, not the turn. Follow it again shortly; if it
+      //: ended meanwhile, the replay says so.
+      const sid = aiSessionId;
+      setTimeout(() => {
+        if (!aiWs && lab?.id === labId && aiSessionId === sid && sid) followAi();
+      }, 3000);
+    };
+  }
+
+  function handleAiEvent(m) {
+    switch (m.kind) {
+      case "session":
+        aiSessionId = m.id;
+        rememberAiSession(lab?.id, m.id);
+        aiSessions = [{ ...m, running: true }, ...aiSessions.filter((x) => x.id !== m.id)];
+        break;
+      case "user":
+        //: Only arrives in a replay; a message sent from this tab is already
+        //: on screen.
+        chat = [...chat, eventToBubble(m)];
+        busy = true;
+        break;
+      case "text":
         liveTurn = {
           ...(liveTurn || { text: "", reasoning: "" }),
           text: (liveTurn?.text || "") + (m.delta || ""),
         };
-      } else if (m.kind === "reasoning") {
+        break;
+      case "reasoning":
         liveTurn = {
           ...(liveTurn || { text: "", reasoning: "" }),
           reasoning: (liveTurn?.reasoning || "") + (m.delta || ""),
         };
-      } else if (m.kind === "step") {
+        break;
+      case "step":
         aiStep = m.tool || "";
         aiStepCount += 1;
-      } else if (m.kind === "confirm") {
-        //: Destructive tool wants approval. Freeze the strip in an
-        //: "awaiting your decision" state and pop the modal. The click
-        //: handlers on the modal send `answer` back on the WS.
-        aiConfirm = { id: m.id, tool: m.tool, args: m.args || {} };
-      } else if (m.kind === "reset") {
-        //: The stream broke mid-turn and the server is auto-retrying —
-        //: discard the growing bubble so the retry does not append to
-        //: half-generated text.
+        break;
+      case "reset":
         liveTurn = null;
-      } else if (m.kind === "turn") {
-        //: The turn has finalized. Commit the live bubble (or the
-        //: server-supplied fallback text) as a permanent one, reset the
-        //: growing state so the next turn starts fresh.
+        break;
+      case "confirm":
+        aiConfirm = { id: m.id, tool: m.tool, args: m.args || {} };
+        chat = [...chat, eventToBubble(m)];
+        break;
+      case "answer":
+        if (aiConfirm?.id === m.id) aiConfirm = null;
+        chat = [...chat, eventToBubble(m)];
+        break;
+      case "turn": {
         const text = m.text || liveTurn?.text || "";
         const reasoning = liveTurn?.reasoning || "";
         const applied = Array.isArray(m.applied) ? m.applied : [];
@@ -2635,45 +2704,120 @@
           chat = [...chat, entry];
         }
         liveTurn = null;
-      } else if (m.kind === "cancelled") {
-        //: User hit Stop. Discard the partial bubble and log it faintly
-        //: so the user knows the turn was cut short, not lost silently.
+        break;
+      }
+      case "cancelled":
+      case "interrupted":
+      case "error": {
         liveTurn = null;
-        chat = [...chat, { role: "labtris", text: "(stopped)" }];
-      } else if (m.kind === "error") {
-        chat = [...chat, { role: "labtris", text: m.message || "error" }];
-        liveTurn = null;
-      } else if (m.kind === "done") {
-        //: Server signalled clean end. The onclose that follows also
-        //: clears busy — this is belt-and-braces so a slow close doesn't
-        //: leave the input disabled.
+        const b = eventToBubble(m);
+        if (b) chat = [...chat, b];
+        break;
+      }
+      case "end":
+      case "done":
         aiStep = "";
         aiStepCount = 0;
         busy = false;
         liveTurn = null;
         aiConfirm = null;
-        loadLab(lab.id, true);
-      }
-    };
-    aiWs.onerror = () => {
-      chat = [...chat, { role: "labtris", text: "AI assistant connection lost" }];
-    };
-    aiWs.onclose = () => {
-      aiStep = "";
-      aiStepCount = 0;
-      liveTurn = null;
-      aiConfirm = null;
-      busy = false;
-      aiWs = null;
-    };
+        if (lab) loadLab(lab.id, true);
+        break;
+    }
   }
 
-  function answerConfirm(allow) {
-    if (!aiWs || !aiConfirm) return;
+  //: The conversation this browser last had open for each lab.
+  function rememberAiSession(labId, sid) {
+    if (!labId) return;
     try {
-      aiWs.send(JSON.stringify({ kind: "answer", id: aiConfirm.id, allow }));
+      const all = JSON.parse(localStorage.getItem("labtris.aiSession") || "{}");
+      if (sid) all[labId] = sid;
+      else delete all[labId];
+      localStorage.setItem("labtris.aiSession", JSON.stringify(all));
     } catch {}
+  }
+  function rememberedAiSession(labId) {
+    try {
+      return JSON.parse(localStorage.getItem("labtris.aiSession") || "{}")[labId] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  //: Read a lab's conversations back from the server and show the one this
+  //: browser had open (or the newest). If a turn is still running there, or
+  //: waiting on an approval, follow it live.
+  async function loadAiSession(labId, sid = undefined) {
+    //: A provider key in this browser means the in-browser loop, whose
+    //: conversation lives here and not on the server.
+    if (llmConfigured()) return;
+    try {
+      const { sessions } = await api.aiSessions(labId);
+      if (lab?.id !== labId) return;
+      aiSessions = sessions;
+      const pick = sid !== undefined
+        ? sessions.find((x) => x.id === sid) || null
+        : pickSession(sessions, rememberedAiSession(labId));
+      await showAiSession(pick);
+    } catch {
+      //: An older server without conversations: keep the local chat.
+    }
+  }
+
+  async function showAiSession(sess) {
+    if (aiWs) {
+      try { aiWs.close(); } catch {}
+      aiWs = null;
+    }
     aiConfirm = null;
+    liveTurn = null;
+    aiStep = "";
+    aiStepCount = 0;
+    if (!sess) {
+      aiSessionId = null;
+      aiLastSeq = 0;
+      chat = [];
+      busy = false;
+      return;
+    }
+    aiSessionId = sess.id;
+    rememberAiSession(lab?.id, sess.id);
+    const { session, events } = await api.aiSessionEvents(sess.id, 0);
+    const view = eventsToChat(events);
+    chat = view.chat;
+    aiLastSeq = view.lastSeq;
+    busy = !!session.running;
+    if (session.running) {
+      aiConfirm = view.pendingConfirm;
+      followAi();
+    }
+  }
+
+  function followAi() {
+    if (!lab || !aiSessionId || aiWs) return;
+    busy = true;
+    openAiSocket({ kind: "subscribe", session: aiSessionId, after_seq: aiLastSeq });
+  }
+
+  //: Works with or without a socket open: an approval can be given from a
+  //: tab that only reloaded the conversation.
+  async function answerConfirm(allow) {
+    if (!aiConfirm) return;
+    const id = aiConfirm.id;
+    aiConfirm = null;
+    if (aiWs && aiWs.readyState === WebSocket.OPEN) {
+      try {
+        aiWs.send(JSON.stringify({ kind: "answer", id, allow }));
+        return;
+      } catch {}
+    }
+    if (aiSessionId) {
+      try {
+        await api.aiSessionAnswer(aiSessionId, id, allow);
+      } catch (e) {
+        chat = [...chat, { role: "labtris", text: e.message, error: true }];
+      }
+    }
   }
 
   //: Read a file into a base64 data URL. Rejects anything over the size
@@ -2711,16 +2855,15 @@
   //: its next boundary and returns a `cancelled` event, which finalises
   //: the UI. Also handles the case where the WS has not yet opened.
   function stopAi() {
-    if (!aiWs) return;
-    try {
-      if (aiWs.readyState === WebSocket.OPEN) {
+    if (aiWs && aiWs.readyState === WebSocket.OPEN) {
+      try {
         aiWs.send(JSON.stringify({ kind: "cancel" }));
-      } else {
-        aiWs.close();
-      }
-    } catch {
-      // WebSocket already dead; onclose handler will clean up state.
+        return;
+      } catch {}
     }
+    //: No socket (it dropped, or this tab only reloaded the conversation):
+    //: the turn still runs on the server, so stop it there.
+    if (aiSessionId) api.aiSessionCancel(aiSessionId).catch(() => {});
   }
 
   async function loadTuning() {
@@ -6403,6 +6546,9 @@
             onsend={sendAi}
             onstop={stopAi}
             onclear={clearChat}
+            sessions={aiSessions}
+            sessionId={aiSessionId}
+            onpicksession={(id) => showAiSession(aiSessions.find((x) => x.id === id) || null)}
           />
         {/if}
       </FloatWindow>

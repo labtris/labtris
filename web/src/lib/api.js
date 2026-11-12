@@ -190,7 +190,12 @@ async function req(path, opts = {}) {
     if (r.status === 401 && !opts.expected401 && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("labtris:unauthorized", { detail: { path } }));
     }
-    throw new Error(msg);
+    //: The code lets a caller tell "saved, applies on restart"
+    //: (needs_restart) from a real failure.
+    const e = new Error(msg);
+    e.code = data?.error?.code;
+    e.status = r.status;
+    throw e;
   }
   if (unparsed !== null) {
     // A 2xx that is not JSON is a bug on the server side, but the caller still
@@ -416,6 +421,18 @@ export const api = {
   aiStatus: () => req("/api/v1/ai/status"),
   ai: (labId, message) =>
     req(`/api/v1/labs/${labId}/ai`, { method: "POST", body: JSON.stringify({ message }) }),
+  //: Conversations kept on the server: they outlive the tab, and any device
+  //: signed in as the same person can read them back and carry on.
+  aiSessions: (labId) => req(`/api/v1/labs/${labId}/ai/sessions`),
+  aiSessionEvents: (id, afterSeq = 0) =>
+    req(`/api/v1/ai/sessions/${id}/events?after_seq=${afterSeq}`),
+  aiSessionAnswer: (id, callId, allow) =>
+    req(`/api/v1/ai/sessions/${id}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ id: callId, allow }),
+    }),
+  aiSessionCancel: (id) => req(`/api/v1/ai/sessions/${id}/cancel`, { method: "POST" }),
+  aiSessionDelete: (id) => req(`/api/v1/ai/sessions/${id}`, { method: "DELETE" }),
 
   renameLab: (id, body) => req(`/api/v1/labs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   //: Nodes have always been renameable through the API; only the

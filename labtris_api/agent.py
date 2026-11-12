@@ -378,6 +378,7 @@ async def stream_agent(
     retry_on_interruption: bool = True,
     confirm: Any = None,
     attachments: list[dict[str, Any]] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """The tool-calling loop as an async iterator of events.
 
@@ -399,8 +400,13 @@ async def stream_agent(
     # creates then belong to that person, and nothing it can do exceeds what
     # they could do themselves.
     api = Api(base=settings.self_url, token=token)
+    # Earlier turns of the same conversation, already trimmed to a budget by
+    # the caller (assistant_sessions.model_history). Without them every
+    # message started from nothing and "now do the same for leaf2" meant
+    # nothing to the model.
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM},
+        *(history or []),
         {"role": "user", "content": _user_message_content(lab_id, message, attachments)},
     ]
     url = settings.llm_base_url.rstrip("/") + "/chat/completions"

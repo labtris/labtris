@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -8,13 +9,15 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from labtris_api.agent import Cancellation, LlmUnavailable, StreamCancelled, llm_reachable, run_agent, stream_agent
+from labtris_api.agent import LlmUnavailable, llm_reachable, run_agent
+from labtris_api.assistant_sessions import TurnBusy, event_for_client
+from labtris_api.assistant_sessions import manager as assistant_manager
 from labtris_api.auth import User, get_current_user
 from labtris_api.config import settings
 from labtris_api.db import get_session
@@ -342,19 +345,53 @@ def _agent_token(user: User) -> str | None:
     )
 
 
+def _owner_id(user: User) -> str | None:
+    """The users.id a conversation is filed under. The setup and dev
+    pseudo-users have no row, so theirs are filed under nobody."""
+    return None if user.id in ("setup", "dev") else user.id
+
+
+async def _owned(session_id: str, user: User, lab_id: str | None = None) -> dict[str, Any]:
+    """The session, if it is this user's. Anyone else's is a 404, not a 403:
+    whether someone else has a conversation about a lab is not theirs to know.
+    Admins included: an approval asked of one person is not another's to give."""
+    sess = await assistant_manager.store.get(session_id) if session_id else None
+    if sess is None or sess["user_id"] != _owner_id(user) or (lab_id and sess["lab_id"] != lab_id):
+        raise not_found("no such conversation")
+    return sess
+
+
+async def _plan_fallback(lab_id: str, message: str) -> list[str]:
+    from labtris_api.db import SessionLocal
+
+    async with SessionLocal() as s:
+        return await local_plan(s, lab_id, message)
+
+
+assistant_manager.plan_fallback = _plan_fallback
+
+
 @router.websocket("/labs/{lab_id}/ai/ws")
 async def ai_chat_ws(websocket: WebSocket, lab_id: str) -> None:
-    """Streaming counterpart to POST /labs/{lab_id}/ai.
+    """Talk to the assistant, or watch a conversation already under way.
 
-    Sends one JSON message per assistant event so the browser can render
-    each bubble as the model produces it, plus a "step" event before each
-    tool call so the working-strip in the UI can name what's currently in
-    flight. Ends with `{kind: "done"}` and closes.
+    The first message from the client is one of:
+
+    - `{message, attachments?, session?}` starts a turn, in `session` or in a
+      new conversation (announced as `{kind: "session", id, ...}`);
+    - `{kind: "subscribe", session, after_seq}` replays what happened after
+      `after_seq` and, if a turn is running, follows it live.
+
+    Events carry `seq` when they are stored (user, turn, confirm, answer,
+    cancelled, error, interrupted, end) and none when they are live-only
+    (text, reasoning, step, reset). The stream ends with `{kind: "done"}`.
+
+    While connected the client may send `{kind: "cancel"}` or
+    `{kind: "answer", id, allow}`. Closing the socket no longer cancels: the
+    turn belongs to the conversation, not to this connection.
 
     Auth: session cookie on the upgrade request, same as the other WS
-    routes. resolve_ws_user reads it and refuses if there is no valid
-    session — otherwise an unauthenticated client could burn a real
-    LLM turn.
+    routes; without one the socket closes with 4401 before any LLM call.
     """
     from labtris_api.auth import resolve_ws_user
     from labtris_api.db import SessionLocal
@@ -363,117 +400,197 @@ async def ai_chat_ws(websocket: WebSocket, lab_id: str) -> None:
     async with SessionLocal() as _s:
         user = await resolve_ws_user(websocket, _s)
     if user is None:
-        # Same close-with-a-visible-error shape as the other WS routes.
         await websocket.send_json({"kind": "error", "message": "sign in to talk to the assistant"})
         await websocket.close(code=4401, reason="unauthorized")
         return
-    cancel = Cancellation()
-    #: Per-tool-call futures the confirm callback awaits. Keyed by the
-    #: tool_call_id the model gave, so out-of-order answers still land
-    #: on the right pending confirm.
-    pending_confirms: dict[str, asyncio.Future[bool]] = {}
+    store = assistant_manager.store
+    try:
+        req = await websocket.receive_json()
+        if not isinstance(req, dict):
+            await websocket.send_json({"kind": "error", "message": "expected a JSON object"})
+            return
+        if req.get("kind") == "subscribe":
+            try:
+                sess = await _owned(str(req.get("session") or ""), user, lab_id)
+            except ApiError as exc:
+                await websocket.send_json({"kind": "error", "message": exc.message})
+                return
+            after = int(req.get("after_seq") or 0)
+        else:
+            message = str(req.get("message") or "").strip()
+            attachments = req.get("attachments") or []
+            if not message and not attachments:
+                await websocket.send_json({"kind": "error", "message": "empty message"})
+                return
+            try:
+                async with SessionLocal() as _ctx_session:
+                    await _lab_context(_ctx_session, lab_id)
+                if req.get("session"):
+                    sess = await _owned(str(req["session"]), user, lab_id)
+                else:
+                    title = (message or "attachments").splitlines()[0][:80]
+                    sess = await store.create(_owner_id(user), lab_id, "assistant", title)
+                    await websocket.send_json({"kind": "session", **sess})
+            except ApiError as exc:
+                await websocket.send_json({"kind": "error", "message": exc.message})
+                return
+            try:
+                after = await assistant_manager.start_turn(
+                    sess["id"], lab_id, message, _agent_token(user), attachments
+                )
+            except TurnBusy:
+                await websocket.send_json({
+                    "kind": "error",
+                    "message": (
+                        "a turn is already running in this conversation; "
+                        "wait for it or stop it"
+                    ),
+                })
+                return
+            # The sender already shows its own message; this tells it the
+            # seq, so a reconnect does not draw it twice.
+            await websocket.send_json({"kind": "accepted", "seq": after})
+        await _follow(websocket, sess["id"], after)
+        await websocket.send_json({"kind": "done"})
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001 - never let a bug drop the socket silently
+        with contextlib.suppress(Exception):
+            await websocket.send_json({"kind": "error", "message": str(exc)})
+    finally:
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
-    async def _watch_client() -> None:
-        """Block on the socket for follow-up messages from the client
-        during a turn: `{kind: "cancel"}` sets the Cancellation flag
-        (which the agent loop and streaming pump both check), and
-        `{kind: "answer", id, allow}` resolves the pending confirm
-        with matching id. Treats a plain close as an implicit cancel."""
-        try:
+
+async def _follow(websocket: WebSocket, session_id: str, after_seq: int) -> None:
+    """Replay stored events after `after_seq`, then follow the running turn
+    until it ends or the client goes away."""
+    store = assistant_manager.store
+    # Subscribe before reading the database, so nothing recorded in between
+    # is missed; anything seen twice is dropped by seq.
+    q = assistant_manager.subscribe(session_id)
+    try:
+        last = after_seq
+        for ev in await store.events(session_id, after_seq):
+            await websocket.send_json(event_for_client(ev))
+            last = ev["seq"]
+        if q is None or not assistant_manager.is_running(session_id):
+            return
+        for ev in assistant_manager.snapshot(session_id):
+            await websocket.send_json(ev)
+
+        async def _client() -> None:
             while True:
                 msg = await websocket.receive_json()
                 if not isinstance(msg, dict):
                     continue
-                k = msg.get("kind")
-                if k == "cancel":
-                    cancel.cancel()
+                if msg.get("kind") == "cancel":
+                    assistant_manager.cancel(session_id)
+                elif msg.get("kind") == "answer":
+                    assistant_manager.answer(
+                        session_id, str(msg.get("id") or ""), bool(msg.get("allow"))
+                    )
+
+        watcher = asyncio.create_task(_client())
+        try:
+            while True:
+                getter = asyncio.create_task(q.get())
+                done, _ = await asyncio.wait(
+                    {getter, watcher}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if watcher in done:
+                    # The client left or sent garbage. The turn carries on.
+                    getter.cancel()
                     return
-                if k == "answer":
-                    fut = pending_confirms.pop(msg.get("id", ""), None)
-                    if fut is not None and not fut.done():
-                        fut.set_result(bool(msg.get("allow")))
-        except WebSocketDisconnect:
-            cancel.cancel()
-            for fut in list(pending_confirms.values()):
-                if not fut.done():
-                    fut.set_result(False)
-        except Exception:  # noqa: BLE001 - anything unexpected treats as cancel
-            cancel.cancel()
-
-    async def _ask_confirm(call_id: str, tool: str, args: dict) -> bool:
-        """Wait for the client to answer a `confirm` event. Returns True
-        for allow, False for deny. A disconnect while awaiting resolves
-        as False so the loop terminates cleanly."""
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[bool] = loop.create_future()
-        pending_confirms[call_id] = fut
-        try:
-            return await fut
-        except asyncio.CancelledError:
-            return False
-
-    try:
-        req = await websocket.receive_json()
-        message = str(req.get("message") or "").strip()
-        attachments = req.get("attachments") or []
-        if not message and not attachments:
-            await websocket.send_json({"kind": "error", "message": "empty message"})
-            return
-        # Concurrent listener for cancel and confirm-answer messages;
-        # runs alongside the generator drain below.
-        watcher = asyncio.create_task(_watch_client())
-        # DB session used to sit open for the whole turn — many minutes
-        # if the model ran a lot of tool calls. Every yield point held
-        # a pooled connection, and N concurrent chats or hung
-        # disconnects progressively exhausted the pool (see the QueuePool
-        # timeout error users hit in 0.6.0). Now every DB touch opens
-        # its own short-lived session, so the connection lives only as
-        # long as the query it wraps.
-        try:
-            async with SessionLocal() as _ctx_session:
-                await _lab_context(_ctx_session, lab_id)
-        except ApiError as exc:
-            await websocket.send_json({"kind": "error", "message": exc.message})
-            return
-        # Mint a short-lived bearer token for the resolved WS user so
-        # the agent loop's callbacks into our own API (via
-        # settings.self_url) carry an Authorization header.
-        try:
-            async for ev in stream_agent(
-                lab_id, message, token=_agent_token(user),
-                cancel=cancel, confirm=_ask_confirm,
-                attachments=attachments,
-            ):
+                ev = getter.result()
+                seq = ev.get("seq")
+                if seq is not None and seq <= last:
+                    continue
+                if seq is not None:
+                    last = seq
                 await websocket.send_json(ev)
-        except StreamCancelled:
-            # Cancel is a first-class outcome, not an error.
-            await websocket.send_json({"kind": "cancelled"})
-        except LlmUnavailable as exc:
-            async with SessionLocal() as _fb_session:
-                log = await local_plan(_fb_session, lab_id, message)
-            reply = (
-                "\n".join(log) if log else "No LLM configured and I could not match that request."
-            ) + f"\n\n({exc})"
-            await websocket.send_json({"kind": "turn", "text": reply, "applied": log})
-        await websocket.send_json({"kind": "done"})
-        watcher.cancel()
-        try:
-            await watcher
-        except (asyncio.CancelledError, Exception):
-            pass
-    except WebSocketDisconnect:
-        cancel.cancel()
-        return
-    except Exception as exc:  # noqa: BLE001 - never let a bug drop the socket silently
-        try:
-            await websocket.send_json({"kind": "error", "message": str(exc)})
-        except Exception:  # noqa: BLE001 — socket may already be gone
-            pass
+                if ev.get("kind") == "end":
+                    return
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await watcher
     finally:
-        try:
-            await websocket.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if q is not None:
+            assistant_manager.unsubscribe(session_id, q)
+
+
+class SessionIn(BaseModel):
+    title: str = ""
+
+
+class AnswerIn(BaseModel):
+    id: str
+    allow: bool
+
+
+@router.get("/labs/{lab_id}/ai/sessions")
+async def list_ai_sessions(lab_id: str, user: User = Depends(get_current_user)) -> dict[str, Any]:
+    """This user's conversations about this lab, newest first."""
+    rows = await assistant_manager.store.list_for(lab_id, _owner_id(user))
+    return {"sessions": [{**r, "running": assistant_manager.is_running(r["id"])} for r in rows]}
+
+
+@router.post("/labs/{lab_id}/ai/sessions", status_code=201)
+async def create_ai_session(
+    lab_id: str,
+    body: SessionIn,
+    session: AsyncSession = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """An empty conversation, for "New chat"."""
+    await _lab_context(session, lab_id)
+    return await assistant_manager.store.create(
+        _owner_id(user), lab_id, "assistant", body.title[:80]
+    )
+
+
+@router.get("/ai/sessions/{session_id}/events")
+async def ai_session_events(
+    session_id: str, after_seq: int = 0, user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    sess = await _owned(session_id, user)
+    events = await assistant_manager.store.events(session_id, after_seq)
+    return {
+        "session": {**sess, "running": assistant_manager.is_running(session_id)},
+        "events": [event_for_client(e) for e in events],
+    }
+
+
+@router.post("/ai/sessions/{session_id}/answer")
+async def ai_session_answer(
+    session_id: str, body: AnswerIn, user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    """Approve or deny a pending tool call, from any device."""
+    await _owned(session_id, user)
+    if not assistant_manager.answer(session_id, body.id, body.allow):
+        raise not_found("no pending approval with that id")
+    return {"ok": True}
+
+
+@router.post("/ai/sessions/{session_id}/cancel")
+async def ai_session_cancel(
+    session_id: str, user: User = Depends(get_current_user)
+) -> dict[str, Any]:
+    await _owned(session_id, user)
+    return {"cancelled": assistant_manager.cancel(session_id)}
+
+
+@router.delete("/ai/sessions/{session_id}", status_code=204)
+async def ai_session_delete(
+    session_id: str, user: User = Depends(get_current_user)
+) -> Response:
+    """Delete a conversation. A turn still running in it is stopped first,
+    and an approval it was waiting on counts as denied."""
+    await _owned(session_id, user)
+    assistant_manager.cancel(session_id)
+    await assistant_manager.store.delete(session_id)
+    return Response(status_code=204)
 
 
 @router.get("/ai/status")

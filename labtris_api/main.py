@@ -76,6 +76,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:  # noqa: BLE001 - never let housekeeping stop the API booting
         pass
 
+    # A conversation whose turn was running when the previous process died
+    # would otherwise say "running" forever, and refuse every new message.
+    try:
+        from labtris_api.assistant_sessions import manager as _assistant
+
+        await _assistant.recover()
+    except Exception:  # noqa: BLE001 - a missing table must not stop the API booting
+        pass
+
     try:
         from labtris_api.db import SessionLocal
         from labtris_api.routers.settings import apply_overrides
@@ -120,6 +129,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     yield
     _pruner.cancel()
+    # Running assistant turns are tasks of this process. Startup marks their
+    # conversations interrupted, so stopping them here loses nothing more.
+    try:
+        from labtris_api.assistant_sessions import manager as _assistant_mgr
+
+        await _assistant_mgr.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
     # Wireshark sessions are deliberately started in their own process session
     # so they survive a reload — which is exactly what makes them leak if
     # nothing reaps them on the way out.

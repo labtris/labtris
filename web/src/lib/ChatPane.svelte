@@ -28,15 +28,27 @@
     //: parent resets the persisted chat + the history threaded through
     //: subsequent turns; this component is stateless.
     onclear = () => {},
+    //: Conversations about this lab kept on the server, newest first, and
+    //: the one on screen. Empty when the in-browser assistant is in use.
+    sessions = [],
+    sessionId = null,
+    onpicksession = (_id) => {},
   } = $props();
 
   let fileInput;
 
   function askClear() {
     if (chat.length === 0 && !liveTurn) return;
-    if (confirm("Clear the AI assistant conversation? The lab itself is untouched.")) {
+    //: With conversations on the server nothing is lost: the old one stays
+    //: in the list. Only the browser-only chat needs asking.
+    if (sessions.length || confirm("Clear the AI assistant conversation? The lab itself is untouched.")) {
       onclear();
     }
+  }
+  function sessionLabel(s) {
+    const when = s.updated_at ? new Date(s.updated_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
+    const state = s.running ? " ●" : s.status === "interrupted" ? " (interrupted)" : "";
+    return `${s.title || "untitled"}${state}${when ? ` — ${when}` : ""}`;
   }
 </script>
 
@@ -45,8 +57,22 @@
        there's something to clear. Not shown in the empty state so a
        fresh chat doesn't have visual noise above the "Ask it to build
        something" hint. -->
-  {#if chat.length > 0 || liveTurn}
+  {#if chat.length > 0 || liveTurn || sessions.length > 0}
     <div class="chat-hd">
+      {#if sessions.length > 0}
+        <select
+          class="sessions"
+          title="conversations about this lab"
+          aria-label="conversation"
+          value={sessionId ?? ""}
+          onchange={(e) => onpicksession(e.currentTarget.value || null)}
+        >
+          {#if !sessionId}<option value="">New conversation</option>{/if}
+          {#each sessions as s (s.id)}
+            <option value={s.id}>{sessionLabel(s)}</option>
+          {/each}
+        </select>
+      {/if}
       <button
         type="button"
         class="clear"
@@ -54,7 +80,7 @@
         aria-label="clear conversation"
         disabled={busy}
         onclick={askClear}
-      >🗑 Clear</button>
+      >{sessions.length ? "＋ New" : "🗑 Clear"}</button>
     </div>
   {/if}
   {#if busy}
@@ -201,6 +227,11 @@
   .chat-hd {
     display: flex; justify-content: flex-end;
     padding: 6px 8px 0; gap: 6px;
+  }
+  .sessions {
+    flex: 1; min-width: 0; font-size: 12px;
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--stroke); border-radius: 4px; padding: 2px 4px;
   }
   .clear {
     background: transparent; border: 1px solid var(--stroke);

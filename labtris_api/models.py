@@ -578,3 +578,63 @@ class Feedback(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AssistantSession(Base):
+    """One conversation with an assistant about one lab.
+
+    Kept on the server so a conversation outlives the browser tab that started
+    it: a turn keeps running after the tab closes or the user signs out, and
+    any device the user signs in from can read it back and carry on.
+
+    `mode` names which agent the conversation belongs to ("assistant" for the
+    built-in one). `last_seq` is the sequence number of the newest event, so
+    a client that reconnects can ask for everything after what it last saw.
+    """
+
+    __tablename__ = "assistant_sessions"
+
+    id: Mapped[str] = mapped_column(CHAR(26), primary_key=True)
+    #: Nullable for the setup and dev pseudo-users, which have no row.
+    user_id: Mapped[str | None] = mapped_column(
+        CHAR(26), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    lab_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("labs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="assistant")
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    #: idle, running, waiting (for an approval), or interrupted (the API
+    #: restarted under a running turn).
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="idle")
+    last_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AssistantEvent(Base):
+    """One thing that happened in a conversation, in order.
+
+    Only what a reader needs to rebuild the conversation is stored: what the
+    user sent, each finished model turn, approval requests and answers, and
+    how each turn ended. Streamed text deltas are live-only; the finished
+    turn carries the same text.
+    """
+
+    __tablename__ = "assistant_events"
+
+    session_id: Mapped[str] = mapped_column(
+        CHAR(26), ForeignKey("assistant_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
