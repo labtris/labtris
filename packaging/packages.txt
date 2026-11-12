@@ -20,6 +20,10 @@ postgresql
 postgresql-client
 qemu-system-x86
 qemu-utils
+# cloud-localds builds the NoCloud seed that gives Ubuntu cloud images a user.
+# Without it the catalog's default Ubuntu Server boots with no account at all
+# (found on a 0.13.13 ISO install, 2026-11-12). The Dockerfile already had it.
+cloud-image-utils
 ovmf
 guacd
 libguac-client-vnc0

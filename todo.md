@@ -415,11 +415,33 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Known-bad
 
+- [ ] **A node whose QEMU died at launch still shows `running`** (labtris-012,
+      2026-11-12). Three VMs exited at once ("Block node is read-only"); the
+      API kept reporting `running`, also after an API restart, and the
+      serial console returned empty output. Start should wait for the
+      process to survive its first seconds, and reconcile should notice a
+      dead pid.
+
 - [ ] **rail spine sometimes shows one peer, not two.** `spine-r2=1`
       where `spine-r1=2` on the same run. Both hosts in the rail are
       configured and the smoke test passes on >=1, so this is a
       convergence-timing question rather than a config one — worth a
       look before anyone quotes rail-optimised timings.
+- [ ] **A missing BIOS companion boots SeaBIOS without a word** (fluxos,
+      2026-11-11). Deleting a template removes its uploaded BIOS when no
+      other template points at it. A later PATCH to another template with
+      the same path is accepted, and at start `_companion_ok()` turns the
+      missing file into "no -bios", so a UEFI image boots SeaBIOS with no
+      error. PATCH /templates should reject a bios/cdrom path that does not
+      exist, and start should fail when a set companion is missing.
+- [ ] **`qemu_opts` on node create is dropped silently.** `NodeCreate` has
+      no such field, so `{cpu: host}` at create comes back as `{}`. Accept
+      it (same merge as PATCH /nodes/{id}/qemu-options) or reject unknown
+      fields.
+- [ ] **No persistent UEFI variables for nodes.** A BIOS companion is
+      passed as read-only `-bios`, so NVRAM boot entries do not survive a
+      restart; only an image's EFI fallback path boots reliably. A
+      per-node pflash vars file would fix it.
 
 ---
 
@@ -477,6 +499,21 @@ three surfaces work; what follows is what the verification turned up.
       - **Tests.** Unit tests for the tap-move path. An acceptance run on
         a q35 VM: add, delete and re-point a link while it runs, and pass
         traffic across each change.
+      - **Status 2026-11-11:** tap move, spare slots (`hotplug_slots`),
+        verify-after-plug, `409 needs_restart` and the UI notice are written
+        and unit-tested (`tests/unit/test_qemu_live_links.py`).
+      - **Run on a real install 2026-11-12** (labtris-012, 0.13.13 ISO plus
+        this change; Ubuntu 24.04 cloud guests and alpine containers, ping
+        across every change): re-point a link on a running pc and q35 VM
+        (14/14); hot-plug a new NIC into a running pc VM (`ens5`) and q35 VM
+        (`enp1s0`, spare slot) and pass traffic (8/8); q35 with
+        `hotplug_slots=0` answers `409 needs_restart`, keeps the link, and
+        the card is there after a restart; after an API restart a
+        hot-plugged NIC can still be re-pointed; a q35 restart cold-plugs
+        the former hot-plugged card (renamed to `enp0s4`, same MAC).
+        Still open: the per-container `ip link` check on its own, removal
+        (no API deletes an interface yet, so `detach_iface` has no caller),
+        and a per-link "applies on next restart" marker.
 
 - [ ] **VyOS firewall compiler** — `authorize-security-group-ingress`
       from labtris-aws compiles to real VyOS config on the in-path

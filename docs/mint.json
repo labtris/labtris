@@ -60,6 +60,7 @@
       "pages": [
         "nodes-and-images",
         "networking",
+        "virtual-hardware",
         "consoles",
         "observing",
         "labs",

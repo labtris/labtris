@@ -1,0 +1,132 @@
+---
+title: "Virtual hardware"
+description: "What the chipset, NIC model, queues and IOMMU options change in a QEMU node, and what can change while it runs."
+---
+
+A QEMU node is a virtual PC, and a few of its hardware settings decide what the
+guest can do and what you can change without rebooting it. This chapter explains
+them in terms of what actually happens on the server.
+
+## How a packet leaves a VM
+
+Each interface on a QEMU node is two things joined together:
+
+- a **network card inside the guest** (a virtio-net, e1000 or vmxnet3 PCI
+  device), which is what the guest's `ip link` or `show interfaces` lists;
+- a **tap device on the server**, which QEMU holds open as that card's backend.
+
+The tap is a port on a Linux bridge, and the bridge is the cable. A link between
+two nodes is a bridge with one tap (or veth) from each end on it.
+
+A packet sent by the guest goes guest driver → virtio queue → QEMU, or the
+`vhost-net` kernel thread when vhost is on → tap → bridge → the other end. The
+chipset is not on this path. It is involved when the guest discovers and sets
+up its devices, and almost never afterwards.
+
+## Chipsets: pc and q35
+
+QEMU offers two x86 chipsets, picked with the node's **Chipset** option.
+
+| | pc (Intel 440FX, the default) | q35 (Intel Q35 / ICH9) |
+|---|---|---|
+| Era of the real chip | 1996 | 2007 |
+| Bus | PCI | PCI Express |
+| Emulated IOMMU (`viommu`) | not available | available |
+| PCIe-only devices, AHCI disks, Secure Boot | no | yes |
+| Adding or removing a NIC while running | works on the main bus | needs a spare hot-plug slot (see below) |
+| Very old appliance images | the safest choice | almost always fine |
+
+**Neither is faster for networking.** Throughput comes from the NIC model, the
+queue count and vhost, which work the same on both. Two Ubuntu guests on one
+Labtris host measured 26.3 Gbit/s with TCP over one queue and 69.0 Gbit/s over
+four queues with vhost; the chipset did not change either number.
+
+Use **pc** for routers, Linux hosts and most appliances. Use **q35** when the
+guest needs something only q35 has: an emulated IOMMU for vfio, PCIe devices,
+or Secure Boot. Some vendor images say which they need.
+
+## The emulated IOMMU
+
+An IOMMU translates the addresses a device uses for DMA. A guest that binds a
+NIC to `vfio-pci` (DPDK, VPP, TRex in their fast mode) wants one, so that the
+user-space driver hands the card addresses the IOMMU checks.
+
+The node's **Emulated IOMMU** option (`viommu`) adds an Intel VT-d IOMMU to a
+q35 VM and puts every virtio NIC behind it. The guest kernel must boot with
+`intel_iommu=on` (usually with `iommu=pt`), and the CPU model should be `host`.
+
+This is the one setting here that costs throughput: every buffer the guest maps
+has to be translated, and vhost has to learn those translations. Turn it on only
+on nodes that run a vfio data plane.
+
+## NIC model, queues and vhost
+
+- **NIC model**: `virtio-net-pci` is the fast default; `e1000` and `vmxnet3`
+  exist for guests without virtio drivers. Only virtio supports more than one
+  queue.
+- **NIC queues** (`nic_queues`): the number of queue pairs per virtio NIC.
+  With more than one, the tap is created multi-queue, QEMU gets `queues=N`,
+  the card gets `mq=on` and `2N+2` MSI-X vectors, and vhost is turned on when
+  the server allows it. The guest uses them with `ethtool -L ethX combined N`
+  where its driver does not do so on its own.
+
+## What can change while a VM runs
+
+Two different things are both called "changing a link", and they are not
+equally easy.
+
+**Re-wiring an existing interface.** Every interface a VM has when it boots
+gets its card and its tap at boot, whether or not it is wired. Creating,
+deleting or re-pointing a link on that interface only moves its tap from one
+bridge to another. The guest sees its cable pulled and plugged back in. This
+works on both chipsets, for every guest, at once.
+
+**Adding or removing a card.** An interface added to a node after it booted
+has no card in the guest yet, so one has to be hot-plugged: QEMU adds a PCI
+device and the guest's kernel notices it, as it would a card plugged into a
+running server.
+
+- On **pc**, the main bus supports this already.
+- On **q35**, cards present at boot sit on the chipset's own bus (`pcie.0`).
+  PCI Express treats devices there as part of the motherboard, so they cannot
+  be added or removed while the VM runs. Labtris therefore boots q35 VMs with
+  a few empty PCIe slots (`pcie-root-port` devices), set by the **Spare
+  hot-plug slots** option (`hotplug_slots`, default 4). A card hot-plugged
+  into one of those can also be removed again. The slots are added after
+  every other device, so the PCI addresses of existing cards do not move.
+
+When a change cannot happen live, the API answers `409 needs_restart`: the
+change is saved and takes effect when the node restarts. That happens with a q35
+VM started before it had spare slots, when all its slots are in use, or when
+removing a card that was there at boot.
+
+### What the guest has to do
+
+Hot-plug only makes the card appear. The software inside decides what happens
+next.
+
+- **Linux** brings up a new interface at once. Its name follows the guest's
+  naming scheme, so a hot-plugged card may not get the next `ethN` you expect.
+- **DPDK data planes** (VPP, TRex, many virtual firewalls) bind their ports
+  when they start and usually ignore a card that arrives later. Restart the
+  data plane, not the VM, to pick it up.
+- **Configuration that names ports by PCI address** stays valid for cards
+  present at boot. A hot-plugged card sits behind a root port, on a bus
+  address of its own.
+- **After the next restart** a hot-plugged card is cold-plugged like the
+  others, so on q35 its address, and therefore its name, changes: a card
+  that was `enp1s0` while hot-plugged boots as `enp0s4`. Its MAC address
+  stays the same, so match it by MAC.
+
+## Checking what a VM really has
+
+From the server, the QEMU monitor shows each card and the tap behind it:
+
+```
+nic6: index=0,type=nic,model=virtio-net-pci,macaddr=52:54:00:..
+ \ net6: index=0,type=tap,ifname=vperffeth6-1du2,..
+```
+
+A card listed with no `\ netN` line under it has lost its backend and carries no
+traffic. On the tap side, `ip -d link show <tap>` shows its bridge (`master`),
+and a tap that is up with `NO-CARRIER` is one that no running QEMU has open.

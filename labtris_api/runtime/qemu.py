@@ -10,6 +10,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Any
 import structlog
 
 from labtris_api.config import settings
-from labtris_api.errors import ApiError, runtime_error, unprocessable
+from labtris_api.errors import ApiError, needs_restart, runtime_error, unprocessable
 from labtris_api.netd_client import NetdError, netd
 from labtris_api.runtime.base import (
     MAX_NIC_QUEUES,
@@ -679,17 +680,45 @@ async def _resolve_base_image(image: str) -> Path:
     return final
 
 
-def _pick_free_vnc_display(low: int = 1, high: int = 900) -> int:
+#: Displays handed out recently, by VM directory. QEMU binds its VNC port
+#: only after the serial socket is connected, a second or more after launch,
+#: so a bind test alone gave two VMs started back to back the same display
+#: and the second died with "Failed to find an available port"
+#: (labtris-012, 2026-11-12). A claim holds for VNC_CLAIM_S.
+VNC_CLAIM_S = 120.0
+_vnc_claims: dict[int, tuple[str, float]] = {}
+
+
+def _claimed_by_other(display: int, owner: str) -> bool:
+    claim = _vnc_claims.get(display)
+    if claim is None:
+        return False
+    who, at = claim
+    if time.monotonic() - at > VNC_CLAIM_S:
+        _vnc_claims.pop(display, None)
+        return False
+    return who != owner
+
+
+def _claim_vnc_display(display: int, owner: str) -> None:
+    _vnc_claims[display] = (owner, time.monotonic())
+
+
+def _pick_free_vnc_display(low: int = 1, high: int = 900, owner: str = "") -> int:
     """QEMU's `-vnc :N` listens on TCP 5900+N. Bind-test to avoid handing out
-    a display already taken by another VM on this host."""
+    a display already taken by another VM on this host, and skip one just
+    handed to a VM that has not bound it yet."""
     for display in range(low, high):
+        if _claimed_by_other(display, owner):
+            continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("127.0.0.1", 5900 + display))
-                return display
             except OSError:
                 continue
+        _claim_vnc_display(display, owner)
+        return display
     raise runtime_error("no free VNC display available on this host")
 
 
@@ -1086,7 +1115,7 @@ async def _qmp(
                     err = msg["error"]
                     raise runtime_error(f"QMP {command}: {err.get('desc', err)}")
                 # Event — keep reading.
-        except (ConnectionError, asyncio.TimeoutError, OSError):
+        except (TimeoutError, ConnectionError, OSError):
             _qmp_conns.pop(vm_dir, None)
             with contextlib.suppress(Exception):
                 writer.close()
@@ -1560,6 +1589,181 @@ def device_args(
     return s
 
 
+#: Id prefix of the spare PCIe slots on a q35 VM (`lt-hp0`, `lt-hp1`, ...).
+HOTPLUG_PORT_PREFIX = "lt-hp"
+#: Chassis numbers for those slots. Every pcie-root-port needs a unique
+#: (chassis, slot) pair; starting high keeps clear of any root port a
+#: template's extra arguments add, which by convention count up from 1.
+_HOTPLUG_CHASSIS_BASE = 200
+
+
+def is_q35(opts: dict[str, Any]) -> bool:
+    return str(opts.get("machine") or "pc").split(",")[0] == "q35"
+
+
+def hotplug_slot_count(opts: dict[str, Any]) -> int:
+    """How many spare PCIe slots this VM boots with: only q35 needs them."""
+    if not is_q35(opts):
+        return 0
+    try:
+        n = int(opts.get("hotplug_slots", 4))
+    except (TypeError, ValueError):
+        n = 4
+    return max(0, min(n, 32))
+
+
+def hotplug_port_args(opts: dict[str, Any]) -> list[str]:
+    """Empty pcie-root-ports for a q35 VM to hot-plug NICs into.
+
+    A NIC present at boot sits on `pcie.0`. PCIe treats devices there as part
+    of the chipset, so QEMU cannot add or remove one while the VM runs, and
+    `device_del` on it does nothing at all. A root port is a slot with a
+    hot-plug controller: a card added to it appears in the guest, and one
+    removed from it goes away.
+
+    Appended after every other device, so the PCI addresses of devices that
+    were already there do not move: a guest whose configuration names its
+    NICs by PCI address (DPDK, VPP) still finds them where they were."""
+    out: list[str] = []
+    for n in range(hotplug_slot_count(opts)):
+        out += [
+            "-device",
+            f"pcie-root-port,id={HOTPLUG_PORT_PREFIX}{n},"
+            f"chassis={_HOTPLUG_CHASSIS_BASE + n},slot=0",
+        ]
+    return out
+
+
+_NET_LINE = re.compile(
+    r"^\s*(?:\\\s*)?(?P<id>[\w.-]+):\s*index=\d+,type=(?P<type>\w+),(?P<rest>.*)$"
+)
+
+
+def parse_info_network(text: str) -> dict[str, dict[str, Any]]:
+    """`info network` as {nic id: {"netdev": id, "ifname": tap or None}}.
+
+    QEMU prints each NIC with its backend indented under it:
+
+        nic6: index=0,type=nic,model=virtio-net-pci,macaddr=52:54:00:..
+         \\ net6: index=0,type=tap,ifname=vperffeth6-1du2,script=no,..
+
+    A NIC whose backend was deleted prints with no line under it."""
+    out: dict[str, dict[str, Any]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        line = _ANSI.sub("", raw).rstrip()
+        m = _NET_LINE.match(line)
+        if not m:
+            continue
+        kind, rest = m.group("type"), m.group("rest")
+        is_peer = line.lstrip().startswith("\\")
+        if kind == "nic" and not is_peer:
+            current = m.group("id")
+            out[current] = {"netdev": None, "ifname": None}
+        elif is_peer and current is not None:
+            out[current]["netdev"] = m.group("id")
+            fm = re.search(r"(?:^|,)ifname=([^,]+)", rest)
+            out[current]["ifname"] = fm.group(1) if fm else None
+        elif not is_peer:
+            current = None
+    return out
+
+
+#: Per-boot record of which spare slot holds which hot-plugged NIC.
+_HOTPLUG_STATE = "hotplug.json"
+
+
+def _hotplug_ports_used(vm_dir: Path) -> dict[str, str]:
+    try:
+        data = json.loads((vm_dir / _HOTPLUG_STATE).read_text())
+        return {str(k): str(v) for k, v in data.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _free_hotplug_port(vm_dir: Path, slots: int) -> str | None:
+    used = set(_hotplug_ports_used(vm_dir).values())
+    for n in range(slots):
+        port = f"{HOTPLUG_PORT_PREFIX}{n}"
+        if port not in used:
+            return port
+    return None
+
+
+def _record_hotplug_port(vm_dir: Path, nic_id: str, port: str | None) -> None:
+    data = _hotplug_ports_used(vm_dir)
+    if port is None:
+        data.pop(nic_id, None)
+    else:
+        data[nic_id] = port
+    (vm_dir / _HOTPLUG_STATE).write_text(json.dumps(data))
+
+
+async def _inspect_tap(name: str) -> dict[str, Any]:
+    try:
+        got = await netd.call("iface.inspect", {"names": [name]})
+    except NetdError:
+        return {}
+    return dict((got.get("interfaces") or {}).get(name) or {})
+
+
+async def _ensure_tap(
+    vm_dir: Path, name: str, fresh: bool = False, multi_queue: bool | None = None
+) -> None:
+    """Make sure the tap exists; with `fresh`, replace it."""
+    if multi_queue is None:
+        cfg_path = _config_path(vm_dir)
+        cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        multi_queue = nic_queue_count(cfg) > 1
+    if fresh:
+        await _drop_tap(name)
+    elif (await _inspect_tap(name)).get("exists"):
+        return
+    await netd.call(
+        "tap.create", {"name": name, "owner_uid": os.getuid(), "multi_queue": multi_queue}
+    )
+
+
+async def _drop_tap(name: str) -> None:
+    with contextlib.suppress(NetdError):
+        await netd.call("iface.delete", {"name": name})
+
+
+async def _wire_tap(name: str, bridge: str, current: str | None) -> None:
+    """Move a tap onto `bridge`, off whatever it was on."""
+    if current and current != bridge:
+        with contextlib.suppress(NetdError):
+            await netd.call("iface.detach", {"name": name})
+    if current != bridge:
+        await netd.call("iface.attach", {"name": name, "bridge": bridge})
+    await netd.call("iface.set_state", {"name": name, "up": True})
+
+
+#: How long a hot-unplug may take before it counts as refused. Linux guests
+#: acknowledge in well under a second; the rest is margin.
+UNPLUG_WAIT_S = 5.0
+
+
+async def _unplug(vm_dir: Path, nic_id: str) -> bool:
+    """Ask for the NIC to be removed and wait for it to be gone.
+
+    `device_del` only *requests* removal; the guest acknowledges through the
+    slot's hot-plug controller, which takes a moment. On a slot that cannot
+    hot-unplug (q35's pcie.0) QEMU refuses or nothing ever happens, so the
+    answer is whether the device actually disappeared."""
+    out = await _hmp_qmp(vm_dir, f"device_del {nic_id}")
+    if _hmp_error(out) is not None:
+        return False
+    deadline = asyncio.get_running_loop().time() + UNPLUG_WAIT_S
+    while True:
+        nics = parse_info_network(await _hmp_qmp(vm_dir, "info network"))
+        if nic_id not in nics:
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+
+
 def machine_args(opts: dict[str, Any]) -> list[str]:
     """`-M` and, with the IOMMU on, the device that provides it.
 
@@ -1584,7 +1788,7 @@ def machine_args(opts: dict[str, Any]) -> list[str]:
     ]
 
 
-def _serialize_ifaces(ifaces: list["IfaceSpec"]) -> list[dict[str, Any]]:
+def _serialize_ifaces(ifaces: list[IfaceSpec]) -> list[dict[str, Any]]:
     """Persist the shape start() needs to emit -netdev/-device pairs.
 
     Kept minimal on purpose: idx, host_ifname, and mac are the only fields
@@ -1680,6 +1884,19 @@ QEMU_OPTIONS: dict[str, dict[str, Any]] = {
         "Needs the q35 chipset, and the guest kernel booted with "
         "intel_iommu=on (iommu=pt is the usual companion). Set CPU model to "
         "host as well: DPDK refuses to start on qemu64, which lacks SSE4.2.",
+    },
+    "hotplug_slots": {
+        "label": "Spare hot-plug slots (q35)",
+        "type": "int",
+        "default": 4,
+        "min": 0,
+        "max": 32,
+        "help": "Empty PCIe slots a q35 VM boots with, so a network card can be "
+        "added or removed while it runs. Cards present at boot sit on the "
+        "chipset's own bus, which PCIe does not allow to change while running; "
+        "only a card in one of these slots can come and go. Ignored on pc "
+        "(i440FX), whose bus is hot-pluggable already. Takes effect at the next "
+        "start.",
     },
     "usb_tablet": {
         "label": "Absolute pointer",
@@ -1959,7 +2176,7 @@ class QemuRuntime:
             cfg["nic_queues"] = max(1, min(MAX_NIC_QUEUES, int(nic_queues)))
         cfg_path.write_text(json.dumps(cfg))
 
-    async def sync_from_spec(self, h: RuntimeHandle, spec: "NodeSpec") -> None:
+    async def sync_from_spec(self, h: RuntimeHandle, spec: NodeSpec) -> None:
         """Refresh persisted config.json fields from the current NodeSpec so
         template edits (or bug-fix backfills) take effect at the next start.
 
@@ -2061,10 +2278,17 @@ class QemuRuntime:
         # is only a hint: it is right most of the time and catastrophically
         # wrong when another VM took the port, so it is checked, not trusted.
         display = cfg.get("vnc_display")
-        if not isinstance(display, int) or not _display_free(display):
-            display = _pick_free_vnc_display()
+        owner = str(vm_dir)
+        if (
+            not isinstance(display, int)
+            or _claimed_by_other(display, owner)
+            or not _display_free(display)
+        ):
+            display = _pick_free_vnc_display(owner=owner)
             cfg["vnc_display"] = display
             _config_path(vm_dir).write_text(json.dumps(cfg))
+        else:
+            _claim_vnc_display(display, owner)
         # Decided here, next to the launch that uses it, and recorded so
         # `labtris node perf` can say which VMs are on software emulation.
         accel = resolve_accel()
@@ -2172,7 +2396,11 @@ class QemuRuntime:
             *(
                 # The cloud-init seed CD still rides IDE — that's what
                 # every cloud-image expects to find its no-cloud data on.
-                ["-drive", f"file={_seed_path(vm_dir)},if=ide,format=raw,readonly=on"]
+                # media=cdrom matters: without it QEMU makes an IDE hard
+                # disk, which cannot be read-only, and the VM exits at once
+                # with "Block node is read-only" (0.13.13 ISO, 2026-11-12).
+                ["-drive",
+                 f"file={_seed_path(vm_dir)},if=ide,media=cdrom,format=raw,readonly=on"]
                 if _seed_path(vm_dir).exists()
                 else []
             ),
@@ -2285,6 +2513,11 @@ class QemuRuntime:
             args.extend(str(a) for a in extra)
         elif extra:
             logger.warning("qemu.extra_args.refused", vm=vm_dir.name, count=len(extra))
+        # Last, so nothing above changes PCI address because of them.
+        args.extend(hotplug_port_args(opts))
+        # Which spare slot holds which hot-plugged NIC is about this boot
+        # only: everything in config.json is cold-plugged again from here.
+        (vm_dir / _HOTPLUG_STATE).unlink(missing_ok=True)
         log = open(vm_dir / "qemu.log", "ab")
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -2353,55 +2586,132 @@ class QemuRuntime:
         shutil.rmtree(h.ref, ignore_errors=True)
 
     async def attach_iface(self, h: RuntimeHandle, i: IfaceSpec, bridge: str) -> None:
-        """Unlike Docker's veth pair, a QEMU guest NIC is backed directly by a
-        persistent tap — the same device is both the bridge port and the
-        guest's virtio-net backend. netd creates it owned by *our* uid (the
-        unprivileged API process) so the qemu child we spawn can open it by
-        name with no elevated capabilities of its own."""
-        try:
-            await netd.call("iface.delete", {"name": i.host_ifname})
-        except NetdError:
-            pass
-        # The same queue count the cold-boot NICs got, read from the same
-        # config.json — a port re-plugged at runtime that came back with one
-        # queue while its siblings have four would be a silent regression
-        # nobody could see from the guest.
+        """Put this interface on `bridge`, live.
+
+        Unlike Docker's veth pair, a QEMU guest NIC is backed directly by a
+        persistent tap: the same device is both the bridge port and the
+        guest's virtio-net backend. netd creates it owned by *our* uid so the
+        qemu child can open it by name with no capabilities of its own.
+
+        Every interface a VM has at boot is cold-plugged with its tap, wired
+        or not. So re-pointing a link on a running VM is only a matter of
+        moving that tap to the new bridge: the guest sees its cable pulled
+        and plugged back in, nothing more. That is the common case and it
+        never touches the guest's PCI devices.
+
+        It used to delete and recreate the tap instead, then ask QEMU to swap
+        the NIC. QEMU keeps the deleted tap open, and on q35 a boot-time NIC
+        sits on `pcie.0`, which cannot be hot-unplugged, so the swap silently
+        did nothing: the new tap sat in the right bridge, the guest's NIC
+        stayed on the dead one, and the API said 201 (perf-fw, 2026-11-05).
+
+        A NIC is hot-plugged only when the guest has no working one for this
+        interface: one added after boot, or one whose tap was lost. The
+        result is checked, and anything that did not take raises
+        needs_restart rather than reporting success."""
         vm_dir = Path(h.ref)
+        if _read_pid(vm_dir) is None:
+            # Not running: the next start cold-plugs it.
+            await _ensure_tap(vm_dir, i.host_ifname)
+            await _wire_tap(i.host_ifname, bridge, None)
+            return
+        tap = await _inspect_tap(i.host_ifname)
+        nic_id = f"nic{i.idx}"
+        nics = parse_info_network(await _hmp_qmp(vm_dir, "info network"))
+        nic = nics.get(nic_id)
+        if (
+            tap.get("exists")
+            and tap.get("carrier")
+            and nic is not None
+            and nic.get("ifname") == i.host_ifname
+        ):
+            await _wire_tap(i.host_ifname, bridge, tap.get("master"))
+            await self.set_guest_link(h, i, True)
+            return
+        await self._hotplug_nic(vm_dir, i, bridge, nic_present=nic is not None)
+
+    async def _hotplug_nic(
+        self, vm_dir: Path, i: IfaceSpec, bridge: str, nic_present: bool
+    ) -> None:
         cfg_path = _config_path(vm_dir)
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
+        opts = resolved_options(cfg.get("opts"))
         model = cfg.get("nic_model") or "virtio-net-pci"
         queues = nic_queue_count(cfg)
         vhost = queues > 1 and vhost_available()
-        viommu = bool(resolved_options(cfg.get("opts")).get("viommu"))
-        await netd.call("tap.create", {
-            "name": i.host_ifname, "owner_uid": os.getuid(), "multi_queue": queues > 1,
-        })
-        await netd.call("iface.attach", {"name": i.host_ifname, "bridge": bridge})
-        await netd.call("iface.set_state", {"name": i.host_ifname, "up": True})
-
         net_id, nic_id = f"net{i.idx}", f"nic{i.idx}"
-        await _hmp(vm_dir, f"device_del {nic_id}")
-        await _hmp(vm_dir, f"netdev_del {net_id}")
-        out = await _hmp(
+        restart = needs_restart(
+            f"{i.guest_name} is saved and wired, but this VM cannot take a new "
+            "network card while it runs; it takes effect when the node restarts",
+            {"interface": i.guest_name, "node_ref": str(vm_dir)},
+        )
+
+        if nic_present:
+            # A NIC left holding a tap that no longer exists. Only a card in a
+            # hot-plug slot can be swapped; one on pcie.0 cannot be removed.
+            if not await _unplug(vm_dir, nic_id):
+                await _ensure_tap(vm_dir, i.host_ifname, fresh=False)
+                await _wire_tap(i.host_ifname, bridge, None)
+                raise restart
+        await _hmp_qmp(vm_dir, f"netdev_del {net_id}")
+        await _ensure_tap(vm_dir, i.host_ifname, fresh=True, multi_queue=queues > 1)
+        await _wire_tap(i.host_ifname, bridge, None)
+
+        bus = ""
+        if is_q35(opts):
+            port = _free_hotplug_port(vm_dir, hotplug_slot_count(opts))
+            if port is None:
+                raise restart
+            bus = f",bus={port}"
+        out = await _hmp_qmp(
             vm_dir, "netdev_add " + netdev_args(net_id, i.host_ifname, queues, vhost)
         )
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"qemu netdev_add failed: {err}")
-        out = await _hmp(
+        out = await _hmp_qmp(
             vm_dir,
-            "device_add " + device_args(model, net_id, i.mac, nic_id, queues, viommu=viommu),
+            "device_add "
+            + device_args(model, net_id, i.mac, nic_id, queues,
+                          viommu=bool(opts.get("viommu")))
+            + bus,
         )
-        if (err := _hmp_error(out)) is not None:
-            raise runtime_error(f"qemu device_add failed: {err}")
+        if _hmp_error(out) is not None:
+            # Most often: a VM started before it had spare slots ("Bus
+            # 'lt-hp0' not found"). Undo the backend and say so.
+            await _hmp_qmp(vm_dir, f"netdev_del {net_id}")
+            raise restart
+        # Check what QEMU actually has, not what it was told.
+        nic = parse_info_network(await _hmp_qmp(vm_dir, "info network")).get(nic_id)
+        tap = await _inspect_tap(i.host_ifname)
+        if nic is None or nic.get("ifname") != i.host_ifname or not tap.get("carrier"):
+            raise restart
+        if bus:
+            _record_hotplug_port(vm_dir, nic_id, bus.split("=", 1)[1])
 
     async def detach_iface(self, h: RuntimeHandle, i: IfaceSpec) -> None:
+        """Remove this interface's NIC from a running VM.
+
+        Only a NIC in a hot-plug slot (or on a pc VM) can really leave. One
+        that cannot is left in place with its cable pulled, and the caller
+        is told the removal waits for a restart."""
         vm_dir = Path(h.ref)
-        await _hmp(vm_dir, f"device_del nic{i.idx}")
-        await _hmp(vm_dir, f"netdev_del net{i.idx}")
-        try:
-            await netd.call("iface.delete", {"name": i.host_ifname})
-        except NetdError:
-            pass
+        if _read_pid(vm_dir) is None:
+            await _drop_tap(i.host_ifname)
+            return
+        nic_id = f"nic{i.idx}"
+        if await _unplug(vm_dir, nic_id):
+            await _hmp_qmp(vm_dir, f"netdev_del net{i.idx}")
+            await _drop_tap(i.host_ifname)
+            _record_hotplug_port(vm_dir, nic_id, None)
+            return
+        await self.set_guest_link(h, i, False)
+        with contextlib.suppress(NetdError):
+            await netd.call("iface.detach", {"name": i.host_ifname})
+        raise needs_restart(
+            f"{i.guest_name} is unplugged from its network; the card itself "
+            "stays in the VM until it restarts",
+            {"interface": i.guest_name},
+        )
 
     async def console(self, h: RuntimeHandle) -> ConsoleEndpoint:
         return ConsoleEndpoint(kind="serial", target=str(Path(h.ref) / "serial.sock"), meta={})

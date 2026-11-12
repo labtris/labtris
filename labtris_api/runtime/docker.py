@@ -642,7 +642,10 @@ async def pull_image_now(image: str) -> None:
         _docker_pull_progress[image] = {
             "phase": "starting", "done": 0, "total": 0, "percent": 0,
         }
-        stream = await d.images.pull(from_image=repo, tag=tag, stream=True)
+        # Not awaited: with stream=True aiodocker returns the async iterator
+        # itself, and awaiting it raised TypeError on every pull, leaving the
+        # status at "starting" forever (0.13.13 ISO install, 2026-11-12).
+        stream = d.images.pull(from_image=repo, tag=tag, stream=True)
         async for line in stream:
             # aiodocker sometimes hands back bytes rows, sometimes
             # already-decoded dicts; handle both defensively.

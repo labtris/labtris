@@ -40,6 +40,15 @@ def unprocessable(message: str, detail: dict[str, Any] | None = None) -> ApiErro
     return ApiError("unprocessable", message, 422, detail)
 
 
+def needs_restart(message: str, detail: dict[str, Any] | None = None) -> ApiError:
+    """The change is saved but the running node cannot take it live.
+
+    Distinct from a failure: nothing is lost, and the next start applies it.
+    Distinct from success too, which is the point: a 201 for a link that
+    carries no traffic is how a broken lab looks correct."""
+    return ApiError("needs_restart", message, 409, detail)
+
+
 def runtime_error(message: str, detail: dict[str, Any] | None = None) -> ApiError:
     return ApiError("runtime_error", message, 502, detail)
 

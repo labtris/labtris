@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from labtris_api.errors import conflict, runtime_error, unprocessable
+from labtris_api.errors import ApiError, conflict, needs_restart, runtime_error, unprocessable
 
 logger = structlog.get_logger(__name__)
 from labtris_api.models import (
@@ -888,6 +888,7 @@ async def realize_link_if_running(session: AsyncSession, link: Link) -> None:
     node_b = await get_node(session, b.node_id)
     if node_a.state != "running" or node_b.state != "running":
         return
+    pending: list[str] = []
     if not net.host_ifname:
         net.host_ifname = await try_allocate_ifname(
             session, "bridge", net.id, device_hint(net.name)
@@ -915,12 +916,24 @@ async def realize_link_if_running(session: AsyncSession, link: Link) -> None:
             mac=str(iface.mac),
             peer_ifname=await lookup_peer(session, iface.id),
         )
-        await runtime.attach_iface(handle, spec, net.host_ifname)
+        try:
+            await runtime.attach_iface(handle, spec, net.host_ifname)
+        except ApiError as exc:
+            # Wire the other end regardless, then say which end waits.
+            if exc.code != "needs_restart":
+                raise
+            pending.append(f"{node.name}:{iface.name}")
     if net.host_ifname:
         await netd.call("iface.set_state", {"name": net.host_ifname, "up": True})
     from labtris_api.impair import apply_link_qos
 
     await apply_link_qos(link, a, b, session=session)
+    if pending:
+        raise needs_restart(
+            f"the link is saved, but {', '.join(pending)} cannot take it while "
+            "running; it carries traffic once that node restarts",
+            {"link_id": link.id, "pending": pending},
+        )
 
 
 async def realize_membership(session: AsyncSession, iface: Interface) -> None:
@@ -961,9 +974,16 @@ async def realize_membership(session: AsyncSession, iface: Interface) -> None:
         mac=str(iface.mac),
         peer_ifname=await lookup_peer(session, iface.id),
     )
-    await runtime.attach_iface(
-        RuntimeHandle(node_id=node.id, ref=node.runtime_ref), spec, net.host_ifname or ""
-    )
+    try:
+        await runtime.attach_iface(
+            RuntimeHandle(node_id=node.id, ref=node.runtime_ref), spec, net.host_ifname or ""
+        )
+    except ApiError as exc:
+        if exc.code != "needs_restart":
+            raise
+        # Finish the rest of the membership first; the error is the answer.
+        await apply_port_vlan(net, iface)
+        raise
     # Bringing an OS-owned bridge "up" via iface.set_state would hit the
     # IFNAME_RE guard (br0 is not a Labtris name). Reused bridges are already
     # up — that's a precondition of picking them.
