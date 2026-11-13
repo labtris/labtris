@@ -67,7 +67,7 @@ has gone fails with a message naming the file.
   after its full timeout. It now waits for the console, or says it is not
   connected.
 
-Tested on a 0.13.13 ISO install, and again on a fresh install of this release's ISO, with Ubuntu 24.04 guests and alpine
-containers: rewire, hot-plug and removal on pc and q35 with ping across
-each change, killed and powered-off VMs, and an API restart with VMs
-running.
+Tested on a 0.13.13 ISO install, and again on a fresh install of this
+release's ISO, with Ubuntu 24.04 guests and alpine containers: rewire,
+hot-plug and removal on pc and q35 with ping across each change, killed
+and powered-off VMs, and an API restart with VMs running.
