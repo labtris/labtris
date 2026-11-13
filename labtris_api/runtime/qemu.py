@@ -904,6 +904,9 @@ class SerialSession:
         self._subs: list[asyncio.Queue[bytes]] = []
         self._writer: asyncio.StreamWriter | None = None
         self._task: asyncio.Task[None] | None = None
+        #: Set while the chardev is connected. start() only launches the pump,
+        #: and the socket opens a moment later.
+        self._connected = asyncio.Event()
 
     async def start(self) -> None:
         if self._task is not None:
@@ -917,6 +920,7 @@ class SerialSession:
                 try:
                     reader, writer = await asyncio.open_unix_connection(str(self.sock_path))
                     self._writer = writer
+                    self._connected.set()
                     break
                 except OSError:
                     pass
@@ -941,6 +945,7 @@ class SerialSession:
             pass
         finally:
             self._writer = None
+            self._connected.clear()
 
     def subscribe(self) -> asyncio.Queue[bytes]:
         q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=256)
@@ -954,10 +959,21 @@ class SerialSession:
     def buffered(self) -> bytes:
         return b"".join(self.history)
 
-    async def send(self, data: bytes) -> None:
-        if self._writer is not None:
-            self._writer.write(data)
-            await self._writer.drain()
+    async def send(self, data: bytes, wait_s: float = 10.0) -> None:
+        """Write to the guest's console, waiting for the socket if it is
+        still opening. Right after an API restart the session is re-attached
+        and the first command arrived before the connection did: it was
+        dropped without a word and the caller read 5 s of nothing
+        (labtris-013, 2026-11-13)."""
+        if self._writer is None and self._task is not None and not self._task.done():
+            try:
+                await asyncio.wait_for(self._connected.wait(), timeout=wait_s)
+            except asyncio.TimeoutError:
+                pass
+        if self._writer is None:
+            raise runtime_error("the VM's serial console is not connected")
+        self._writer.write(data)
+        await self._writer.drain()
 
     async def close(self) -> None:
         if self._task is not None:

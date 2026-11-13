@@ -61,8 +61,13 @@ has gone fails with a message naming the file.
   Unknown options, or `qemu_opts` on a container, return 422.
 - **`POST /images/pull`** works for Docker images again; it crashed on
   every one in 0.13.13.
+- **The first console command after an API restart reaches the VM.** The
+  console reconnects on first use, and the command used to arrive before
+  the connection did: it was dropped, and `console/exec` returned nothing
+  after its full timeout. It now waits for the console, or says it is not
+  connected.
 
-Tested on a 0.13.13 ISO install with Ubuntu 24.04 guests and alpine
+Tested on a 0.13.13 ISO install, and again on a fresh install of this release's ISO, with Ubuntu 24.04 guests and alpine
 containers: rewire, hot-plug and removal on pc and q35 with ping across
 each change, killed and powered-off VMs, and an API restart with VMs
 running.

@@ -76,3 +76,64 @@ def test_graphical_guests_are_left_alone() -> None:
     catalog_flag = "graphical: bool"
 
     assert catalog_flag in QEMU, "the graphical distinction has gone from the catalog"
+
+
+def test_a_command_sent_while_the_console_is_still_opening_is_not_lost() -> None:
+    """After an API restart the session is re-attached on the first exec, and
+    the command used to reach send() before the socket had connected: it was
+    dropped silently and the caller read five seconds of nothing. The server
+    here only starts listening after send() has been called."""
+    import asyncio
+    import shutil
+    import tempfile
+
+    from labtris_api.runtime.qemu import SerialSession
+
+    d = Path(tempfile.mkdtemp(prefix="lt-", dir="/tmp"))
+    sock = d / "serial.sock"
+    got: list[bytes] = []
+
+    async def main() -> None:
+        sess = SerialSession(sock)
+        await sess.start()
+
+        async def handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+            got.append(await r.readline())
+            w.close()
+
+        async def listen_late() -> asyncio.AbstractServer:
+            await asyncio.sleep(0.5)
+            return await asyncio.start_unix_server(handle, path=str(sock))
+
+        server_task = asyncio.create_task(listen_late())
+        await sess.send(b"echo hi\n")
+        server = await server_task
+        for _ in range(50):
+            if got:
+                break
+            await asyncio.sleep(0.05)
+        await sess.close()
+        server.close()
+
+    try:
+        asyncio.run(main())
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert got == [b"echo hi\n"]
+
+
+def test_sending_to_a_console_that_never_connects_says_so() -> None:
+    import asyncio
+
+    import pytest
+
+    from labtris_api.errors import ApiError
+    from labtris_api.runtime.qemu import SerialSession
+
+    async def main() -> None:
+        sess = SerialSession(Path("/nonexistent/serial.sock"))
+        with pytest.raises(ApiError, match="not connected"):
+            await sess.send(b"x\n", wait_s=0.3)
+        await sess.close()
+
+    asyncio.run(main())
