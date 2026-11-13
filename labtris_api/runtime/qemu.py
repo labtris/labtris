@@ -14,7 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import structlog
 
@@ -799,12 +799,39 @@ async def _await_monitor(mon_sock: Path, proc: asyncio.subprocess.Process) -> bo
     return proc.returncode is None
 
 
+#: How long a VM must stay up after its monitor answers before start() calls it
+#: started. QEMU opens the monitor before it realizes devices, so a VM that
+#: dies on a bad drive ("Block node is read-only", labtris-012 2026-11-12)
+#: passes the monitor check and exits a few milliseconds later.
+SETTLE_S = 2.0
+
+
+async def _await_settled(proc: Any, seconds: float = SETTLE_S) -> bool:
+    """True if the process is still alive after `seconds`."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if proc.returncode is not None:
+            return False
+        await asyncio.sleep(0.1)
+    return proc.returncode is None
+
+
+#: Where qemu.log stood when each VM was last launched. The log is appended to
+#: across boots, so without this an exit is "explained" by a line from an
+#: earlier boot.
+_log_starts: dict[Path, int] = {}
+
+
 def _last_qemu_error(vm_dir: Path) -> str:
-    """The most useful line QEMU wrote before giving up."""
+    """The most useful line QEMU wrote, this launch, before giving up."""
     try:
-        lines = (vm_dir / "qemu.log").read_text(errors="replace").splitlines()
+        with open(vm_dir / "qemu.log", "rb") as f:
+            f.seek(_log_starts.get(vm_dir, 0))
+            lines = f.read().decode(errors="replace").splitlines()
     except OSError:
         return "no output"
+    # The serial chardev announces itself on every boot; it is not an error.
+    lines = [ln for ln in lines if "waiting for connection" not in ln]
     for line in reversed(lines):
         if line.startswith("qemu-system") or "rror" in line:
             return line.strip()[:400]
@@ -945,6 +972,80 @@ _sessions: dict[str, SerialSession] = {}
 # which only detaches the OS process group, not asyncio's own lifecycle
 # tracking. Keeping a reference here is what makes "detached" actually stick.
 _procs: dict[str, asyncio.subprocess.Process] = {}
+
+#: One task per running VM that waits for its QEMU to exit. stop() cancels it
+#: first, so the task only ever finishes for an exit Labtris did not ask for:
+#: a crash, or the guest powering itself off.
+_watchers: dict[str, asyncio.Task[None]] = {}
+ExitListener = Callable[[str, "int | None", str], Awaitable[None]]
+_exit_listeners: list[ExitListener] = []
+
+
+def on_unexpected_exit(fn: ExitListener) -> None:
+    """Call fn(node_id, returncode, reason) when a VM exits by itself.
+
+    lifecycle registers one at startup to mark the node stopped; without it a
+    node whose QEMU died kept saying "running" until the API restarted."""
+    if fn not in _exit_listeners:
+        _exit_listeners.append(fn)
+
+
+async def _watch_exit(node_id: str, vm_dir: Path, proc: Any, pid: int | None) -> None:
+    if proc is not None:
+        rc: int | None = await proc.wait()
+    else:
+        # A VM this process did not launch (it survived an API restart): no
+        # child to wait on, so ask the kernel now and then.
+        while pid is not None and _pid_alive(pid):
+            await asyncio.sleep(5)
+        rc = None
+    if _watchers.get(node_id) is asyncio.current_task():
+        _watchers.pop(node_id, None)
+    _procs.pop(node_id, None)
+    (vm_dir / "qemu.pid").unlink(missing_ok=True)
+    session = _sessions.pop(node_id, None)
+    if session is not None:
+        with contextlib.suppress(Exception):
+            await session.close()
+    _qmp_conns.pop(vm_dir, None)
+    reason = "" if rc == 0 else _last_qemu_error(vm_dir)
+    if reason == "no output":
+        reason = ""
+    logger.warning("qemu.exited", node=node_id, returncode=rc, reason=reason)
+    for fn in list(_exit_listeners):
+        try:
+            await fn(node_id, rc, reason)
+        except Exception as exc:  # noqa: BLE001 - one listener must not stop the rest
+            logger.warning("qemu.exit_listener_failed", node=node_id, error=str(exc))
+
+
+def _watch(node_id: str, vm_dir: Path, proc: Any, pid: int | None) -> None:
+    old = _watchers.pop(node_id, None)
+    if old is not None:
+        old.cancel()
+    _watchers[node_id] = asyncio.create_task(
+        _watch_exit(node_id, vm_dir, proc, pid), name=f"qemu-exit-{node_id}"
+    )
+
+
+def adopt(node_id: str, vm_dir: Path) -> bool:
+    """Watch a VM that was already running when this API process started.
+
+    start() watches what it launches; a VM that outlived an API restart was
+    launched by the previous process, so without this its later crash went
+    unnoticed until the next restart. True if there was a live VM to watch."""
+    pid = _read_pid(vm_dir)
+    if pid is None:
+        return False
+    if node_id not in _watchers:
+        _watch(node_id, vm_dir, _procs.get(node_id), pid)
+    return True
+
+
+def _unwatch(node_id: str) -> None:
+    task = _watchers.pop(node_id, None)
+    if task is not None:
+        task.cancel()
 
 
 def get_session(node_id: str) -> SerialSession | None:
@@ -2263,17 +2364,37 @@ class QemuRuntime:
 
     async def start(self, h: RuntimeHandle) -> None:
         vm_dir = Path(h.ref)
-        if _read_pid(vm_dir) is not None:
+        if (running_pid := _read_pid(vm_dir)) is not None:
             if h.node_id not in _sessions:
                 session = SerialSession(vm_dir / "serial.sock")
                 await session.start()
                 _sessions[h.node_id] = session
+            if h.node_id not in _watchers:
+                _watch(h.node_id, vm_dir, _procs.get(h.node_id), running_pid)
             return
         cfg: dict[str, Any] = {}
         if _config_path(vm_dir).exists():
             cfg = json.loads(_config_path(vm_dir).read_text())
         # A base image that moved leaves the overlay pointing at nothing.
         _rebase_if_orphaned(vm_dir)
+        # Companion BIOS and CD-ROM, when the template points at one, and only
+        # from inside the companion cache (a template row shouldn't be able to
+        # nominate arbitrary host files). One that is set but missing stops the
+        # start: booting without it used to put a UEFI image on SeaBIOS with no
+        # error at all, which is far harder to diagnose than a refusal that
+        # names the file.
+        bios_path = _companion_ok(cfg.get("bios"), _bios_dir())
+        cdrom_path = _companion_ok(cfg.get("cdrom"), _cdrom_dir())
+        for kind, wanted, found in (
+            ("bios", cfg.get("bios"), bios_path),
+            ("cdrom", cfg.get("cdrom"), cdrom_path),
+        ):
+            if wanted and found is None:
+                raise runtime_error(
+                    f"the template's {kind} file {wanted} is missing; upload it again "
+                    f"with POST /images/companion kind={kind} and set the template's "
+                    f"{kind} to the path that returns"
+                )
         # Claim a display now, next to the launch that binds it. A stored one
         # is only a hint: it is right most of the time and catastrophically
         # wrong when another VM took the port, so it is checked, not trusted.
@@ -2365,16 +2486,7 @@ class QemuRuntime:
                 "-drive",
                 f"file={disk_path},if={disk_bus},bus=0,unit=0,{common_disk_flags},format=qcow2",
             ]
-        # Companion BIOS. Only added when the template points at one,
-        # and only if the path is inside our companion cache (a template
-        # row shouldn't be able to nominate arbitrary host files as a
-        # BIOS). If validation fails, boot proceeds without -bios — the
-        # alternative is refusing to start and stranding the user with
-        # an opaque error.
-        bios_path = _companion_ok(cfg.get("bios"), _bios_dir())
         bios_args = ["-bios", str(bios_path)] if bios_path else []
-        # Companion CD-ROM. Same validation shape.
-        cdrom_path = _companion_ok(cfg.get("cdrom"), _cdrom_dir())
         cdrom_args = ["-cdrom", str(cdrom_path)] if cdrom_path else []
 
         args = [
@@ -2519,6 +2631,7 @@ class QemuRuntime:
         # only: everything in config.json is cold-plugged again from here.
         (vm_dir / _HOTPLUG_STATE).unlink(missing_ok=True)
         log = open(vm_dir / "qemu.log", "ab")
+        _log_starts[vm_dir] = log.tell()
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
@@ -2544,12 +2657,15 @@ class QemuRuntime:
         await session.start()
         _sessions[h.node_id] = session
 
-        if not await _await_monitor(mon_sock, proc):
+        if not await _await_monitor(mon_sock, proc) or not await _await_settled(proc):
             raise runtime_error(f"qemu exited at startup: {_last_qemu_error(vm_dir)}")
+        _watch(h.node_id, vm_dir, proc, proc.pid)
 
 
     async def stop(self, h: RuntimeHandle, mode: StopMode) -> None:
         vm_dir = Path(h.ref)
+        # First, before any await: this exit is asked for, not news.
+        _unwatch(h.node_id)
         pid = _read_pid(vm_dir)
         if pid is None:
             return

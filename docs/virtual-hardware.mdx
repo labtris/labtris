@@ -100,6 +100,12 @@ change is saved and takes effect when the node restarts. That happens with a q35
 VM started before it had spare slots, when all its slots are in use, or when
 removing a card that was there at boot.
 
+To remove an interface, delete its link first, then use **Remove interface…**
+in the node's menu (`DELETE /nodes/{id}/interfaces/{iface_id}`). A wired
+interface is refused with `409 conflict`. On a running node the card leaves at
+once where it can. Where it cannot, the interface is gone from the lab, and the
+card stays in the guest, unwired, until the next restart (`409 needs_restart`).
+
 ### What the guest has to do
 
 Hot-plug only makes the card appear. The software inside decides what happens

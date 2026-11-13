@@ -366,6 +366,25 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Recently landed
 
+- [x] **0.13.14 fixes, run on labtris-012 2026-11-13** (Ubuntu 24.04 guests,
+      alpine containers):
+      - A VM whose QEMU dies is marked stopped. `start()` waits 2 s after the
+        monitor answers, so a VM that dies at launch fails the start with
+        QEMU's own line (`unable to find CPU model …`). A VM that exits later
+        is noticed by a per-VM watcher: a crash keeps the reason in
+        `last_error`, a guest power-off (exit 0) does not. VMs still running
+        from before an API restart are adopted at startup. Real run: kill -9
+        on an adopted and a launched VM, ACPI power-off, a bad CPU model; 9/9
+        and 2/2.
+      - A companion BIOS/CD-ROM path with no file is refused by PATCH
+        /templates (422) and at start, instead of booting SeaBIOS. Unit
+        tested; labtris-012 has no templates.
+      - `qemu_opts` is accepted at node create (merged over the template's,
+        unknown keys 422, refused on docker nodes). 3/3 on the real install.
+      - `DELETE /nodes/{id}/interfaces/{iid}`, and *Remove interface…* in the
+        node menu. Wired ports are refused (409 conflict). Live removal from
+        containers, a pc VM and a q35 hot-plug slot; a q35 card on pcie.0
+        answers 409 needs_restart and is gone after the restart. 26/26.
 - [x] **Phase K verified** — SSH proxy: JWT-as-password authenticates and
       lands a real shell (`root@leaf-1:/#`); a bad token, an empty
       password and a valid token for a non-existent node are all
@@ -415,29 +434,11 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Known-bad
 
-- [ ] **A node whose QEMU died at launch still shows `running`** (labtris-012,
-      2026-11-12). Three VMs exited at once ("Block node is read-only"); the
-      API kept reporting `running`, also after an API restart, and the
-      serial console returned empty output. Start should wait for the
-      process to survive its first seconds, and reconcile should notice a
-      dead pid.
-
 - [ ] **rail spine sometimes shows one peer, not two.** `spine-r2=1`
       where `spine-r1=2` on the same run. Both hosts in the rail are
       configured and the smoke test passes on >=1, so this is a
       convergence-timing question rather than a config one — worth a
       look before anyone quotes rail-optimised timings.
-- [ ] **A missing BIOS companion boots SeaBIOS without a word** (fluxos,
-      2026-11-11). Deleting a template removes its uploaded BIOS when no
-      other template points at it. A later PATCH to another template with
-      the same path is accepted, and at start `_companion_ok()` turns the
-      missing file into "no -bios", so a UEFI image boots SeaBIOS with no
-      error. PATCH /templates should reject a bios/cdrom path that does not
-      exist, and start should fail when a set companion is missing.
-- [ ] **`qemu_opts` on node create is dropped silently.** `NodeCreate` has
-      no such field, so `{cpu: host}` at create comes back as `{}`. Accept
-      it (same merge as PATCH /nodes/{id}/qemu-options) or reject unknown
-      fields.
 - [ ] **No persistent UEFI variables for nodes.** A BIOS companion is
       passed as read-only `-bios`, so NVRAM boot entries do not survive a
       restart; only an image's EFI fallback path boots reliably. A
@@ -511,9 +512,10 @@ three surfaces work; what follows is what the verification turned up.
         the card is there after a restart; after an API restart a
         hot-plugged NIC can still be re-pointed; a q35 restart cold-plugs
         the former hot-plugged card (renamed to `enp0s4`, same MAC).
-        Still open: the per-container `ip link` check on its own, removal
-        (no API deletes an interface yet, so `detach_iface` has no caller),
-        and a per-link "applies on next restart" marker.
+        Removal and the container `ip link` check landed 2026-11-13 (see
+        Recently landed). Still open: a per-link "applies on next restart"
+        marker. It needs a column on `links`, because nothing in the running
+        VM says which saved links it has not taken yet.
 
 - [ ] **VyOS firewall compiler** — `authorize-security-group-ingress`
       from labtris-aws compiles to real VyOS config on the in-path

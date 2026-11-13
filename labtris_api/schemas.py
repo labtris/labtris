@@ -64,6 +64,10 @@ class NodeCreate(BaseModel):
     nic_queues: int | None = Field(default=None, ge=1, le=MAX_NIC_QUEUES)
     console: dict[str, Any] = Field(default_factory=dict)
     interfaces: list[InterfaceIn] = Field(default_factory=list)
+    #: QEMU machine options, the same keys as PATCH /nodes/{id}/qemu-options,
+    #: merged over the image's template defaults. Used to be absent here, so
+    #: pydantic dropped it and `{cpu: host}` at create came back as `{}`.
+    qemu_opts: dict[str, Any] | None = None
 
 
 class NodePatch(BaseModel):

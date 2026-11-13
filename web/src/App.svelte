@@ -1050,6 +1050,34 @@
     }
   }
 
+  //: Only an unwired port can go: the server refuses one with a link, and
+  //: offering it here would just be a way to read that refusal.
+  function removePortMenu(node, x, y) {
+    const free = freeIfaces(node).filter((i) => !i.network_id);
+    menu = {
+      x,
+      y,
+      title: `Remove from ${node.name}`,
+      items: free.map((i) => ({
+        label: i.name,
+        glyph: "−",
+        danger: true,
+        run: () => removePort(node, i),
+      })),
+    };
+  }
+
+  async function removePort(node, iface) {
+    try {
+      await api.deleteIface(node.id, iface.id);
+    } catch (e) {
+      //: needs_restart: the port is gone from the lab, the card stays in the
+      //: running VM until it restarts.
+      error = e?.code === "needs_restart" ? `Removed — ${e.message}` : e.message;
+    }
+    if (lab) await loadLab(lab.id, true);
+  }
+
   function onNetDown(e, net, i) {
     if (e.button !== 0 || e.target.closest?.("button")) return;
     e.stopPropagation();
@@ -1927,6 +1955,15 @@
           ? [{ label: "Machine options…", glyph: "🖧", run: openQemuOptions }]
           : []),
         { label: "Add interface", glyph: "+", run: addPort },
+        {
+          label: "Remove interface…",
+          glyph: "−",
+          run: () => removePortMenu(node, e.clientX, e.clientY),
+          disabled: !freeIfaces(node).some((i) => !i.network_id),
+          hint: freeIfaces(node).some((i) => !i.network_id)
+            ? ""
+            : "every interface is wired; delete a link first",
+        },
         { sep: true },
         {
           label: "Wipe disk",

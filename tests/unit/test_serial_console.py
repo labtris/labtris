@@ -33,7 +33,7 @@ def test_the_console_attaches_before_the_monitor_handshake() -> None:
     seconds; under the old order those were seconds of discarded boot output.
     Attaching first is also what releases QEMU to start the guest at all."""
     attach = QEMU.index("session = SerialSession(serial_sock)")
-    monitor = QEMU.index("if not await _await_monitor(mon_sock, proc):")
+    monitor = QEMU.index("if not await _await_monitor(mon_sock, proc)")
 
     assert attach < monitor, "the console attaches too late and the boot is lost"
 

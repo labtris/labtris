@@ -68,6 +68,13 @@ async def _stale_running_nodes(session: AsyncSession, wait_s: float = 0.0) -> li
             continue
         if not observed.running:
             stale.append(node)
+        elif node.runtime == "qemu":
+            # Still up from before this process: watch it like one we launched.
+            from pathlib import Path
+
+            from labtris_api.runtime.qemu import adopt
+
+            adopt(node.id, Path(node.runtime_ref))
     return stale
 
 

@@ -112,6 +112,14 @@ async def create_node(
     # otherwise dragging a saved 8 GB appliance onto the canvas silently boots
     # it on 256 MB with a NIC its kernel cannot drive.
     tspec = await _saved_image_spec(session, body.image)
+    if body.qemu_opts:
+        from labtris_api.runtime.qemu import QEMU_OPTIONS
+
+        if body.runtime != "qemu":
+            raise unprocessable(f"qemu_opts is for qemu nodes; this one is {body.runtime}")
+        unknown = set(body.qemu_opts) - set(QEMU_OPTIONS)
+        if unknown:
+            raise unprocessable(f"unknown qemu option(s): {', '.join(sorted(unknown))}")
     node = Node(
         id=new_id(),
         lab_id=lab_id,
@@ -127,7 +135,7 @@ async def create_node(
             body.nic_queues if body.nic_queues is not None else tspec.get("nic_queues"),
             body.cpu_limit if body.cpu_limit is not None else tspec.get("cpus"),
         ),
-        qemu_opts=tspec.get("qemu_opts") or {},
+        qemu_opts={**(tspec.get("qemu_opts") or {}), **(body.qemu_opts or {})},
         console=body.console,
         state="defined",
     )
@@ -795,6 +803,29 @@ async def add_interface(
         raise conflict("interface name already exists on node") from exc
     await session.refresh(iface)
     return iface
+
+
+@router.delete("/nodes/{node_id}/interfaces/{iface_id}", status_code=204)
+async def delete_interface(
+    node_id: str,
+    iface_id: str,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> Response:
+    """Remove an interface, live on a running node where the runtime allows.
+
+    409 `conflict` while it is wired: delete its link first. 409
+    `needs_restart` when the row is gone but a VM keeps the card until it
+    restarts (a q35 NIC outside a hot-plug slot)."""
+    from labtris_api.lifecycle import remove_interface
+
+    node = await get_node(session, node_id)
+    await get_unlocked_lab(session, node.lab_id)
+    iface = next((i for i in node.interfaces if i.id == iface_id), None)
+    if iface is None:
+        raise not_found(f"interface {iface_id} not found on {node.name}")
+    await remove_interface(session, node, iface)
+    return Response(status_code=204)
 
 
 @router.patch("/nodes/{node_id}/style", response_model=NodeOut)

@@ -857,6 +857,43 @@ async def stop_node(session: AsyncSession, node: Node, mode: StopMode) -> Node:
     return await get_node(session, node.id)
 
 
+async def qemu_exited(node_id: str, returncode: int | None, reason: str) -> None:
+    """A VM's QEMU went away without Labtris stopping it.
+
+    Registered with the QEMU runtime at startup. The node is marked stopped
+    and its taps released the same way stop_node does; a nonzero exit keeps
+    QEMU's own last words in last_error, a guest that powered itself off
+    (exit 0) does not. A node mid-start is left alone: start_node sees the
+    exit itself and reports it as the failure."""
+    from labtris_api.db import SessionLocal
+
+    async with SessionLocal() as session:
+        node = await session.get(Node, node_id)
+        if node is None or node.state != "running":
+            return
+        node = await get_node(session, node_id)
+        for iface in node.interfaces:
+            if iface.host_ifname:
+                await _drop_iface(iface.host_ifname)
+                iface.host_ifname = None
+        error = None
+        if returncode is None:
+            # Adopted after an API restart: no child to read a status from, so
+            # a guest poweroff and a crash look the same. Say so.
+            error = (
+                "qemu exited (started before the API last restarted, so its exit "
+                "status is unknown)" + (f": {reason}" if reason else "")
+            )
+        elif returncode < 0:
+            error = f"qemu was killed by signal {-returncode}" + (f": {reason}" if reason else "")
+        elif returncode != 0:
+            error = f"qemu exited with status {returncode}: {reason or 'no output'}"
+        node.state = "stopped"
+        node.last_error = error
+        await session.commit()
+        await announce(node, "stopped", error)
+
+
 async def destroy_node_runtime(session: AsyncSession, node: Node) -> None:
     runtime = get_runtime(node.runtime)
     if node.runtime_ref:
@@ -876,6 +913,67 @@ async def destroy_node_runtime(session: AsyncSession, node: Node) -> None:
             await _drop_iface(row.host_ifname)
     node.runtime_ref = None
     node.state = "stopped"
+
+
+async def remove_interface(session: AsyncSession, node: Node, iface: Interface) -> None:
+    """Take an interface off a node, live when the node is running.
+
+    A wired interface is refused: the link or segment it is on decides what
+    else changes, and that is DELETE /links/{id}'s job, not a side effect of
+    this. On a running node the card is unplugged now where the runtime can
+    (a container's veth, a VM NIC in a hot-plug slot or on a pc chipset).
+    Where it cannot, the row still goes and needs_restart says the card stays
+    in the guest, unwired, until the node restarts; the next start builds the
+    VM from the remaining interfaces."""
+    if iface.network_id:
+        link = (
+            await session.execute(
+                select(Link).where(
+                    (Link.a_iface_id == iface.id) | (Link.b_iface_id == iface.id)
+                )
+            )
+        ).scalars().first()
+        where = f"link {link.id}" if link else f"network {iface.network_id}"
+        raise conflict(
+            f"{node.name}:{iface.name} is wired ({where}); delete the link or leave "
+            "the network first",
+            {"link_id": link.id if link else None, "network_id": iface.network_id},
+        )
+    pending: ApiError | None = None
+    if node.state == "running" and node.runtime_ref and iface.host_ifname:
+        runtime = get_runtime(node.runtime)
+        spec = IfaceSpec(
+            iface_id=iface.id,
+            idx=iface.idx,
+            guest_name=iface.name,
+            host_ifname=iface.host_ifname,
+            mac=str(iface.mac),
+            peer_ifname=await lookup_peer(session, iface.id),
+        )
+        try:
+            await runtime.detach_iface(
+                RuntimeHandle(node_id=node.id, ref=node.runtime_ref), spec
+            )
+        except ApiError as exc:
+            if exc.code != "needs_restart":
+                raise
+            pending = exc
+    elif iface.host_ifname:
+        await _drop_iface(iface.host_ifname)
+    await session.execute(
+        sql_delete(IfnameRegistry).where(
+            IfnameRegistry.owner_id.in_([iface.id, peer_owner(iface.id)])
+        )
+    )
+    await release_macs(session, [iface.id])
+    await session.delete(iface)
+    await session.commit()
+    if pending is not None:
+        raise needs_restart(
+            f"{iface.name} is removed and unwired; the card itself stays in "
+            f"{node.name} until it restarts",
+            {"interface": iface.name},
+        )
 
 
 async def realize_link_if_running(session: AsyncSession, link: Link) -> None:

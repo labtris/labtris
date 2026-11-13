@@ -346,6 +346,8 @@ export const api = {
   deleteNode: (id) => req(`/api/v1/nodes/${id}`, { method: "DELETE" }),
   addIface: (id, name) =>
     req(`/api/v1/nodes/${id}/interfaces`, { method: "POST", body: JSON.stringify({ name }) }),
+  deleteIface: (id, ifaceId) =>
+    req(`/api/v1/nodes/${id}/interfaces/${ifaceId}`, { method: "DELETE" }),
   link: (labId, a, b) =>
     req(`/api/v1/labs/${labId}/links`, {
       method: "POST",

@@ -56,6 +56,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Correct anything that drifted while the process was not running — most
     # of all a host reboot, which takes every VM with it while the nodes go on
     # claiming they are up.
+    # Before reconcile, so the VMs it restores are watched like any other.
+    from labtris_api.lifecycle import qemu_exited
+    from labtris_api.runtime.qemu import on_unexpected_exit
+
+    on_unexpected_exit(qemu_exited)
+
     try:
         from labtris_api.config import settings as _settings
         from labtris_api.db import SessionLocal as _Session

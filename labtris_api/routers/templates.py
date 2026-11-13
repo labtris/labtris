@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import get_current_user
 from labtris_api.db import get_session
-from labtris_api.errors import conflict, not_found
+from labtris_api.errors import conflict, not_found, unprocessable
 from labtris_api.models import Node, Template
 from labtris_api.schemas import TemplateOut, TemplatePatch
 
@@ -48,6 +48,20 @@ async def patch_template(
     for scalar in ("name", "icon", "description"):
         if scalar in data:
             setattr(tmpl, scalar, data.pop(scalar))
+
+    # A companion path must name a file that is there now. Deleting a template
+    # removes its upload, and a PATCH with the old path used to be accepted,
+    # then dropped at start, so a UEFI image booted SeaBIOS without a word
+    # (fluxos, 2026-11-11).
+    from labtris_api.runtime.qemu import _bios_dir, _cdrom_dir, _companion_ok
+
+    for kind, where in (("bios", _bios_dir), ("cdrom", _cdrom_dir)):
+        path = data.get(kind)
+        if path and _companion_ok(path, where()) is None:
+            raise unprocessable(
+                f"no {kind} file at {path}: upload it with POST /images/companion "
+                f"kind={kind} and use the path that returns"
+            )
 
     if data:
         # Spec is JSONB; SQLAlchemy only tracks whole-column replacement, so
