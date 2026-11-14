@@ -348,6 +348,11 @@ export const api = {
     req(`/api/v1/nodes/${id}/interfaces`, { method: "POST", body: JSON.stringify({ name }) }),
   deleteIface: (id, ifaceId) =>
     req(`/api/v1/nodes/${id}/interfaces/${ifaceId}`, { method: "DELETE" }),
+  setIfaceModel: (id, ifaceId, nic_model) =>
+    req(`/api/v1/nodes/${id}/interfaces/${ifaceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ nic_model }),
+    }),
   link: (labId, a, b) =>
     req(`/api/v1/labs/${labId}/links`, {
       method: "POST",

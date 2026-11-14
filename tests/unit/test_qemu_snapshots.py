@@ -96,3 +96,77 @@ async def test_snapshotting_waits_rather_than_sleeping(monkeypatch) -> None:
     #: command has finished — there is no interval to guess at.
     assert captured["command_line"] == "savevm s1"
     assert captured["timeout"] == qemu._SNAPSHOT_TIMEOUT
+
+
+# --- validated on labtris-013, 2026-11-14: what a revert can and cannot see ---
+
+def _fake_monitor(monkeypatch, nics: list[str], log: list[str]) -> None:
+    async def fake(vm_dir, command, timeout=10.0):
+        log.append(command)
+        if command == "info network":
+            return "".join(f"{n}: index=0,type=nic,model=virtio-net-pci,macaddr=52:54:00:00:00:0{i}\r\n"
+                           for i, n in enumerate(nics))
+        return ""
+
+    monkeypatch.setattr("labtris_api.runtime.qemu._hmp_qmp", fake)
+
+
+async def test_a_card_hot_plugged_after_the_snapshot_is_reported(monkeypatch, tmp_path) -> None:
+    from labtris_api.runtime import qemu
+
+    monkeypatch.setattr(qemu, "_read_pid", lambda d: 4242)
+    log: list[str] = []
+    h = RuntimeHandle(node_id="n", ref=str(tmp_path))
+    _fake_monitor(monkeypatch, ["nic0", "nic1"], log)
+    await qemu_runtime.save_snapshot(h, "s1")
+    assert log[-1] == "savevm s1", "the save is the last command"
+    _fake_monitor(monkeypatch, ["nic0", "nic1", "nic2"], log)
+    assert await qemu_runtime.snapshot_drift(h, "s1") == (["nic2"], [])
+    _fake_monitor(monkeypatch, ["nic0"], log)
+    assert await qemu_runtime.snapshot_drift(h, "s1") == ([], ["nic1"])
+    #: A snapshot taken before this existed has no record: no warning, no error.
+    assert await qemu_runtime.snapshot_drift(h, "older") == ([], [])
+
+
+async def test_snapshots_of_a_stopped_vm_are_listed_from_the_disk(monkeypatch, tmp_path) -> None:
+    from labtris_api.runtime import qemu
+
+    (tmp_path / "disk.qcow2").write_bytes(b"")
+    monkeypatch.setattr(qemu, "_read_pid", lambda d: None)
+
+    async def fake_run(*args, timeout=None):
+        assert args[:4] == ("qemu-img", "info", "-U", "--output=json")
+        return 0, '{"snapshots": [{"name": "s1"}, {"name": "s2"}]}'
+
+    monkeypatch.setattr(qemu, "_run", fake_run)
+    names = await qemu_runtime.list_snapshots(RuntimeHandle(node_id="n", ref=str(tmp_path)))
+    assert names == ["s1", "s2"]
+
+
+async def test_reverting_a_stopped_vm_through_the_runtime_says_start_it(monkeypatch, tmp_path) -> None:
+    """It used to say the VM 'was started before mouse support landed'."""
+    from labtris_api.runtime import qemu
+
+    monkeypatch.setattr(qemu, "_read_pid", lambda d: None)
+    with pytest.raises(ApiError, match="start it first"):
+        await qemu_runtime.load_snapshot(RuntimeHandle(node_id="n", ref=str(tmp_path)), "s1")
+
+
+async def test_deleting_from_a_stopped_vm_cleans_disk_and_uefi_vars(monkeypatch, tmp_path) -> None:
+    from labtris_api.runtime import qemu
+
+    for f in ("disk.qcow2", qemu.EFIVARS):
+        (tmp_path / f).write_bytes(b"")
+    (tmp_path / "snapshots.json").write_text('{"s1": {"nics": []}}')
+    monkeypatch.setattr(qemu, "_read_pid", lambda d: None)
+    ran: list[tuple] = []
+
+    async def fake_run(*args, timeout=None):
+        ran.append(args)
+        return 0, ""
+
+    monkeypatch.setattr(qemu, "_run", fake_run)
+    await qemu_runtime.delete_snapshot(RuntimeHandle(node_id="n", ref=str(tmp_path)), "s1")
+    assert [a[-1].rsplit("/", 1)[-1] for a in ran] == ["disk.qcow2", qemu.EFIVARS]
+    assert all(a[:4] == ("qemu-img", "snapshot", "-d", "s1") for a in ran)
+    assert "s1" not in (tmp_path / "snapshots.json").read_text()

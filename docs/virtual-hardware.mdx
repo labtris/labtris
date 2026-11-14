@@ -70,6 +70,89 @@ on nodes that run a vfio data plane.
   the server allows it. The guest uses them with `ethtool -L ethX combined N`
   where its driver does not do so on its own.
 
+### A different card per port
+
+A node's **NIC model** applies to every port it has. A port can override it:
+**Interface card…** in the node's menu, `nic_model` when the interface is
+created, or `PATCH /nodes/{id}/interfaces/{iface_id}` with
+`{"nic_model": "e1000"}` (`null` goes back to the node's model). The usual
+reason is a management port on e1000 for an installer that only knows that
+card, next to virtio data-plane ports.
+
+Queues follow the card: an e1000 port on a four-queue virtio node gets one
+queue and a single-queue tap. A card cannot change under a running guest, so
+the change takes effect at the next start.
+
+## Firmware: BIOS and UEFI
+
+QEMU nodes boot SeaBIOS unless told otherwise. The **Firmware** option
+(`firmware`) changes that:
+
+| Value | Boots | Boot entries |
+|---|---|---|
+| blank (default) | SeaBIOS, or the template's BIOS file if it has one | none, or lost at every restart (see below) |
+| `uefi` | the host's OVMF | kept, per node |
+| `uefi-secure` | OVMF with Secure Boot, Microsoft keys enrolled; needs q35 | kept, per node |
+
+UEFI keeps its boot entries in a variable store. A combined `OVMF.fd`
+uploaded as a template's BIOS file holds that store inside itself, and
+Labtris passes it read-only, so whatever a guest writes there (an
+installer's boot entry, `efibootmgr`) is gone at the next start. Only an
+image with the fallback loader `\EFI\BOOT\BOOTX64.EFI` boots reliably that
+way.
+
+With `uefi` or `uefi-secure`, each node gets its own store,
+`efivars.qcow2` in its VM directory, made from the distribution's empty
+template at the first start. It survives restarts, travels in pods, and is
+part of every snapshot, so a revert brings the boot entries back to the same
+moment as the disk. **Wipe** resets it. Switching between `uefi` and
+`uefi-secure` starts a fresh store, since the two use different keys.
+
+The host needs OVMF installed: the `ovmf` package, which the ISO and the
+container image include. When both a BIOS file and `firmware` are set,
+`firmware` wins.
+
+## Snapshots and revert
+
+A snapshot (`POST /nodes/{id}/snapshot`, QEMU `savevm`) holds a running
+VM's disk, RAM and device state, and for a UEFI node its boot variables. A
+revert (`POST /nodes/{id}/snapshot/{name}/restore`) puts all of it back.
+Snapshots live inside the VM's qcow2, survive stop and start, and travel in
+hot pods. Each one costs about as much disk as the guest has RAM in use;
+remove one with `DELETE /nodes/{id}/snapshot/{name}`.
+
+Measured on a Labtris host with a 2 GB Ubuntu guest on q35, three virtio
+NICs with two queues and vhost, each wired to a container:
+
+| | Time |
+|---|---|
+| save | 7.9 s |
+| revert, running node | 1.7 s |
+| revert, stopped node (started first) | 3.2 s |
+
+After a revert the disk, the RAM and every link carried traffic again
+straight away. Nothing on the host changes during a revert: the taps stay
+where they are and keep their bridges.
+
+What a revert does **not** undo:
+
+- **The lab's wiring.** Links are the lab's current ones. A link re-pointed
+  after the snapshot stays re-pointed, but the guest's ARP and neighbour
+  tables come back from save time, so it keeps sending to the old peer's
+  MAC until the entry times out. `ip neigh flush all` in the guest, or the
+  vendor equivalent, fixes it at once.
+- **Admin state.** A link set down after the snapshot stays down.
+- **Cards added after the snapshot.** While the node keeps running, QEMU
+  keeps the card, but the guest that comes back has never seen it, so it
+  carries nothing until the node restarts. The revert's reply lists such
+  cards under `warnings`. Once the node has restarted with a different set
+  of cards, added or removed, the snapshot cannot be loaded at all: QEMU
+  needs the cards it was taken with. The revert then answers `409` and
+  names the cards; put them back as they were, or take a new snapshot.
+
+A revert of a stopped node starts it first. Snapshots are listed for stopped
+nodes as well.
+
 ## What can change while a VM runs
 
 Two different things are both called "changing a link", and they are not

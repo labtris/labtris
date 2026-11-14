@@ -286,6 +286,7 @@ async def node_spec(session: AsyncSession, node: Node) -> NodeSpec:
                 guest_name=iface.name,
                 host_ifname=iface.host_ifname or "",
                 mac=str(iface.mac),
+                nic_model=iface.nic_model,
                 peer_ifname=peer,
             )
         )
@@ -606,12 +607,10 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
     # filled from this spec — template fallback included. Deciding from the
     # node row alone made a tap single-queue for a node whose template said
     # four, and the boot failed with EINVAL. Same function as the QEMU side.
-    from labtris_api.runtime.qemu import nic_queue_count
+    from labtris_api.runtime.qemu import port_nic
 
     pre_spec = await node_spec(session, node)
-    multi_queue = node.runtime == "qemu" and nic_queue_count(
-        {"nic_model": pre_spec.nic_model, "nic_queues": pre_spec.nic_queues}
-    ) > 1
+    node_nic = {"nic_model": pre_spec.nic_model, "nic_queues": pre_spec.nic_queues}
     try:
         for iface in node.interfaces:
             if not iface.host_ifname:
@@ -633,6 +632,8 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
                     pass
                 # The tap has to be multi-queue before qemu opens it, or
                 # `queues=N` fails at boot with EINVAL.
+                # Per port: an e1000 port on a multi-queue node is single-queue.
+                multi_queue = port_nic(node_nic, iface.nic_model)[1] > 1
                 await netd.call(
                     "tap.create",
                     {"name": iface.host_ifname, "owner_uid": os.getuid(),
@@ -706,6 +707,7 @@ async def start_node(session: AsyncSession, node: Node) -> Node:
                     guest_name=iface.name,
                     host_ifname=iface.host_ifname,
                     mac=str(iface.mac),
+                    nic_model=iface.nic_model,
                     peer_ifname=peer,
                 )
                 await runtime.attach_iface(handle, i_spec, net.host_ifname)
@@ -948,6 +950,7 @@ async def remove_interface(session: AsyncSession, node: Node, iface: Interface) 
             guest_name=iface.name,
             host_ifname=iface.host_ifname,
             mac=str(iface.mac),
+            nic_model=iface.nic_model,
             peer_ifname=await lookup_peer(session, iface.id),
         )
         try:
@@ -1012,6 +1015,7 @@ async def realize_link_if_running(session: AsyncSession, link: Link) -> None:
             guest_name=iface.name,
             host_ifname=iface.host_ifname or "",
             mac=str(iface.mac),
+            nic_model=iface.nic_model,
             peer_ifname=await lookup_peer(session, iface.id),
         )
         try:
@@ -1070,6 +1074,7 @@ async def realize_membership(session: AsyncSession, iface: Interface) -> None:
         guest_name=iface.name,
         host_ifname=iface.host_ifname or "",
         mac=str(iface.mac),
+        nic_model=iface.nic_model,
         peer_ifname=await lookup_peer(session, iface.id),
     )
     try:

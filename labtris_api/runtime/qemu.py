@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 import structlog
 
 from labtris_api.config import settings
-from labtris_api.errors import ApiError, needs_restart, runtime_error, unprocessable
+from labtris_api.errors import ApiError, conflict, needs_restart, runtime_error, unprocessable
 from labtris_api.netd_client import NetdError, netd
 from labtris_api.runtime.base import (
     MAX_NIC_QUEUES,
@@ -1671,6 +1671,14 @@ def nic_queue_count(cfg: dict[str, Any]) -> int:
     return max(1, min(q, MAX_NIC_QUEUES))
 
 
+def port_nic(cfg: dict[str, Any], model: str | None) -> tuple[str, int]:
+    """One port's card and its queue count: the port's own model when it has
+    one, else the node's. Queues follow the card, so an e1000 port on a
+    four-queue virtio node gets one, and its tap is made single-queue."""
+    model = model or cfg.get("nic_model") or "virtio-net-pci"
+    return model, nic_queue_count({**cfg, "nic_model": model})
+
+
 def netdev_args(net_id: str, host_ifname: str, queues: int, vhost: bool) -> str:
     """The -netdev / netdev_add argument string, one function for both so the
     cold-boot NIC and a hot-plugged one cannot drift apart."""
@@ -1825,13 +1833,14 @@ async def _inspect_tap(name: str) -> dict[str, Any]:
 
 
 async def _ensure_tap(
-    vm_dir: Path, name: str, fresh: bool = False, multi_queue: bool | None = None
+    vm_dir: Path, name: str, fresh: bool = False, multi_queue: bool | None = None,
+    model: str | None = None,
 ) -> None:
     """Make sure the tap exists; with `fresh`, replace it."""
     if multi_queue is None:
         cfg_path = _config_path(vm_dir)
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-        multi_queue = nic_queue_count(cfg) > 1
+        multi_queue = port_nic(cfg, model)[1] > 1
     if fresh:
         await _drop_tap(name)
     elif (await _inspect_tap(name)).get("exists"):
@@ -1892,15 +1901,20 @@ def machine_args(opts: dict[str, Any]) -> list[str]:
     wants it. caching-mode is what lets a vhost backend learn about the
     guest's mappings; device-iotlb pairs with ats=on on the NICs."""
     machine = str(opts.get("machine") or "pc")
+    props = ""
+    if opts.get("firmware") == "uefi-secure":
+        if machine != "q35":
+            raise unprocessable("firmware=uefi-secure needs the q35 chipset")
+        props = ",smm=on"
     if not opts.get("viommu"):
-        return ["-M", machine]
+        return ["-M", machine + props]
     if machine != "q35":
         raise unprocessable(
             "the emulated IOMMU needs the q35 chipset — intel-iommu is a "
             f"q35 device and the node's chipset is {machine!r}"
         )
     return [
-        "-M", "q35,kernel-irqchip=split",
+        "-M", f"q35{props},kernel-irqchip=split",
         "-device", "intel-iommu,intremap=on,caching-mode=on,device-iotlb=on",
     ]
 
@@ -1912,7 +1926,8 @@ def _serialize_ifaces(ifaces: list[IfaceSpec]) -> list[dict[str, Any]]:
     the qemu command line uses. peer_ifname/bridge are runtime concerns
     handled by netd and lifecycle.py, not the guest device."""
     return [
-        {"idx": i.idx, "host_ifname": i.host_ifname, "mac": i.mac}
+        {"idx": i.idx, "host_ifname": i.host_ifname, "mac": i.mac,
+         **({"nic_model": i.nic_model} if i.nic_model else {})}
         for i in ifaces
         if i.host_ifname  # a name is required to bind a tap
     ]
@@ -1977,6 +1992,19 @@ QEMU_OPTIONS: dict[str, dict[str, Any]] = {
         "default": "c",
         "help": "c=disk, d=cdrom, n=network. dc tries the cdrom then the disk, "
         "which is what an install from ISO needs.",
+    },
+    "firmware": {
+        "label": "Firmware",
+        "type": "choice",
+        # "" keeps what nodes always did: SeaBIOS, or the template's companion
+        # -bios file when it has one.
+        "choices": ["", "uefi", "uefi-secure"],
+        "default": "",
+        "help": "Blank boots SeaBIOS, or the template's BIOS file if it has one. "
+        "uefi boots the host's OVMF with a variable store kept per node, so boot "
+        "entries a guest writes (efibootmgr, an installer) survive a restart, and "
+        "revert with a snapshot. uefi-secure adds Secure Boot with Microsoft keys "
+        "enrolled and needs the q35 chipset. Wipe resets the variables.",
     },
     "disk_bus": {
         "label": "Disk controller",
@@ -2067,6 +2095,114 @@ def resolved_options(opts: dict[str, Any] | None) -> dict[str, Any]:
         if key in QEMU_OPTIONS:
             merged[key] = value
     return merged
+
+
+def check_option_values(opts: dict[str, Any]) -> None:
+    """Refuse values an option cannot take, at the moment someone sets them.
+
+    Only the keys were checked before, so a typo in a value was saved and
+    then ignored at every start, which reads as the option not working."""
+    problems = []
+    for key, value in opts.items():
+        spec = QEMU_OPTIONS.get(key)
+        if spec is None:
+            continue
+        kind = spec["type"]
+        if kind == "choice" and value not in spec["choices"]:
+            choices = ", ".join(repr(c) for c in spec["choices"])
+            problems.append(f"{key}={value!r} is not one of {choices}")
+        elif kind == "bool" and not isinstance(value, bool):
+            problems.append(f"{key} must be true or false, not {value!r}")
+        elif kind == "int":
+            if isinstance(value, bool) or not isinstance(value, int):
+                problems.append(f"{key} must be a whole number, not {value!r}")
+            elif not spec.get("min", value) <= value <= spec.get("max", value):
+                problems.append(f"{key} must be between {spec['min']} and {spec['max']}")
+        elif kind == "list" and not isinstance(value, list):
+            problems.append(f"{key} must be a list")
+    merged = {**option_defaults(), **opts}
+    if merged.get("firmware") == "uefi-secure" and merged.get("machine") != "q35":
+        problems.append("firmware=uefi-secure needs machine=q35: Secure Boot relies on "
+                        "SMM, which the pc chipset does not provide")
+    if problems:
+        raise unprocessable("; ".join(problems))
+
+
+#: Split OVMF builds, code then variable template, in the places distributions
+#: install them. Ubuntu and Debian: the ovmf package. Fedora: edk2-ovmf. The
+#: combined OVMF.fd is not used: its variables live in the same file as the
+#: code, which is why a read-only -bios forgets every boot entry.
+_OVMF: dict[str, list[tuple[str, str]]] = {
+    "uefi": [
+        ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+        ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
+        ("/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd"),
+    ],
+    "uefi-secure": [
+        ("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"),
+        ("/usr/share/OVMF/OVMF_CODE.secboot.fd", "/usr/share/OVMF/OVMF_VARS.ms.fd"),
+        ("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd", "/usr/share/edk2/ovmf/OVMF_VARS.secboot.fd"),
+    ],
+}
+EFIVARS = "efivars.qcow2"
+_EFIVARS_SOURCE = "efivars.source"
+
+
+def ovmf_files(kind: str) -> tuple[Path, Path]:
+    for code, template in _OVMF[kind]:
+        if Path(code).is_file() and Path(template).is_file():
+            return Path(code), Path(template)
+    raise runtime_error(
+        f"firmware={kind} needs OVMF and this host has none: install the ovmf "
+        "package (edk2-ovmf on Fedora)"
+    )
+
+
+async def ensure_efivars(vm_dir: Path, kind: str) -> tuple[Path, Path]:
+    """The OVMF code for `kind` and this node's own variable store.
+
+    The store is made from the distribution's empty template on first use and
+    kept in the VM directory, so Wipe resets it with everything else. qcow2,
+    not the template's raw: savevm refuses to run while any writable drive
+    cannot hold a snapshot, and with qcow2 a revert brings the variables back
+    to the same moment as the disk. Switching between uefi and uefi-secure
+    starts a fresh store, because the two use different key databases."""
+    code, template = ovmf_files(kind)
+    store = vm_dir / EFIVARS
+    source = vm_dir / _EFIVARS_SOURCE
+    if store.exists() and source.exists() and source.read_text().strip() == str(template):
+        return code, store
+    if store.exists():
+        logger.warning("qemu.efivars.reset", vm_dir=str(vm_dir), firmware=kind,
+                       reason="made from a different OVMF variable template")
+    tmp = vm_dir / (EFIVARS + ".tmp")
+    rc, out = await _run("qemu-img", "convert", "-f", "raw", "-O", "qcow2",
+                         str(template), str(tmp))
+    if rc != 0:
+        tmp.unlink(missing_ok=True)
+        raise runtime_error(f"could not create the UEFI variable store: {out.strip()}")
+    tmp.replace(store)
+    source.write_text(str(template))
+    return code, store
+
+
+async def firmware_args(opts: dict[str, Any], vm_dir: Path, bios_path: Path | None) -> list[str]:
+    kind = str(opts.get("firmware") or "")
+    if not kind:
+        return ["-bios", str(bios_path)] if bios_path else []
+    if bios_path:
+        logger.info("qemu.firmware.overrides_bios", vm_dir=str(vm_dir), firmware=kind,
+                    bios=str(bios_path))
+    code, store = await ensure_efivars(vm_dir, kind)
+    args = []
+    if kind == "uefi-secure":
+        # Without this the variable store is writable from outside SMM and
+        # Secure Boot's keys mean nothing.
+        args += ["-global", "driver=cfi.pflash01,property=secure,value=on"]
+    return args + [
+        "-drive", f"if=pflash,unit=0,format=raw,readonly=on,file={code}",
+        "-drive", f"if=pflash,unit=1,format=qcow2,file={store}",
+    ]
 
 
 def _data_volume_path(node_id: str) -> Path:
@@ -2502,7 +2638,7 @@ class QemuRuntime:
                 "-drive",
                 f"file={disk_path},if={disk_bus},bus=0,unit=0,{common_disk_flags},format=qcow2",
             ]
-        bios_args = ["-bios", str(bios_path)] if bios_path else []
+        bios_args = await firmware_args(opts, vm_dir, bios_path)
         cdrom_args = ["-cdrom", str(cdrom_path)] if cdrom_path else []
 
         args = [
@@ -2600,21 +2736,20 @@ class QemuRuntime:
         # The taps themselves must already exist on the host when qemu
         # launches: the pre-boot loop in lifecycle.start_node calls
         # netd.tap.create for every interface, wired or not.
-        nic_model = cfg.get("nic_model") or "virtio-net-pci"
-        queues = nic_queue_count(cfg)
         # vhost only with multi-queue, on purpose: the single-queue path is
         # the one every existing lab runs on, and a host that lacks the
         # device must keep starting exactly as before. Asking for queues is
         # the opt-in; vhost comes with it when the host allows it.
-        vhost = queues > 1 and vhost_available()
-        if queues > 1 and not vhost:
+        if nic_queue_count(cfg) > 1 and not vhost_available():
             logger.warning(
-                "qemu.vhost_unavailable", vm_dir=str(vm_dir), queues=queues,
+                "qemu.vhost_unavailable", vm_dir=str(vm_dir), queues=nic_queue_count(cfg),
                 hint="/dev/vhost-net is not open-able by the API process",
             )
         for iface in cfg.get("interfaces") or []:
             net_id = f"net{iface['idx']}"
             nic_id = f"nic{iface['idx']}"
+            nic_model, queues = port_nic(cfg, iface.get("nic_model"))
+            vhost = queues > 1 and vhost_available()
             args.extend([
                 "-netdev", netdev_args(net_id, iface["host_ifname"], queues, vhost),
                 "-device", device_args(
@@ -2700,6 +2835,17 @@ class QemuRuntime:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+            # SIGKILL is a request. Until the process is gone it holds the
+            # qcow2's write lock, and "stopped" followed at once by a
+            # qemu-img on the disk failed with "Failed to get write lock"
+            # (labtris-013, 2026-11-14).
+            proc = _procs.get(h.node_id)
+            for _ in range(100):
+                if proc is not None and proc.returncode is not None:
+                    break
+                if proc is None and not _pid_alive(pid):
+                    break
+                await asyncio.sleep(0.1)
         (vm_dir / "qemu.pid").unlink(missing_ok=True)
         session = _sessions.pop(h.node_id, None)
         if session is not None:
@@ -2744,7 +2890,7 @@ class QemuRuntime:
         vm_dir = Path(h.ref)
         if _read_pid(vm_dir) is None:
             # Not running: the next start cold-plugs it.
-            await _ensure_tap(vm_dir, i.host_ifname)
+            await _ensure_tap(vm_dir, i.host_ifname, model=i.nic_model)
             await _wire_tap(i.host_ifname, bridge, None)
             return
         tap = await _inspect_tap(i.host_ifname)
@@ -2768,8 +2914,7 @@ class QemuRuntime:
         cfg_path = _config_path(vm_dir)
         cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
         opts = resolved_options(cfg.get("opts"))
-        model = cfg.get("nic_model") or "virtio-net-pci"
-        queues = nic_queue_count(cfg)
+        model, queues = port_nic(cfg, i.nic_model)
         vhost = queues > 1 and vhost_available()
         net_id, nic_id = f"net{i.idx}", f"nic{i.idx}"
         restart = needs_restart(
@@ -2782,7 +2927,7 @@ class QemuRuntime:
             # A NIC left holding a tap that no longer exists. Only a card in a
             # hot-plug slot can be swapped; one on pcie.0 cannot be removed.
             if not await _unplug(vm_dir, nic_id):
-                await _ensure_tap(vm_dir, i.host_ifname, fresh=False)
+                await _ensure_tap(vm_dir, i.host_ifname, fresh=False, model=i.nic_model)
                 await _wire_tap(i.host_ifname, bridge, None)
                 raise restart
         await _hmp_qmp(vm_dir, f"netdev_del {net_id}")
@@ -2880,18 +3025,58 @@ class QemuRuntime:
         qcow2 mid-savevm produces an archive whose snapshot is partial or
         absent — which surfaces much later as "snapshot does not exist" on
         the restore, a long way from the cause.
+
+        Which network cards the VM had is recorded next to it: a card
+        hot-plugged after this moment is unknown to the guest the snapshot
+        brings back, and restore says so (labtris-013, 2026-11-14).
         """
-        out = await _hmp_qmp(Path(h.ref), f"savevm {name}", timeout=_SNAPSHOT_TIMEOUT)
+        vm_dir = Path(h.ref)
+        # Before savevm, so the last thing this does is the save itself; the
+        # cards cannot change in between, the monitor runs one command at once.
+        nics = sorted(parse_info_network(await _hmp_qmp(vm_dir, "info network")))
+        out = await _hmp_qmp(vm_dir, f"savevm {name}", timeout=_SNAPSHOT_TIMEOUT)
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"savevm failed: {err}")
+        meta = _snapshot_meta(vm_dir)
+        meta[name] = {"nics": nics, "saved_at": time.time()}
+        _write_snapshot_meta(vm_dir, meta)
+
+    async def snapshot_drift(self, h: RuntimeHandle, name: str) -> tuple[list[str], list[str]]:
+        """Network cards the running VM has now that it did not have when
+        `name` was taken, and cards it had then and has not now, as nic ids.
+
+        Added cards in hot-plug slots load fine, but the guest restored from
+        the snapshot has no driver bound to them, so they carry nothing until
+        a restart. After a restart they are cold-plugged, and QEMU refuses
+        to load the snapshot at all: a different set of devices is "Error
+        -22 while loading VM state" and nothing more."""
+        vm_dir = Path(h.ref)
+        saved = _snapshot_meta(vm_dir).get(name, {}).get("nics")
+        if saved is None or _read_pid(vm_dir) is None:
+            return [], []
+        now = parse_info_network(await _hmp_qmp(vm_dir, "info network"))
+        return sorted(set(now) - set(saved)), sorted(set(saved) - set(now))
 
     async def load_snapshot(self, h: RuntimeHandle, name: str) -> None:
-        out = await _hmp_qmp(Path(h.ref), f"loadvm {name}", timeout=_SNAPSHOT_TIMEOUT)
+        vm_dir = Path(h.ref)
+        if _read_pid(vm_dir) is None:
+            raise conflict("the VM must be running to revert it; start it first")
+        out = await _hmp_qmp(vm_dir, f"loadvm {name}", timeout=_SNAPSHOT_TIMEOUT)
         if (err := _hmp_error(out)) is not None:
             raise runtime_error(f"loadvm failed: {err}")
 
     async def list_snapshots(self, h: RuntimeHandle) -> list[str]:
-        out = await _hmp_qmp(Path(h.ref), "info snapshots")
+        vm_dir = Path(h.ref)
+        if _read_pid(vm_dir) is None:
+            # Stopped: the snapshots are in the qcow2 all the same.
+            disk = vm_dir / "disk.qcow2"
+            if not disk.exists():
+                return []
+            rc, out = await _run("qemu-img", "info", "-U", "--output=json", str(disk), timeout=30)
+            if rc != 0:
+                raise runtime_error(f"qemu-img info failed: {out.strip()}")
+            return [sn["name"] for sn in json.loads(out).get("snapshots", [])]
+        out = await _hmp_qmp(vm_dir, "info snapshots")
         names = []
         for raw in out.splitlines():
             line = raw.strip()
@@ -2903,6 +3088,44 @@ class QemuRuntime:
             if len(parts) >= 2 and (parts[0] == "--" or parts[0].isdigit()):
                 names.append(parts[1])
         return names
+
+    async def delete_snapshot(self, h: RuntimeHandle, name: str) -> None:
+        """delvm on a running VM; qemu-img on a stopped one, from the disk and
+        the UEFI variable store alike, since savevm wrote to both."""
+        vm_dir = Path(h.ref)
+        if _read_pid(vm_dir) is not None:
+            out = await _hmp_qmp(vm_dir, f"delvm {name}", timeout=_SNAPSHOT_TIMEOUT)
+            if (err := _hmp_error(out)) is not None:
+                raise runtime_error(f"delvm failed: {err}")
+        else:
+            for f in (vm_dir / "disk.qcow2", vm_dir / EFIVARS):
+                if not f.exists():
+                    continue
+                rc, out = await _run("qemu-img", "snapshot", "-d", name, str(f), timeout=120)
+                if rc != 0 and f.name == "disk.qcow2":
+                    raise runtime_error(f"deleting snapshot {name!r} failed: {out.strip()}")
+        meta = _snapshot_meta(vm_dir)
+        if meta.pop(name, None) is not None:
+            _write_snapshot_meta(vm_dir, meta)
+
+
+_SNAPSHOT_META = "snapshots.json"
+
+
+def _snapshot_meta(vm_dir: Path) -> dict[str, Any]:
+    try:
+        return json.loads((vm_dir / _SNAPSHOT_META).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_snapshot_meta(vm_dir: Path, meta: dict[str, Any]) -> None:
+    """Best effort: the snapshot itself is in the qcow2; this only feeds the
+    warning about cards added since."""
+    try:
+        (vm_dir / _SNAPSHOT_META).write_text(json.dumps(meta))
+    except OSError as exc:
+        logger.warning("qemu.snapshot_meta.unwritable", vm_dir=str(vm_dir), error=str(exc))
 
 
 qemu_runtime = QemuRuntime()

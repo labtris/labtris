@@ -32,6 +32,15 @@ class LabOut(ORMModel):
 class InterfaceIn(BaseModel):
     name: str | None = None
     network_id: str | None = None
+    #: QEMU only: the card for this port (e1000, vmxnet3, ...). Omitted: the
+    #: node's nic_model.
+    nic_model: str | None = None
+
+
+class InterfaceHardwareIn(BaseModel):
+    """What the guest sees for this port. null goes back to the node's model."""
+
+    nic_model: str | None = None
 
 
 class InterfaceOut(ORMModel):
@@ -46,6 +55,7 @@ class InterfaceOut(ORMModel):
     vlan_id: int | None = None
     trunk_vids: str | None = None
     reserved_ip: str | None = None
+    nic_model: str | None = None
 
 
 class NodeCreate(BaseModel):

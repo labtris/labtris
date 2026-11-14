@@ -233,6 +233,9 @@ class Interface(Base):
     #: the MAC, which the registry already assigned, so nothing new is needed
     #: to identify the guest.
     reserved_ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The emulated card for this port on a QEMU node. NULL means the node's
+    #: own nic_model, which is what every port used before this existed.
+    nic_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     vlan_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
     vlan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     trunk_vids: Mapped[str | None] = mapped_column(Text, nullable=True)

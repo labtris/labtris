@@ -366,6 +366,13 @@ three surfaces work; what follows is what the verification turned up.
 
 ## Recently landed
 
+- [x] **For Flux-OS, run on labtris-013 2026-11-14:** `firmware=uefi|uefi-secure`
+      with a qcow2 variable store per node (boot entries survive restarts,
+      revert with snapshots, ride in pods); a NIC model per port
+      (`PATCH /nodes/{id}/interfaces/{iid}`, "Interface card…"); snapshots
+      validated (save 7.9 s, revert 1.7 s, disk+RAM+links back), listed and
+      reverted on stopped nodes, deletable, and a revert warns about cards
+      added since. Option values are checked when set.
 - [x] **0.13.14 fixes, run on labtris-012 2026-11-13** (Ubuntu 24.04 guests,
       alpine containers):
       - A VM whose QEMU dies is marked stopped. `start()` waits 2 s after the
@@ -439,10 +446,6 @@ three surfaces work; what follows is what the verification turned up.
       configured and the smoke test passes on >=1, so this is a
       convergence-timing question rather than a config one — worth a
       look before anyone quotes rail-optimised timings.
-- [ ] **No persistent UEFI variables for nodes.** A BIOS companion is
-      passed as read-only `-bios`, so NVRAM boot entries do not survive a
-      restart; only an image's EFI fallback path boots reliably. A
-      per-node pflash vars file would fix it.
 
 ---
 

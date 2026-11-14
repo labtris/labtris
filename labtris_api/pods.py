@@ -153,6 +153,7 @@ async def save(
     node_manifest: list[dict[str, Any]] = []
     disk_files: dict[str, Path] = {}    # node_id -> qcow2 path
     image_tars: dict[str, Path] = {}    # node_id -> docker image tar path
+    efivars_files: dict[str, Path] = {}  # node_id -> vm dir holding efivars.qcow2
 
     for n in nodes:
         entry: dict[str, Any] = {
@@ -195,6 +196,14 @@ async def save(
                 entry["disk_sha256_prefix"] = info["digest"]
                 entry["disk_bytes"] = info["bytes"]
                 disk_files[n.id] = Path(info["path"])
+                # A UEFI node's boot entries live in its variable store, not
+                # on the disk, and a hot snapshot is in both: without the
+                # store a restored node boots without its entries, and loadvm
+                # fails because one drive lacks the snapshot.
+                from labtris_api.runtime.qemu import EFIVARS
+
+                if (_vm_dir(n.id) / EFIVARS).exists():
+                    efivars_files[n.id] = _vm_dir(n.id)
 
         elif n.runtime == "docker":
             # Hot: commit + save the running container's filesystem into
@@ -253,6 +262,7 @@ async def save(
             templates_payload,
             disk_files,
             image_tars,
+            efivars_files,
         )
         tmp_path.rename(out_path)
     finally:
@@ -293,6 +303,7 @@ def _write_archive(
     templates_payload: list[dict[str, Any]],
     disk_files: dict[str, Path],
     image_tars: dict[str, Path] | None = None,
+    efivars_dirs: dict[str, Path] | None = None,
 ) -> None:
     """Assemble the tar.gz atomically at `dst`. The caller renames the .tmp
     file into place on success — a partial write must never be observable
@@ -310,6 +321,12 @@ def _write_archive(
                 # than a silent short tar.
                 raise runtime_error(f"flattened disk vanished for {node_id}: {src}")
             tar.add(str(src), arcname=f"nodes/{node_id}/disk.qcow2")
+        from labtris_api.runtime.qemu import _EFIVARS_SOURCE, EFIVARS
+
+        for node_id, vm_dir in (efivars_dirs or {}).items():
+            for name in (EFIVARS, _EFIVARS_SOURCE):
+                if (vm_dir / name).exists():
+                    tar.add(str(vm_dir / name), arcname=f"nodes/{node_id}/{name}")
         for node_id, src in (image_tars or {}).items():
             if not src.exists():
                 raise runtime_error(f"image tar vanished for {node_id}: {src}")
@@ -554,6 +571,22 @@ async def load(
                     opts = dict(new_node.qemu_opts or {})
                     opts["load_snapshot_on_boot"] = tag
                     new_node.qemu_opts = opts
+        # UEFI variable stores ride next to the disk, hot or cold.
+        from labtris_api.runtime.qemu import _EFIVARS_SOURCE, EFIVARS
+        from labtris_api.runtime.qemu import _vm_dir as _qemu_vm_dir
+
+        for entry in manifest.get("nodes", []):
+            src_dir = staging / "nodes" / entry["id"]
+            new_id_ = node_id_map.get(entry["id"])
+            if entry.get("runtime") != "qemu" or new_id_ is None:
+                continue
+            if not (src_dir / EFIVARS).exists():
+                continue
+            dst = _qemu_vm_dir(new_id_)
+            dst.mkdir(parents=True, exist_ok=True)
+            for name in (EFIVARS, _EFIVARS_SOURCE):
+                if (src_dir / name).exists():
+                    shutil.move(str(src_dir / name), str(dst / name))
         session.add(
             Geometry(
                 lab_id=lab.id,

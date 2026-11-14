@@ -63,6 +63,11 @@ async def patch_template(
                 f"kind={kind} and use the path that returns"
             )
 
+    if isinstance(data.get("qemu_opts"), dict):
+        from labtris_api.runtime.qemu import check_option_values
+
+        check_option_values({**((tmpl.spec or {}).get("qemu_opts") or {}), **data["qemu_opts"]})
+
     if data:
         # Spec is JSONB; SQLAlchemy only tracks whole-column replacement, so
         # rebuild the dict and assign back rather than mutating in place.

@@ -560,6 +560,9 @@ class DockerRuntime:
     async def load_snapshot(self, h: RuntimeHandle, name: str) -> None:
         raise runtime_error("docker backend has no VM snapshot — Capability.SNAPSHOT is unset")
 
+    async def delete_snapshot(self, h: RuntimeHandle, name: str) -> None:
+        raise runtime_error("docker backend has no VM snapshot — Capability.SNAPSHOT is unset")
+
     async def list_snapshots(self, h: RuntimeHandle) -> list[str]:
         return []
 

@@ -1067,6 +1067,47 @@
     };
   }
 
+  //: One port's card, for a node that needs two kinds: e1000 for a
+  //: management port, virtio for the data plane. Applies at the next start.
+  function portCardMenu(node, x, y) {
+    const ifaces = [...(node.interfaces || [])].sort((a, b) => a.idx - b.idx);
+    menu = {
+      x,
+      y,
+      title: `Card per port on ${node.name}`,
+      items: ifaces.map((i) => ({
+        label: `${i.name} · ${i.nic_model ?? "node default"}`,
+        glyph: "⇄",
+        run: () => portModelMenu(node, i, x, y),
+      })),
+    };
+  }
+
+  function portModelMenu(node, iface, x, y) {
+    const pick = (m) => async () => {
+      try {
+        await api.setIfaceModel(node.id, iface.id, m);
+        if (node.state === "running") error = `${iface.name}: the new card takes effect when ${node.name} restarts`;
+      } catch (e) {
+        error = e.message;
+      }
+      if (lab) await loadLab(lab.id, true);
+    };
+    menu = {
+      x,
+      y,
+      title: `${iface.name} card`,
+      items: [
+        { label: `node default (${node.nic_model ?? "virtio"})`, glyph: iface.nic_model ? "" : "✓", run: pick(null) },
+        ...nicModels.map((m) => ({
+          label: m.label,
+          glyph: iface.nic_model === m.id ? "✓" : "",
+          run: pick(m.id),
+        })),
+      ],
+    };
+  }
+
   async function removePort(node, iface) {
     try {
       await api.deleteIface(node.id, iface.id);
@@ -1955,6 +1996,9 @@
           ? [{ label: "Machine options…", glyph: "🖧", run: openQemuOptions }]
           : []),
         { label: "Add interface", glyph: "+", run: addPort },
+        ...(node.runtime === "qemu" && nicModels.length
+          ? [{ label: "Interface card…", glyph: "⇄", run: () => portCardMenu(node, e.clientX, e.clientY) }]
+          : []),
         {
           label: "Remove interface…",
           glyph: "−",

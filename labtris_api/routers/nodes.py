@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from labtris_api.auth import User, forbidden, get_current_user
 from labtris_api.db import get_session
-from labtris_api.errors import conflict, not_found, unprocessable
+from labtris_api.errors import ApiError, conflict, not_found, unprocessable
 from labtris_api.lifecycle import (
     _clamp_queues,
     allocate_mac,
@@ -39,6 +39,7 @@ from labtris_api.schemas import (
     ConsoleExecIn,
     ConsoleExecOut,
     ConsoleOut,
+    InterfaceHardwareIn,
     InterfaceIn,
     InterfaceOut,
     NodeConsoleIn,
@@ -113,13 +114,14 @@ async def create_node(
     # it on 256 MB with a NIC its kernel cannot drive.
     tspec = await _saved_image_spec(session, body.image)
     if body.qemu_opts:
-        from labtris_api.runtime.qemu import QEMU_OPTIONS
+        from labtris_api.runtime.qemu import QEMU_OPTIONS, check_option_values
 
         if body.runtime != "qemu":
             raise unprocessable(f"qemu_opts is for qemu nodes; this one is {body.runtime}")
         unknown = set(body.qemu_opts) - set(QEMU_OPTIONS)
         if unknown:
             raise unprocessable(f"unknown qemu option(s): {', '.join(sorted(unknown))}")
+        check_option_values({**(tspec.get("qemu_opts") or {}), **body.qemu_opts})
     node = Node(
         id=new_id(),
         lab_id=lab_id,
@@ -149,6 +151,8 @@ async def create_node(
         await session.rollback()
         raise conflict(f"node name {body.name!r} already exists in this lab") from exc
     specs = body.interfaces or [InterfaceIn()]
+    for spec in specs:
+        await _check_port_model(body.runtime, spec.nic_model)
     # A saved image has no catalog entry, so its port naming comes from the
     # template. Getting this wrong renames every port on the node: a guest that
     # really calls them ens3 would be drawn, and configured, as eth0.
@@ -163,6 +167,7 @@ async def create_node(
                 name=guest_name(idx, spec.name, scheme),
                 mac=await allocate_mac(session, iface_id),
                 network_id=spec.network_id,
+                nic_model=spec.nic_model,
             )
         )
     try:
@@ -776,6 +781,7 @@ async def add_interface(
 ) -> Interface:
     node = await get_node(session, node_id)
     await get_unlocked_lab(session, node.lab_id)
+    await _check_port_model(node.runtime, body.nic_model)
     # A saved-image node's port naming comes from the template, not the
     # built-in QEMU_CATALOG — iface_scheme_for only knows about catalog
     # entries and falls through to "eth" for a custom: image, which
@@ -794,6 +800,7 @@ async def add_interface(
         name=guest_name(idx, body.name, scheme),
         mac=await allocate_mac(session, iface_id),
         network_id=body.network_id,
+        nic_model=body.nic_model,
     )
     session.add(iface)
     try:
@@ -801,6 +808,45 @@ async def add_interface(
     except IntegrityError as exc:
         await session.rollback()
         raise conflict("interface name already exists on node") from exc
+    await session.refresh(iface)
+    return iface
+
+
+async def _check_port_model(runtime: str, model: str | None) -> None:
+    if model is None:
+        return
+    if runtime != "qemu":
+        raise unprocessable(f"nic_model is for qemu ports; this node is {runtime}")
+    from labtris_api.runtime.qemu import available_nic_models
+
+    have = await available_nic_models()
+    if model not in have:
+        raise unprocessable(
+            f"this qemu build has no {model!r} device; one of: {', '.join(sorted(have))}"
+        )
+
+
+@router.patch("/nodes/{node_id}/interfaces/{iface_id}", response_model=InterfaceOut)
+async def set_interface_hardware(
+    node_id: str,
+    iface_id: str,
+    body: InterfaceHardwareIn,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> Interface:
+    """Change the card behind one port: e1000 for a management port, virtio
+    for the data plane. null goes back to the node's model.
+
+    A card cannot change model under a running guest, so on a running VM this
+    is saved and takes effect at the next start, like RAM and vCPUs."""
+    node = await get_node(session, node_id)
+    await get_unlocked_lab(session, node.lab_id)
+    iface = next((i for i in node.interfaces if i.id == iface_id), None)
+    if iface is None:
+        raise not_found(f"interface {iface_id} not found on {node.name}")
+    await _check_port_model(node.runtime, body.nic_model)
+    iface.nic_model = body.nic_model
+    await session.commit()
     await session.refresh(iface)
     return iface
 
@@ -895,7 +941,7 @@ async def set_qemu_options(
 
     None of these can change on a live guest, so they take effect on the next
     start — the same contract as RAM and vCPU."""
-    from labtris_api.runtime.qemu import QEMU_OPTIONS
+    from labtris_api.runtime.qemu import QEMU_OPTIONS, check_option_values
 
     node = await get_node(session, node_id)
     if node.runtime != "qemu":
@@ -903,6 +949,7 @@ async def set_qemu_options(
     unknown = set(body) - set(QEMU_OPTIONS)
     if unknown:
         raise unprocessable(f"unknown option(s): {', '.join(sorted(unknown))}")
+    check_option_values({**(node.qemu_opts or {}), **body})
     node.qemu_opts = {**(node.qemu_opts or {}), **body}
     await session.commit()
     return await get_node(session, node.id)
@@ -1148,15 +1195,77 @@ async def restore_snapshot(
     name: str,
     session: AsyncSession = Depends(get_session),
     _user: object = Depends(get_current_user),
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    """Put a VM back to the moment `name` was taken: disk, RAM, devices and,
+    for UEFI nodes, its boot variables. Links are the lab's current ones,
+    not the ones at save time.
+
+    A stopped node is started first, then reverted, so the caller does not
+    have to boot it and wait. `warnings` names cards added after the
+    snapshot: the guest it brings back has never seen them, and they carry
+    nothing until the node restarts."""
+    from labtris_api.lifecycle import start_node
+
     node = await get_node(session, node_id)
     if "snapshot" not in _caps(node.runtime):
         raise unprocessable(f"runtime {node.runtime!r} does not support snapshots")
     if not node.runtime_ref:
         raise conflict("node has no runtime handle")
     runtime = get_runtime(node.runtime)
-    await runtime.load_snapshot(RuntimeHandle(node_id=node.id, ref=node.runtime_ref), name)
-    return {"status": "restored", "name": name}
+    handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
+    if name not in await runtime.list_snapshots(handle):
+        raise not_found(f"{node.name} has no snapshot {name!r}")
+    started = False
+    if node.state != "running":
+        node = await start_node(session, node)
+        started = True
+        handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
+    drift = getattr(runtime, "snapshot_drift", None)
+    added, removed = await drift(handle, name) if drift else ([], [])
+    by_idx = {f"nic{i.idx}": i.name for i in node.interfaces}
+    try:
+        await runtime.load_snapshot(handle, name)
+    except ApiError as exc:
+        if not (added or removed):
+            raise
+        what = []
+        if added:
+            what.append("added since: " + ", ".join(by_idx.get(n, n) for n in added))
+        if removed:
+            what.append("removed since: " + ", ".join(removed))
+        raise conflict(
+            f"{name!r} was taken with a different set of network cards ({'; '.join(what)}). "
+            "QEMU loads a snapshot only into the cards it was taken with: put the cards "
+            "back as they were and restart the node, or take a new snapshot",
+            {"added": [by_idx.get(n, n) for n in added], "removed": removed,
+             "qemu": exc.message},
+        ) from exc
+    warnings = [
+        f"{by_idx.get(n, n)} was added after {name!r}; the reverted guest does not "
+        f"see it until {node.name} restarts"
+        for n in added
+    ]
+    return {"status": "restored", "name": name, "started": started, "warnings": warnings}
+
+
+@router.delete("/nodes/{node_id}/snapshot/{name}", status_code=204)
+async def delete_snapshot(
+    node_id: str,
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    _user: object = Depends(get_current_user),
+) -> Response:
+    """Snapshots hold the guest's RAM, so each costs about as much disk as the
+    VM has memory, and nothing removed them."""
+    node = await get_node(session, node_id)
+    if "snapshot" not in _caps(node.runtime) or not node.runtime_ref:
+        raise unprocessable(f"runtime {node.runtime!r} does not support snapshots")
+    runtime = get_runtime(node.runtime)
+    handle = RuntimeHandle(node_id=node.id, ref=node.runtime_ref)
+    if name not in await runtime.list_snapshots(handle):
+        raise not_found(f"{node.name} has no snapshot {name!r}")
+    await runtime.delete_snapshot(handle, name)
+    return Response(status_code=204)
 
 
 @router.post("/nodes/{node_id}/export", response_model=TemplateOut, status_code=201)

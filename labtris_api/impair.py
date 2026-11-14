@@ -94,6 +94,7 @@ async def apply_link_qos(
                 guest_name=iface.name,
                 host_ifname=iface.host_ifname,
                 mac=str(iface.mac),
+                nic_model=iface.nic_model,
             )
             await runtime.set_guest_link(handle, spec, want_up)
         except Exception:  # noqa: BLE001 — host tap change is the authoritative signal
